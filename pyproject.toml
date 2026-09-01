@@ -1,0 +1,70 @@
+[project]
+name = "yamkit"
+version = "0.1.0"
+description = "Self-contained toolkit for I2RT YAM arms: CAN setup, teleop, LeRobot recording, VLA inference."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # --- YAM hardware SDK (vendored, pinned; see third_party/i2rt.VERSION) ---
+    "i2rt",
+    # --- LeRobot: datasets, cameras, policies, record/train/eval CLIs ---
+    "lerobot[core-scripts,smolvla,pi,async,training]==0.6.1",
+    # torch/torchvision resolved from the CPU index (this machine has no NVIDIA GPU)
+    "torch>=2.7,<2.12",
+    "torchvision>=0.22,<0.27",
+    # --- LeRobot plugins (workspace members under plugins/) ---
+    "lerobot_robot_yamkit",
+    "lerobot_teleoperator_yamkit",
+    # --- our own glue ---
+    "numpy>=2.0,<2.3",
+    "python-can==4.5.0",
+    "pyyaml>=6.0",
+    "typer>=0.15",
+    "rich>=13.0",
+    "opencv-python-headless>=4.9",
+]
+
+[project.optional-dependencies]
+realsense = ["lerobot[intelrealsense]"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+yamkit = "yamkit.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/yamkit"]
+
+# Installed into site-packages: imports yamkit._env at interpreter start so HF/LeRobot/torch
+# caches land in ./data instead of ~/.cache (see src/yamkit/_env.py).
+[tool.hatch.build.targets.wheel.force-include]
+"src/yamkit_env.pth" = "yamkit_env.pth"
+
+[tool.uv.workspace]
+members = ["plugins/*"]
+
+[tool.uv]
+# ruckig (i2rt dep) ships only an sdist and needs an older scikit-build-core to build.
+build-constraint-dependencies = ["scikit-build-core<0.10"]
+
+[tool.uv.sources]
+i2rt = { path = "third_party/i2rt", editable = true }
+lerobot_robot_yamkit = { workspace = true }
+lerobot_teleoperator_yamkit = { workspace = true }
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

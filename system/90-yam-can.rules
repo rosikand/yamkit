@@ -1,0 +1,4 @@
+# Optional: persistent interface names per adapter serial (yamkit does NOT need this — it maps
+# adapters by serial itself). Generate a filled-in version with:  yamkit can --udev
+# Install: sudo cp system/90-yam-can.rules /etc/udev/rules.d/ && sudo udevadm control --reload-rules
+# SUBSYSTEM=="net", ACTION=="add", ATTRS{serial}=="<SERIAL>", NAME="can_left_l"

@@ -1,0 +1,16 @@
+# environment (all project-local)
+.venv/
+.uv-python/
+.uv-cache/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# data & artifacts
+data/
+outputs/
+wandb/
+*.mcap
+*.log

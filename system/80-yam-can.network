@@ -1,0 +1,11 @@
+# Optional: persistent CAN bring-up on boot / hot-plug via systemd-networkd.
+# Install (system change — do it deliberately):
+#   sudo cp system/80-yam-can.network /etc/systemd/network/
+#   sudo systemctl enable --now systemd-networkd
+# NetworkManager keeps managing wifi/ethernet; networkd only matches can* here.
+[Match]
+Name=can*
+
+[CAN]
+BitRate=1M
+RestartSec=100ms

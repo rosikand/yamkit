@@ -1,0 +1,50 @@
+# yamkit rig configuration — see README.md
+version: 1
+arms:
+  left_leader:
+    role: leader
+    side: left
+    arm_type: yam
+    gripper: yam_teaching_handle
+    can_serial: 2080377E45465008
+    notes: discovered on can0
+  left_follower:
+    role: follower
+    side: left
+    arm_type: yam
+    gripper: linear_4310
+    can_serial: 208B336E594E5018
+    gripper_limits:
+    - 6.471923399710079
+    - 1.1617837796597232
+    notes: discovered on can1
+  right_leader:
+    role: leader
+    side: right
+    arm_type: yam
+    gripper: yam_teaching_handle
+    can_serial: 004A001633354B0432333837
+    notes: discovered on can3
+  right_follower:
+    role: follower
+    side: right
+    arm_type: yam
+    gripper: linear_4310
+    can_serial: 2058377F45465008
+    gripper_limits:
+    - 6.449797817959869
+    - 1.232356755931944
+    notes: discovered on can2
+pairs:
+- leader: left_leader
+  follower: left_follower
+- leader: right_leader
+  follower: right_follower
+cameras: {}
+control:
+  teleop_hz: 100.0
+  sync_seconds: 3.0
+  bilateral_kp: 0.0
+  engage_button: 0
+  max_joint_speed: 3.0
+  max_gripper_speed: 3.0

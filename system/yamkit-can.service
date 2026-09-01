@@ -1,0 +1,13 @@
+# Optional alternative to 80-yam-can.network: run scripts/can_up.sh once at boot.
+#   sudo cp system/yamkit-can.service /etc/systemd/system/ && sudo systemctl enable --now yamkit-can
+[Unit]
+Description=Bring up I2RT YAM CAN adapters (1 Mbit/s)
+After=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /home/andre/rohan-new/scripts/can_up.sh
+
+[Install]
+WantedBy=multi-user.target
