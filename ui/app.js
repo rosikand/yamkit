@@ -74,7 +74,9 @@ function updateSidebar() {
 // -------------------------------------------------------------------------- shared views ----
 const errBanner = (msg) => `<div class="error-banner">${esc(msg)}</div>`;
 const st = (ok, label, warn = false) =>
-  `<span class="st ${ok ? "ok" : warn ? "warn" : "err"}"><span class="dot"></span>${esc(label)}</span>`;
+  `<span class="badge ${ok ? "ok" : warn ? "warn" : "err"}"><span class="dot"></span>${esc(label)}</span>`;
+const stN = (label, run = false) =>
+  `<span class="badge${run ? " run" : ""}">${run ? '<span class="dot"></span>' : ""}${esc(label)}</span>`;
 
 function pageHead(title, sub = "", toolbar = "") {
   return `<div class="page-head"><h1>${esc(title)}</h1>${sub ? `<span class="sub">${sub}</span>` : ""}
@@ -119,7 +121,7 @@ function armPanelHTML(armName, stt) {
   const gripRow = `<div class="joint"><span class="name">gripper</span>
       <span class="track"><span class="fill" style="left:0;width:${grip != null ? grip * 100 : 0}%"></span></span>
       <span class="val">${grip != null ? grip.toFixed(2) : "–"}</span></div>`;
-  return `<div><div class="arm-name">${esc(armName)}</div>
+  return `<div class="panel arm-panel"><div class="arm-name">${esc(armName)}</div>
     ${stt ? rows + gripRow : `<div class="empty">no state — start the state stream or teleop</div>`}</div>`;
 }
 
@@ -175,7 +177,7 @@ pages.live = {
       rows.push(overview?.rig?.found
         ? st(!(overview.rig.problems || []).length, `rig: ${Object.keys(overview.rig.arms).length} arms, ${overview.rig.pairs.length} pairs`)
         : st(false, "rig file missing"));
-      rows.push(st(true, session.active ? `mode: ${session.mode}` : "mode: idle"));
+      rows.push(stN(session.active ? `mode: ${session.mode}` : "mode: idle", session.active));
       const can = (overview?.can || []).map((i) => st(i.up, `${i.name} ${i.up ? "UP" : "DOWN"}${i.in_rig ? "" : " (not in rig)"}`));
       rows.push(...(can.length ? can : [st(false, "no CAN adapters", true)]));
       const cams = (overview?.cameras || []).map((c) => st(c.streaming && !c.error, `cam ${c.name}${c.error ? ": " + c.error : ""}`, !c.error));
@@ -195,7 +197,7 @@ pages.record = {
       ${pageHead("Record", "teleoperation and dataset recording", `<button id="btn-stop-top" class="danger">Stop</button>`)}
       <div class="sect"><div class="sect-head">Cameras</div>${camsHTML()}</div>
       <div class="cols cols-2">
-        <div class="sect"><div class="sect-head">Teleop</div>
+        <div class="sect"><div class="sect-head">Teleop</div><div class="panel pad">
           <div id="teleop-status"></div>
           <div class="toolbar" style="margin-top:12px">
             <button id="btn-teleop" class="primary">Start Teleop</button>
@@ -203,8 +205,8 @@ pages.record = {
           <label class="check"><input type="checkbox" id="auto-engage" /> auto-engage (follower moves to leader pose immediately)</label>
           <div class="hint">Runs <code>yamkit teleop</code>. Without auto-engage, press the teaching-handle
             button to engage — the follower then moves to the leader pose.</div>
-        </div>
-        <div class="sect"><div class="sect-head">Recording</div>
+        </div></div>
+        <div class="sect"><div class="sect-head">Recording</div><div class="panel pad">
           <label class="field">dataset name<input type="text" id="rec-name" placeholder="pick_cube" /></label>
           <label class="field">task instruction<input type="text" id="rec-task" placeholder="pick up the red cube and place it in the bowl" /></label>
           <div class="form-grid">
@@ -218,7 +220,7 @@ pages.record = {
           </div>
           <div class="hint">Runs <code>yamkit record</code> (LeRobot <code>lerobot-record</code>) →
             <code>data/datasets/&lt;name&gt;</code>. Arms engage and move with the leaders.</div>
-        </div>
+        </div></div>
       </div>
       <div class="sect"><div class="sect-head">Progress</div><div class="st-list" id="rec-progress"></div></div>
       <div class="sect"><div class="sect-head">Output</div>${logPaneHTML()}</div>`;
@@ -249,11 +251,11 @@ pages.record = {
       : `<div class="hint">${session.active && session.mode === "teleop" ? "starting…" : "no teleop session"}</div>`;
     const prog = $("#rec-progress");
     const p = session.parsed || {}, meta = session.meta || {};
-    const bits = [st(session.active, session.active ? `${session.mode} running` : "idle", !session.active)];
-    if (session.active || session.mode) bits.push(st(true, `elapsed ${fmtDur(session.elapsed_s)}`));
-    if (p.episode != null) bits.push(st(true, `episode ${p.episode}${meta.episodes ? " / " + meta.episodes : ""}`));
-    if (p.phase) bits.push(st(true, p.phase));
-    if (p.rate_hz) bits.push(st(true, `${p.rate_hz.toFixed(0)} Hz`));
+    const bits = [session.active ? stN(`${session.mode} running`, true) : stN("idle")];
+    if (session.active || session.mode) bits.push(stN(`elapsed ${fmtDur(session.elapsed_s)}`));
+    if (p.episode != null) bits.push(stN(`episode ${p.episode}${meta.episodes ? " / " + meta.episodes : ""}`));
+    if (p.phase) bits.push(stN(p.phase));
+    if (p.rate_hz) bits.push(stN(`${p.rate_hz.toFixed(0)} Hz`));
     if (!session.active && session.returncode != null)
       bits.push(st(session.returncode === 0, `last run: exit ${session.returncode}`, session.returncode !== 0));
     prog.innerHTML = bits.join("");
@@ -268,12 +270,12 @@ pages.datasets = {
     el.innerHTML = `${pageHead("Datasets", "<span class='mono'>data/datasets/</span>")}<div id="ds-list" class="sect">loading…</div>`;
     try {
       const list = await api("/datasets");
-      $("#ds-list").innerHTML = list.length ? `<table><tr><th>name</th><th class="num">episodes</th><th class="num">frames</th><th class="num">fps</th><th>robot</th><th>tasks</th><th>cameras</th><th class="num">size</th></tr>` +
+      $("#ds-list").innerHTML = `<div class="panel">` + (list.length ? `<table><tr><th>name</th><th class="num">episodes</th><th class="num">frames</th><th class="num">fps</th><th>robot</th><th>tasks</th><th>cameras</th><th class="num">size</th></tr>` +
         list.map((d) => `<tr class="click" onclick="location.hash='#/datasets/${encodeURIComponent(d.name)}'">
           <td class="mono">${esc(d.name)}</td><td class="num">${d.episodes ?? "–"}</td><td class="num">${d.frames ?? "–"}</td><td class="num">${d.fps ?? "–"}</td>
           <td>${esc(d.robot_type ?? "–")}</td><td>${esc((d.tasks || []).join("; ") || "–")}</td>
           <td class="mono">${esc((d.cameras || []).join(", ") || "none")}</td><td class="num">${fmtBytes(d.size_bytes)}</td></tr>`).join("") + `</table>`
-        : `<div class="empty">no datasets yet — record one from the Record page</div>`;
+        : `<div class="empty">no datasets yet — record one from the Record page</div>`) + `</div>`;
     } catch (e) { $("#ds-list").innerHTML = errBanner(e.message); }
   },
 };
@@ -285,7 +287,7 @@ async function renderDatasetDetail(el, name, epArg) {
   catch (e) { $("#ds-detail").innerHTML = errBanner(e.message); return; }
   const eps = d.episode_list || [];
   $("#ds-detail").innerHTML = `
-    <div class="sect"><div class="kv">
+    <div class="sect"><div class="kv panel">
       <div>episodes / frames</div><div>${d.episodes} / ${d.frames}</div>
       <div>fps</div><div>${d.fps}</div>
       <div>robot</div><div>${esc(d.robot_type || "?")}</div>
@@ -294,12 +296,12 @@ async function renderDatasetDetail(el, name, epArg) {
       <div>size on disk</div><div>${fmtBytes(d.size_bytes)}</div>
       <div>path</div><div class="mono">${esc(d.path)}</div>
     </div></div>
-    <div class="sect"><div class="sect-head">Episodes</div>
+    <div class="sect"><div class="sect-head">Episodes</div><div class="panel">
       <table><tr><th class="num">#</th><th class="num">frames</th><th class="num">duration</th><th>tasks</th><th></th></tr>
       ${eps.map((e) => `<tr class="click" onclick="location.hash='#/datasets/${encodeURIComponent(name)}/${e.episode_index}'">
         <td class="num mono">${e.episode_index}</td><td class="num">${e.length ?? "–"}</td><td class="num">${d.fps && e.length ? fmtDur(e.length / d.fps) : "–"}</td>
         <td>${esc(Array.isArray(e.tasks) ? e.tasks.join("; ") : e.tasks ?? "–")}</td><td>view →</td></tr>`).join("")}
-      </table></div>
+      </table></div></div>
     <div id="ep-viewer"></div>`;
   const ep = epArg != null ? +epArg : (eps.length ? eps[0].episode_index : null);
   if (ep != null) renderEpisodeViewer($("#ep-viewer"), name, d, ep);
@@ -433,21 +435,21 @@ pages.inference = {
     el.innerHTML = `
       ${pageHead("Inference", "policy runs launched from this UI")}
       <div class="cols cols-2">
-        <div class="sect"><div class="sect-head">Policy check — safe, no arm is energised</div>
-          <label class="field">policy (checkpoint dir or HF id)<input type="text" id="pc-policy" placeholder="outputs/train/…/pretrained_model or lerobot/smolvla_base" /></label>
+        <div class="sect"><div class="sect-head">Policy check <span class="crumb">safe — no arm is energised</span></div><div class="panel pad">
+          <label class="field" style="margin-top:0">policy (checkpoint dir or HF id)<input type="text" id="pc-policy" placeholder="outputs/train/…/pretrained_model or lerobot/smolvla_base" /></label>
           <label class="field">task<input type="text" id="pc-task" value="pick up the object" /></label>
           <div class="toolbar" style="margin-top:12px"><button id="btn-pc" class="primary">Run policy check</button></div>
-        </div>
-        <div class="sect"><div class="sect-head">Rollout — moves the arms</div>
-          <label class="field">policy<input type="text" id="ro-policy" /></label>
+        </div></div>
+        <div class="sect"><div class="sect-head">Rollout <span class="crumb">moves the arms</span></div><div class="panel pad">
+          <label class="field" style="margin-top:0">policy<input type="text" id="ro-policy" /></label>
           <label class="field">task<input type="text" id="ro-task" /></label>
           <div class="form-grid">
             <label class="field">duration (s)<input type="number" id="ro-duration" value="60" /></label>
-            <label class="check" style="margin-top:26px"><input type="checkbox" id="ro-rtc" checked /> RTC inference</label>
+            <label class="check" style="margin-top:30px"><input type="checkbox" id="ro-rtc" checked /> RTC inference</label>
           </div>
           <div class="toolbar" style="margin-top:12px"><button id="btn-ro" class="danger">Start rollout</button></div>
           <div class="hint warn">Runs <code>yamkit rollout</code>: the follower arms will move. Clear the workspace first.</div>
-        </div>
+        </div></div>
       </div>
       <div class="sect"><div class="sect-head">Runs</div><div id="run-list">loading…</div></div>`;
     $("#btn-pc").onclick = (e) => {
@@ -468,14 +470,14 @@ pages.inference = {
     if (!el) return;
     try {
       const list = await api("/deployments");
-      el.innerHTML = list.length ? `<table><tr><th>run</th><th>kind</th><th>model</th><th>task</th><th class="num">latency</th><th class="num">duration</th><th>status</th><th>termination</th></tr>` +
+      el.innerHTML = `<div class="panel">` + (list.length ? `<table><tr><th>run</th><th>kind</th><th>model</th><th>task</th><th class="num">latency</th><th class="num">duration</th><th>status</th><th>termination</th></tr>` +
         list.map((d) => `<tr class="click" onclick="location.hash='#/inference/${encodeURIComponent(d.id)}'">
           <td class="mono">${esc(d.id)}</td><td>${esc(d.kind ?? "–")}</td><td class="mono">${esc(d.policy ?? "–")}</td><td>${esc(d.task ?? "–")}</td>
           <td class="num">${d.first_call_ms != null ? d.first_call_ms.toFixed(0) + " ms" : "–"}</td>
           <td class="num">${fmtDur(d.duration_s)}</td>
           <td>${st(d.status === "success", d.status ?? "?", d.status === "running" || d.status === "stopped")}</td>
           <td>${esc(d.termination ?? "–")}</td></tr>`).join("") + `</table>`
-        : `<div class="empty">no policy runs yet — run a policy check or rollout above</div>`;
+        : `<div class="empty">no policy runs yet — run a policy check or rollout above</div>`) + `</div>`;
     } catch (e) { el.innerHTML = errBanner(e.message); }
   },
   update() {  // re-fetch only when a session starts/ends, not on every poll
@@ -489,7 +491,7 @@ async function renderRunDetail(el, id) {
   try { d = await api(`/deployments/${encodeURIComponent(id)}`); }
   catch (e) { $("#run-detail").innerHTML = errBanner(e.message); return; }
   $("#run-detail").innerHTML = `
-    <div class="sect"><div class="kv">
+    <div class="sect"><div class="kv panel">
       <div>status</div><div>${st(d.status === "success", d.status, d.status !== "failed")}${d.termination ? ` <span class="crumb">— ${esc(d.termination)}</span>` : ""}</div>
       <div>kind</div><div>${esc(d.kind)}</div>
       <div>model</div><div class="mono">${esc(d.policy ?? "–")}</div>
@@ -513,12 +515,12 @@ pages.models = {
     el.innerHTML = `${pageHead("Models", "checkpoints under <span class='mono'>outputs/</span>")}<div id="model-list" class="sect">loading…</div>`;
     try {
       const list = await api("/models");
-      $("#model-list").innerHTML = list.length ? `<table><tr><th>path</th><th>type</th><th class="num">steps</th><th>dataset</th><th class="num">size</th><th>modified</th></tr>` +
+      $("#model-list").innerHTML = `<div class="panel">` + (list.length ? `<table><tr><th>path</th><th>type</th><th class="num">steps</th><th>dataset</th><th class="num">size</th><th>modified</th></tr>` +
         list.map((m) => `<tr class="click" onclick="location.hash='#/models/${encodeURIComponent(m.path)}'">
           <td class="mono">outputs/${esc(m.path)}</td><td>${esc(m.policy_type ?? "?")}</td>
           <td class="num">${m.steps ?? "–"}</td><td class="mono">${esc(m.dataset ?? "–")}</td>
           <td class="num">${fmtBytes(m.size_bytes)}</td><td>${fmtDate(m.modified)}</td></tr>`).join("") + `</table>`
-        : `<div class="empty">no checkpoints under outputs/ — see README §6 for training</div>`;
+        : `<div class="empty">no checkpoints under outputs/ — see README §6 for training</div>`) + `</div>`;
     } catch (e) { $("#model-list").innerHTML = errBanner(e.message); }
   },
 };
@@ -530,17 +532,17 @@ async function renderModelDetail(el, path) {
   catch (e) { $("#model-detail").innerHTML = errBanner(e.message); return; }
   const tc = d.train_config || {};
   $("#model-detail").innerHTML = `
-    <div class="sect"><div class="kv">
+    <div class="sect"><div class="kv panel">
       <div>policy type</div><div>${esc(d.policy_type ?? "?")}</div>
       <div>size on disk</div><div>${fmtBytes(d.size_bytes)}</div>
       <div>modified</div><div>${fmtDate(d.modified)}</div>
       <div>train steps</div><div>${tc.steps ?? "–"}</div>
       <div>train dataset</div><div class="mono">${esc((tc.dataset || {}).repo_id ?? "–")}</div>
     </div></div>
-    <div class="sect"><div class="sect-head">Files</div>
+    <div class="sect"><div class="sect-head">Files</div><div class="panel">
       <table><tr><th>file</th><th class="num">size</th></tr>
       ${(d.files || []).map((f) => `<tr><td class="mono">${esc(f.name)}</td><td class="num">${fmtBytes(f.size_bytes)}</td></tr>`).join("")}
-      </table></div>
+      </table></div></div>
     <div class="sect"><div class="sect-head">config.json</div>
       <pre class="log tall">${esc(JSON.stringify(d.config || {}, null, 2))}</pre></div>
     ${Object.keys(tc).length ? `<div class="sect"><div class="sect-head">train_config.json</div>
@@ -563,36 +565,36 @@ pages.settings = {
       ["max_joint_speed", "max joint speed (rad/s)"], ["max_gripper_speed", "max gripper speed (1/s)"],
     ];
     $("#cfg-body").innerHTML = `
-      <div class="kv" style="margin-top:14px">
+      <div class="kv panel" style="margin-top:16px">
         <div>rig file</div><div class="mono">${esc(c.path)}${c.found ? "" : " (missing)"}</div>
         <div>validation</div><div>${(c.problems || []).length ? st(false, c.problems.join("; ")) : st(true, "ok")}</div>
       </div>
-      <div class="sect"><div class="sect-head">Control</div>
+      <div class="sect"><div class="sect-head">Control</div><div class="panel pad">
         <div class="form-grid" style="max-width:640px">
           ${ctlFields.map(([k, label]) => `<label class="field">${esc(label)}
             <input type="number" step="any" data-ctl="${k}" value="${ctl[k] ?? ""}" ${c.found ? "" : "disabled"} /></label>`).join("")}
         </div>
-        <div class="toolbar" style="margin-top:12px">
+        <div class="toolbar" style="margin-top:14px">
           <button id="ctl-save" class="primary" ${c.found ? "" : "disabled"}>Save control</button>
           <span class="save-note" id="ctl-note"></span>
         </div>
         <div class="hint">Speed clamps bound every commanded move (teleop and rollout). Saving is refused
           while a hardware session is running.</div>
-      </div>
-      <div class="sect"><div class="sect-head">Arms — edit via YAML below</div>
+      </div></div>
+      <div class="sect"><div class="sect-head">Arms <span class="crumb">edit via YAML below</span></div><div class="panel">
         ${Object.keys(c.arms || {}).length ? `<table><tr><th>name</th><th>role</th><th>side</th><th>type</th><th>gripper</th><th>CAN serial</th><th>calibrated</th><th>rest pose</th></tr>
           ${Object.entries(c.arms).map(([n, a]) => `<tr><td class="mono">${esc(n)}</td><td>${esc(a.role)}</td><td>${esc(a.side ?? "–")}</td>
             <td>${esc(a.arm_type)}</td><td>${esc(a.gripper)}</td><td class="mono">${esc(a.can_serial ?? a.can_iface ?? "–")}</td>
             <td>${a.gripper_limits ? "gripper" : "–"}</td><td>${a.rest_pose ? "stored" : "–"}</td></tr>`).join("")}</table>`
         : `<div class="empty">no arms — run <code>yamkit discover --write</code></div>`}
-      </div>
-      <div class="sect"><div class="sect-head">Cameras</div>
+      </div></div>
+      <div class="sect"><div class="sect-head">Cameras</div><div class="panel">
         ${Object.keys(c.cameras || {}).length ? `<table><tr><th>name</th><th>type</th><th>device</th><th class="num">resolution</th><th class="num">fps</th></tr>
           ${Object.entries(c.cameras).map(([n, cam]) => `<tr><td class="mono">${esc(n)}</td><td>${esc(cam.type ?? "opencv")}</td>
             <td class="mono">${esc(String(cam.index_or_path ?? cam.serial_number_or_name ?? "–"))}</td>
             <td class="num">${cam.width && cam.height ? cam.width + "×" + cam.height : "–"}</td><td class="num">${cam.fps ?? "–"}</td></tr>`).join("")}</table>`
         : `<div class="empty">no cameras configured — add them under <code>cameras:</code> in the YAML below</div>`}
-      </div>
+      </div></div>
       <div class="sect"><div class="sect-head">Raw YAML</div>
         <textarea class="yaml" id="cfg-yaml" spellcheck="false">${esc(c.yaml)}</textarea>
         <div class="toolbar" style="margin-top:10px">

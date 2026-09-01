@@ -53,6 +53,7 @@ tests/test_ui.py  hardware-free tests (parsers, sessions with stub children, API
 
 The frontend is a single-page app (`ui/app.js`) with hash routing; it polls `/api/session` (1 s)
 and `/api/overview` (5 s). Chart colors are the validated categorical pair per theme
-(light: state `#2a78d6` / action `#eb6834`; dark: `#3987e5` / `#d95926`).
+(light: state `#2a78d6` / action `#eb6834`; dark: `#3987e5` / `#d95926`). The Inter variable
+font is vendored at `ui/InterVariable.woff2`, so the UI needs no network access.
 
 Screenshots (light + dark for every page): `docs/ui-screenshots/<page>-<theme>.png`.
