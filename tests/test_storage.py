@@ -94,6 +94,23 @@ def test_settings_load_and_validate(tmp_path):
         StorageSettings.load(p)
 
 
+def test_settings_mode_shorthand(tmp_path):
+    p = tmp_path / "yamkit.yaml"
+    expected = {"local": (True, False), "both": (True, True), "cloud": (False, True)}
+    for mode, (save_local, auto_push) in expected.items():
+        p.write_text(f"storage: {{mode: {mode}}}\n")
+        s = StorageSettings.load(p)
+        for kind in (s.datasets, s.models):
+            assert (kind.save_local, kind.auto_push) == (save_local, auto_push), mode
+    # per-kind override wins over mode
+    p.write_text("storage:\n  mode: cloud\n  models: {save_local: true}\n")
+    s = StorageSettings.load(p)
+    assert not s.datasets.save_local and s.models.save_local and s.models.auto_push
+    p.write_text("storage: {mode: hybrid}\n")
+    with pytest.raises(ValueError, match="storage.mode"):
+        StorageSettings.load(p)
+
+
 def test_unknown_backend():
     with pytest.raises(StorageError, match="unknown storage backend"):
         get_backend(StorageSettings(backend="s3"))
@@ -253,7 +270,7 @@ def test_cli_push_delete_local(cli, store):
 def test_cli_storage_status(cli):
     runner, app = cli
     res = runner.invoke(app, ["storage"])
-    assert res.exit_code == 0 and "huggingface" in res.output and "local only" in res.output
+    assert res.exit_code == 0 and "huggingface" in res.output and "mode: local" in res.output
 
 
 def test_record_dry_run_push_and_staging(cli, store, rig, tmp_path):
@@ -277,3 +294,33 @@ def test_train_dry_run_push_flags(cli, store, tmp_path):
     assert res.exit_code == 0 and "outputs/train/smolvla_d1" in res.output.replace("\n", "")
     res = runner.invoke(app, [*base, "--push", "--no-save-local"])
     assert res.exit_code == 0 and "data/.staging/train/smolvla_d1" in res.output.replace("\n", "")
+
+
+def test_train_accepts_cloud_dataset_id(cli, store):
+    runner, app = cli
+    res = runner.invoke(app, ["train", "--dataset", "user/remote_ds", "--dry-run"])
+    out = res.output.replace("\n", "")
+    assert res.exit_code == 0, res.output
+    assert "--dataset.repo_id=user/remote_ds" in out and "data/datasets/remote_ds" in out and "smolvla_remote_ds" in out
+
+
+def test_rollout_record_and_policy_resolution(cli, store, rig, tmp_path, monkeypatch):
+    import yamkit.cli as cli_mod
+
+    runner, app = cli
+    _, _, dirs = store
+    monkeypatch.setattr(cli_mod, "MODELS_DIR", dirs["model"])
+    pulled = dirs["model"] / "vla"
+    pulled.mkdir(parents=True)
+    base = ["rollout", "--policy", "vla", "--task", "t", "--rig", str(tmp_path / "rig.yaml"), "--dry-run"]
+    res = runner.invoke(app, base)
+    out = res.output.replace("\n", "")
+    assert res.exit_code == 0, res.output
+    assert str(pulled) in out  # bare name resolved to the pulled model under data/models
+    assert "--dataset" not in out  # no recording unless asked
+    res = runner.invoke(app, [*base, "--record", "run1", "--push"])
+    out = res.output.replace("\n", "")
+    assert res.exit_code == 0, res.output
+    assert "--dataset.root=" in out and "data/datasets/run1" in out and "cloud storage sync" in out
+    res = runner.invoke(app, [*base, "--push"])
+    assert res.exit_code != 0  # --push only makes sense with --record

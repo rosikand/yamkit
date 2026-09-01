@@ -4,6 +4,9 @@ Loaded from the ``storage:`` section of ``configs/yamkit.yaml`` (settings that a
 rig/hardware related). A missing file or section means local-only defaults, so nothing
 changes for setups that never configured cloud storage.
 
+The one-knob shorthand ``mode: local | both | cloud`` sets the policy for every artifact
+kind; the per-kind ``datasets:`` / ``models:`` sections below are advanced overrides.
+
 Policy semantics per artifact kind (datasets / models):
     save_local: true,  auto_push: false  → local only (the default)
     save_local: true,  auto_push: true   → local + cloud
@@ -26,6 +29,9 @@ import yaml
 from ..paths import DEFAULT_SETTINGS, resolve
 
 ArtifactKind = Literal["dataset", "model"]
+
+# storage.mode shorthand → (save_local, auto_push), applied to every artifact kind
+MODES: dict[str, tuple[bool, bool]] = {"local": (True, False), "both": (True, True), "cloud": (False, True)}
 
 
 @dataclass
@@ -56,12 +62,18 @@ class StorageSettings:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any], path: Path | None = None) -> StorageSettings:
+        base: dict[str, bool] = {}
+        mode = d.get("mode")
+        if mode is not None:
+            if mode not in MODES:
+                raise ValueError(f"storage.mode must be one of {sorted(MODES)}, got {mode!r}")
+            base = dict(zip(("save_local", "auto_push"), MODES[mode]))
         s = cls(
             backend=d.get("backend", "huggingface"),
             namespace=d.get("namespace") or None,
             private=bool(d.get("private", True)),
-            datasets=ArtifactPolicy(**(d.get("datasets") or {})),
-            models=ArtifactPolicy(**(d.get("models") or {})),
+            datasets=ArtifactPolicy(**{**base, **(d.get("datasets") or {})}),
+            models=ArtifactPolicy(**{**base, **(d.get("models") or {})}),
             path=path,
         )
         problems = s.validate()

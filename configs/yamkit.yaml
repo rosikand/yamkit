@@ -5,12 +5,12 @@ storage:
   namespace: null # HF user/org to push into; null = your logged-in HF username
   private: true # newly created cloud repos are private
 
-  # save_local: true,  auto_push: false  -> local only (default)
-  # save_local: true,  auto_push: true   -> local + cloud
-  # save_local: false, auto_push: true   -> cloud only (local copy removed after verified upload)
-  datasets:
-    save_local: true
-    auto_push: false
-  models:
-    save_local: true
-    auto_push: false
+  # Where artifacts (datasets, rollout recordings, trained models) are kept:
+  #   local  -> local folders only (default; push/pull manually via `yamkit dataset|model`)
+  #   both   -> local folders + auto-pushed to the cloud after each successful run
+  #   cloud  -> cloud only (staged locally, removed after a verified upload)
+  mode: local
+
+  # Advanced per-kind overrides (win over `mode`):
+  # datasets: {save_local: true, auto_push: false}
+  # models:   {save_local: true, auto_push: false}

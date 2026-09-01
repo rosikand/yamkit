@@ -417,10 +417,20 @@ def record(
     _exec_lerobot("lerobot_record", args, dry_run, after=after)
 
 
+def _resolve_policy(policy: str) -> str:
+    """Local checkpoint dir if it exists (including pulled models under data/models); otherwise
+    pass through unchanged — lerobot loads hub ids like `user/model` directly."""
+    p = Path(policy).expanduser()
+    if p.is_dir() or (ROOT / policy).is_dir():
+        return policy
+    local = MODELS_DIR / policy
+    return str(local) if local.is_dir() else policy
+
+
 @app.command(context_settings=PASSTHROUGH)
 def rollout(
     ctx: typer.Context,
-    policy: Annotated[str, typer.Option(help="checkpoint dir or HF id, e.g. lerobot/smolvla_base or outputs/train/.../pretrained_model")],
+    policy: Annotated[str, typer.Option(help="checkpoint dir, name under data/models, or HF id (e.g. lerobot/smolvla_base)")],
     task: Annotated[str, typer.Option(help="language instruction for the policy")],
     rig: RigOpt = DEFAULT_RIG,
     arms: Annotated[list[str] | None, typer.Option("--arms")] = None,
@@ -429,14 +439,19 @@ def rollout(
     rtc: Annotated[bool, typer.Option(help="real-time chunking inference (recommended for slow VLAs on CPU)")] = False,
     strategy: str = "base",
     device: str | None = None,
+    record: Annotated[str | None, typer.Option("--record", help="also record the rollout into a dataset (data/datasets/<NAME>), synced per the storage config")] = None,
+    push: Annotated[bool | None, typer.Option("--push/--no-push", help="with --record: push the recording to cloud storage (default: storage.datasets.auto_push)")] = None,
+    save_local: Annotated[bool | None, typer.Option("--save-local/--no-save-local", help="with --record: keep the local copy (default: storage.datasets.save_local)")] = None,
     display: bool = False,
     dry_run: bool = False,
 ) -> None:
-    """Run a policy/VLA on the follower arm(s) (`lerobot-rollout`)."""
+    """Run a policy/VLA on the follower arm(s) (`lerobot-rollout`); --record logs the rollout as a dataset."""
+    if record is None and (push is not None or save_local is not None):
+        raise typer.BadParameter("--push/--save-local only apply together with --record")
     _, pairs = _rig_arms(rig, arms)
     args = [
         f"--strategy.type={strategy}",
-        f"--policy.path={policy}",
+        f"--policy.path={_resolve_policy(policy)}",
         *_robot_args(rig, pairs, "yam"),
         f"--task={task}",
         f"--duration={duration}",
@@ -448,13 +463,33 @@ def rollout(
         args.append("--inference.type=rtc")
     if device:
         args.append(f"--device={device}")
-    _exec_lerobot("lerobot_rollout", [*args, *ctx.args], dry_run)
+    after = None
+    if record:
+        settings, do_push, keep_local = _storage_plan("dataset", push, save_local)
+        root = (DATASETS_DIR if keep_local else STAGING_DIR / "datasets") / record
+        args += [
+            f"--dataset.repo_id=yamkit/{record}",
+            f"--dataset.root={root}",
+            f"--dataset.single_task={task}",
+            f"--dataset.fps={int(fps)}",
+            "--dataset.push_to_hub=false",
+            "--dataset.no_stamp=true",
+        ]
+        if do_push:
+
+            def after() -> None:
+                from .storage import push_dataset
+
+                res = _storage_call(lambda: push_dataset(root, keep_local=keep_local, settings=settings))
+                console.print(f"[green]pushed rollout dataset to {res.repo_id} ({res.n_files} files)[/]" + (" — local staging removed" if res.deleted_local else ""))
+
+    _exec_lerobot("lerobot_rollout", [*args, *ctx.args], dry_run, after=after)
 
 
 @app.command(context_settings=PASSTHROUGH)
 def train(
     ctx: typer.Context,
-    dataset: Annotated[str, typer.Option(help="dataset name under data/datasets (or repo id with --dataset-root)")],
+    dataset: Annotated[str, typer.Option(help="dataset name under data/datasets, or cloud id `user/name` (pulled automatically)")],
     policy_type: Annotated[str, typer.Option(help="smolvla | act | pi05 | pi0 | diffusion")] = "smolvla",
     pretrained: Annotated[str | None, typer.Option(help="init from this checkpoint (e.g. lerobot/smolvla_base)")] = "lerobot/smolvla_base",
     steps: int = 20000,
@@ -472,11 +507,16 @@ def train(
     configs/yamkit.yaml; with --no-save-local outputs are staged under data/.staging and
     removed only after a verified upload."""
     settings, do_push, keep_local = _storage_plan("model", push, save_local)
-    root = DATASETS_DIR / dataset
-    job = job_name or f"{policy_type}_{dataset}"
+    ds_name = dataset.rsplit("/", 1)[-1]
+    root = DATASETS_DIR / ds_name
+    if not root.is_dir() and not dry_run:  # not local → pull from cloud storage into data/datasets
+        from .storage import resolve_dataset
+
+        root = _storage_call(lambda: resolve_dataset(dataset, settings=settings))
+    job = job_name or f"{policy_type}_{ds_name}"
     out_dir = (OUTPUT_DIR / "train" if keep_local else STAGING_DIR / "train") / job
     args = [
-        f"--dataset.repo_id=yamkit/{dataset}",
+        f"--dataset.repo_id={dataset if '/' in dataset else 'yamkit/' + dataset}",
         f"--dataset.root={root}",
         f"--policy.type={policy_type}",
         f"--steps={steps}",
@@ -518,7 +558,7 @@ def policy_check(
     """Load a policy/VLA for this rig and run it on a synthetic frame (no arm is energised)."""
     from .policy_check import run_policy_check
 
-    r = run_policy_check(policy, rig_path=str(rig), arms=arms, task=task, device=device, n_steps=steps, use_robot_features=not keep_policy_features)
+    r = run_policy_check(_resolve_policy(policy), rig_path=str(rig), arms=arms, task=task, device=device, n_steps=steps, use_robot_features=not keep_policy_features)
     t = Table(title=f"policy-check: {policy}")
     t.add_column("field")
     t.add_column("value")
@@ -647,8 +687,8 @@ def storage_status() -> None:
     t.add_row("new repos", "private" if s.private else "public")
     for kind in ("datasets", "models"):
         p = getattr(s, kind)
-        mode = "local only" if not p.auto_push else ("local + cloud" if p.save_local else "cloud only")
-        t.add_row(kind, f"save_local={p.save_local} auto_push={p.auto_push} → {mode}")
+        mode = "local" if not p.auto_push else ("both" if p.save_local else "cloud")
+        t.add_row(kind, f"mode: {mode} (save_local={p.save_local} auto_push={p.auto_push})")
     console.print(t)
 
 

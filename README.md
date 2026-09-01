@@ -172,19 +172,30 @@ Tailscale, or copy the checkpoint over.
 ## Cloud storage (datasets & models)
 
 Local storage stays the default; cloud sync is opt-in via `configs/yamkit.yaml` (Hugging Face is
-the only backend for now):
+the only backend for now). Set your HF token (`HF_TOKEN` env var or `hf auth login` — tokens never
+go in the config) and pick one mode:
 
 ```yaml
 storage:
   backend: huggingface
   namespace: null      # HF user/org; null = your logged-in username
   private: true        # new cloud repos are created private
-  datasets: {save_local: true, auto_push: false}   # save_local+auto_push → local+cloud;
-  models:   {save_local: true, auto_push: false}   # save_local:false + auto_push:true → cloud only
+  mode: local          # local | both | cloud
+  # advanced per-kind overrides (win over mode):
+  # datasets: {save_local: true, auto_push: false}
+  # models:   {save_local: true, auto_push: false}
 ```
 
-Authenticate the standard HF way (`HF_TOKEN` env var or `hf auth login`) — tokens never go in the
-config. `yamkit storage` shows the resolved config and auth state.
+* `local` — everything stays in the matching folders (`data/datasets`, `data/models`,
+  `outputs/train`); push/pull manually with the CLI below.
+* `both` — same folders, plus every successful `record`, `rollout --record` and `train`
+  auto-pushes the finished artifact to your namespace.
+* `cloud` — cloud only: runs stage into `data/.staging/` and the local copy is removed after a
+  verified upload (kept on any failure).
+
+Plain `teleop`/`teleoperate` produce no data, so there is nothing to sync;
+`yamkit rollout --record <name>` records the deployment rollout as a dataset and syncs it like a
+recording. `yamkit storage` shows the resolved config and auth state.
 
 ```bash
 yamkit dataset push pick_cube            # data/datasets/pick_cube → <namespace>/pick_cube
@@ -193,11 +204,15 @@ yamkit model push outputs/train/model    # checkpoint dir → <namespace>/model
 yamkit model pull user/model             # → data/models/model (usable as --policy for rollout)
 ```
 
-`push --delete-local` (and cloud-only mode) removes the local copy only after the upload is
-verified against the remote file list; on any failure the local copy is kept, so data is never
-lost. With `auto_push` (or `yamkit record/train --push`), the artifact is synced automatically
-after a *successful* run; `--no-save-local` stages it under `data/.staging/` until the verified
-upload. Per-command overrides: `--push/--no-push`, `--save-local/--no-save-local`.
+`push --delete-local` (and cloud mode) removes the local copy only after the upload is verified
+against the remote file list; on any failure the local copy is kept, so data is never lost.
+Per-command overrides on `record`/`rollout --record`/`train`: `--push/--no-push`,
+`--save-local/--no-save-local`.
+
+Using artifacts works from either side: `yamkit train --dataset pick_cube` uses the local folder,
+`--dataset user/pick_cube` pulls it into `data/datasets` first (a local cache of the cloud copy);
+`yamkit rollout --policy <name>` picks up a pulled model from `data/models/<name>`, a checkpoint
+path, or any HF id directly.
 
 Python API (`from yamkit import storage`): `push_dataset`, `pull_dataset`, `resolve_dataset`
 (local path or cloud id → local path, pulling if needed), `push_model`, `pull_model`,
