@@ -10,7 +10,8 @@ Read `README.md` first. Hard rules for this repository:
 - **LeRobot is the infrastructure** (datasets, cameras, `lerobot-record/teleoperate/rollout/train`).
   `yamkit` only adds the YAM-specific hardware layer and thin CLI wrappers; the LeRobot plugins in
   `plugins/` are the integration point.
-- **Hardware safety.** `yamkit can` / `yamkit discover` / `yamkit policy-check` never energise a motor.
+- **Hardware safety.** `yamkit can` / `yamkit discover` / `yamkit policy-check` and the storage
+  commands (`yamkit dataset|model|storage`) never energise a motor.
   Everything else does. Followers move to the leader pose on engage; keep speed clamps
   (`control.max_joint_speed`) and the motors' 400 ms firmware timeout as they are.
 - **Vendored SDK patches** are listed in `third_party/i2rt.VERSION`; keep that list current.

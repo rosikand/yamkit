@@ -17,7 +17,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__
-from .paths import DATASETS_DIR, DEFAULT_RIG, OUTPUT_DIR, ROOT
+from .paths import DATASETS_DIR, DEFAULT_RIG, MODELS_DIR, OUTPUT_DIR, ROOT, STAGING_DIR
 
 app = typer.Typer(help="I2RT YAM arms: CAN setup, teleop, LeRobot recording, VLA rollout.", no_args_is_help=True, add_completion=False)
 console = Console()
@@ -296,12 +296,37 @@ def rest(arms: Annotated[list[str] | None, typer.Argument(help="arm names (defau
 
 
 # ------------------------------------------------------------------------------- LeRobot wrappers --
-def _exec_lerobot(script: str, args: list[str], dry_run: bool) -> None:
+def _exec_lerobot(script: str, args: list[str], dry_run: bool, after=None) -> None:
+    """Exec the lerobot script (replacing this process). With an ``after`` callback (cloud sync),
+    run it as a subprocess instead and call ``after()`` only on a zero exit code."""
     cmd = [sys.executable, "-m", f"lerobot.scripts.{script}", *args]
     console.print("[dim]$ " + " ".join(shlex.quote(c) for c in cmd) + "[/]")
     if dry_run:
+        if after is not None:
+            console.print("[dim](then: cloud storage sync)[/]")
         return
-    os.execv(sys.executable, cmd)
+    if after is None:
+        os.execv(sys.executable, cmd)
+    import subprocess
+
+    rc = subprocess.call(cmd)
+    if rc != 0:
+        err.print(f"[red]{script} exited with code {rc}; skipping cloud sync (local files are kept)[/]")
+        raise typer.Exit(rc)
+    after()
+
+
+def _storage_plan(kind, push: bool | None, save_local: bool | None):
+    """Effective (settings, do_push, keep_local) from the storage config + CLI overrides."""
+    from .storage import StorageSettings
+
+    settings = StorageSettings.load()
+    policy = settings.policy(kind)
+    do_push = policy.auto_push if push is None else push
+    keep_local = policy.save_local if save_local is None else save_local
+    if not do_push and not keep_local:
+        raise typer.BadParameter(f"--no-save-local requires --push (the {kind} would persist nowhere)")
+    return settings, do_push, keep_local
 
 
 def _rig_arms(rig: Path, arms: list[str] | None):
@@ -348,15 +373,21 @@ def record(
     episode_s: float = 30,
     reset_s: float = 10,
     fps: int = 30,
-    repo_id: Annotated[str | None, typer.Option(help="HF repo id (default yamkit/<name>)")] = None,
-    push: Annotated[bool, typer.Option(help="push to the HF hub when done")] = False,
+    repo_id: Annotated[str | None, typer.Option(help="cloud repo id (default <storage.namespace>/<name>)")] = None,
+    push: Annotated[bool | None, typer.Option("--push/--no-push", help="push to cloud storage when done (default: storage.datasets.auto_push)")] = None,
+    save_local: Annotated[bool | None, typer.Option("--save-local/--no-save-local", help="keep the local copy under data/datasets (default: storage.datasets.save_local)")] = None,
     resume: bool = False,
     display: bool = False,
     dry_run: bool = False,
 ) -> None:
-    """Record teleop episodes into a LeRobot dataset (`lerobot-record`)."""
+    """Record teleop episodes into a LeRobot dataset (`lerobot-record`).
+
+    After a successful recording the dataset is synced per the storage config in
+    configs/yamkit.yaml (push to cloud and/or keep local); with --no-save-local it is staged
+    under data/.staging and removed only after a verified upload."""
+    settings, do_push, keep_local = _storage_plan("dataset", push, save_local)
     _, pairs = _rig_arms(rig, arms)
-    root = DATASETS_DIR / name
+    root = (DATASETS_DIR if keep_local else STAGING_DIR / "datasets") / name
     args = [
         *_robot_args(rig, pairs, "yam"),
         *_teleop_args(rig, pairs, "yam_leader"),
@@ -367,14 +398,23 @@ def record(
         f"--dataset.episode_time_s={episode_s}",
         f"--dataset.reset_time_s={reset_s}",
         f"--dataset.fps={fps}",
-        f"--dataset.push_to_hub={str(push).lower()}",
+        "--dataset.push_to_hub=false",
         "--dataset.no_stamp=true",
         f"--resume={str(resume).lower()}",
         f"--display_data={str(display).lower()}",
         "--play_sounds=false",
         *ctx.args,
     ]
-    _exec_lerobot("lerobot_record", args, dry_run)
+    after = None
+    if do_push:
+
+        def after() -> None:
+            from .storage import push_dataset
+
+            res = _storage_call(lambda: push_dataset(root, repo_id=repo_id, keep_local=keep_local, settings=settings))
+            console.print(f"[green]pushed dataset to {res.repo_id} ({res.n_files} files)[/]" + (" — local staging removed" if res.deleted_local else ""))
+
+    _exec_lerobot("lerobot_record", args, dry_run, after=after)
 
 
 @app.command(context_settings=PASSTHROUGH)
@@ -421,25 +461,48 @@ def train(
     batch_size: int = 8,
     job_name: str | None = None,
     wandb: bool = False,
+    repo_id: Annotated[str | None, typer.Option(help="cloud repo id for --push (default <storage.namespace>/<job>)")] = None,
+    push: Annotated[bool | None, typer.Option("--push/--no-push", help="push the trained model to cloud storage (default: storage.models.auto_push)")] = None,
+    save_local: Annotated[bool | None, typer.Option("--save-local/--no-save-local", help="keep local outputs under outputs/train (default: storage.models.save_local)")] = None,
     dry_run: bool = False,
 ) -> None:
-    """Fine-tune a policy with `lerobot-train` (needs a GPU box; see README for the remote workflow)."""
+    """Fine-tune a policy with `lerobot-train` (needs a GPU box; see README for the remote workflow).
+
+    After a successful run the final checkpoint is synced per the storage config in
+    configs/yamkit.yaml; with --no-save-local outputs are staged under data/.staging and
+    removed only after a verified upload."""
+    settings, do_push, keep_local = _storage_plan("model", push, save_local)
     root = DATASETS_DIR / dataset
     job = job_name or f"{policy_type}_{dataset}"
+    out_dir = (OUTPUT_DIR / "train" if keep_local else STAGING_DIR / "train") / job
     args = [
         f"--dataset.repo_id=yamkit/{dataset}",
         f"--dataset.root={root}",
         f"--policy.type={policy_type}",
         f"--steps={steps}",
         f"--batch_size={batch_size}",
-        f"--output_dir={OUTPUT_DIR / 'train' / job}",
+        f"--output_dir={out_dir}",
         f"--job_name={job}",
         f"--wandb.enable={str(wandb).lower()}",
         "--policy.push_to_hub=false",
     ]
     if pretrained:
         args.append(f"--policy.pretrained_path={pretrained}")
-    _exec_lerobot("lerobot_train", [*args, *ctx.args], dry_run)
+    after = None
+    if do_push:
+
+        def after() -> None:
+            import shutil
+
+            from .storage import push_model
+
+            model_dir = out_dir / "checkpoints" / "last" / "pretrained_model"
+            res = _storage_call(lambda: push_model(model_dir if model_dir.is_dir() else out_dir, repo_id=repo_id or job, keep_local=True, settings=settings))
+            if not keep_local:  # verified upload → drop the whole staged training dir
+                shutil.rmtree(out_dir, ignore_errors=True)
+            console.print(f"[green]pushed model to {res.repo_id} ({res.n_files} files)[/]" + ("" if keep_local else " — local staging removed"))
+
+    _exec_lerobot("lerobot_train", [*args, *ctx.args], dry_run, after=after)
 
 
 @app.command("policy-check")
@@ -466,6 +529,126 @@ def policy_check(
     t.add_row("first call (new chunk)", f"{r.first_call_s * 1e3:.0f} ms")
     t.add_row("next calls", ", ".join(f"{x * 1e3:.0f} ms" for x in r.step_call_s))
     t.add_row("sample action", ", ".join(f"{k}={v:+.3f}" for k, v in list(r.action.items())[:7]) + (" …" if len(r.action) > 7 else ""))
+    console.print(t)
+
+
+# ----------------------------------------------------------------------------------- storage --
+dataset_app = typer.Typer(help="Cloud storage for LeRobot datasets (data/datasets ↔ hub).", no_args_is_help=True)
+model_app = typer.Typer(help="Cloud storage for models/checkpoints (outputs, data/models ↔ hub).", no_args_is_help=True)
+app.add_typer(dataset_app, name="dataset")
+app.add_typer(model_app, name="model")
+
+RepoIdOpt = Annotated[str | None, typer.Option("--repo-id", help="full cloud repo id (default: <storage.namespace>/<name>)")]
+PrivateOpt = Annotated[bool | None, typer.Option("--private/--public", help="visibility for a newly created repo (default: storage.private)")]
+
+
+def _storage_call(fn):
+    from .storage import StorageError
+
+    try:
+        return fn()
+    except StorageError as e:
+        err.print(f"[red]{e}[/]")
+        raise typer.Exit(1) from None
+
+
+def _push_cmd(kind: str, source: str, repo_id: str | None, private: bool | None, keep_local: bool) -> None:
+    from .storage import push
+
+    res = _storage_call(lambda: push(source, kind, repo_id=repo_id, private=private, keep_local=keep_local))
+    console.print(f"[green]pushed {kind} {res.local_dir} → {res.repo_id} ({res.n_files} files)[/]" + (" — local copy removed" if res.deleted_local else ""))
+
+
+def _pull_cmd(kind: str, name_or_id: str, dest: str | None) -> None:
+    from .storage import pull
+
+    path = _storage_call(lambda: pull(name_or_id, kind, dest=dest))
+    console.print(f"[green]pulled {kind} {name_or_id} → {path}[/]")
+
+
+def _list_cmd(kind: str, base: Path) -> None:
+    dirs = sorted(p for p in base.glob("*") if p.is_dir()) if base.is_dir() else []
+    if not dirs:
+        console.print(f"no local {kind}s under {base}")
+    for d in dirs:
+        n = sum(1 for f in d.rglob("*") if f.is_file())
+        console.print(f"{d.name}  ({n} files, {d})")
+
+
+@dataset_app.command("push")
+def dataset_push(
+    name: Annotated[str, typer.Argument(help="dataset name under data/datasets, or a path")],
+    repo_id: RepoIdOpt = None,
+    private: PrivateOpt = None,
+    keep_local: Annotated[bool, typer.Option("--keep-local/--delete-local", help="--delete-local removes the local copy after a verified upload")] = True,
+) -> None:
+    """Upload a local dataset to cloud storage (e.g. `yamkit dataset push pick_cube`)."""
+    _push_cmd("dataset", name, repo_id, private, keep_local)
+
+
+@dataset_app.command("pull")
+def dataset_pull(
+    name_or_id: Annotated[str, typer.Argument(help="cloud id `user/name` (or bare name in your namespace)")],
+    dest: Annotated[str | None, typer.Option(help="target dir (default data/datasets/<name>)")] = None,
+) -> None:
+    """Download a dataset from cloud storage into data/datasets."""
+    _pull_cmd("dataset", name_or_id, dest)
+
+
+@dataset_app.command("list")
+def dataset_list() -> None:
+    """List local datasets under data/datasets."""
+    _list_cmd("dataset", DATASETS_DIR)
+
+
+@model_app.command("push")
+def model_push(
+    path: Annotated[str, typer.Argument(help="model/checkpoint dir, e.g. outputs/train/<job>/checkpoints/last/pretrained_model")],
+    repo_id: RepoIdOpt = None,
+    private: PrivateOpt = None,
+    keep_local: Annotated[bool, typer.Option("--keep-local/--delete-local", help="--delete-local removes the local copy after a verified upload")] = True,
+) -> None:
+    """Upload a model/checkpoint dir to cloud storage (e.g. `yamkit model push outputs/train/model`)."""
+    _push_cmd("model", path, repo_id, private, keep_local)
+
+
+@model_app.command("pull")
+def model_pull(
+    name_or_id: Annotated[str, typer.Argument(help="cloud id `user/name` (or bare name in your namespace)")],
+    dest: Annotated[str | None, typer.Option(help="target dir (default data/models/<name>)")] = None,
+) -> None:
+    """Download a model from cloud storage into data/models (usable as `--policy` for rollout)."""
+    _pull_cmd("model", name_or_id, dest)
+
+
+@model_app.command("list")
+def model_list() -> None:
+    """List local models under data/models."""
+    _list_cmd("model", MODELS_DIR)
+
+
+@app.command("storage")
+def storage_status() -> None:
+    """Show the storage configuration (configs/yamkit.yaml) and cloud authentication state."""
+    from .storage import StorageSettings, get_backend
+
+    s = StorageSettings.load()
+    t = Table(title="yamkit storage")
+    t.add_column("setting")
+    t.add_column("value")
+    t.add_row("config file", str(s.path) + ("" if s.path and s.path.is_file() else " (missing — using defaults)"))
+    t.add_row("backend", s.backend)
+    try:
+        ns = s.namespace or get_backend(s).default_namespace()
+        auth = f"namespace [green]{ns}[/]"
+    except Exception as e:  # noqa: BLE001
+        auth = f"[yellow]{e}[/]"
+    t.add_row("namespace / auth", auth)
+    t.add_row("new repos", "private" if s.private else "public")
+    for kind in ("datasets", "models"):
+        p = getattr(s, kind)
+        mode = "local only" if not p.auto_push else ("local + cloud" if p.save_local else "cloud only")
+        t.add_row(kind, f"save_local={p.save_local} auto_push={p.auto_push} → {mode}")
     console.print(t)
 
 

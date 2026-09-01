@@ -11,6 +11,8 @@ __pycache__/
 
 # data & artifacts
 data/hf
+data/models/
+data/.staging/
 outputs/
 wandb/
 *.mcap

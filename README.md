@@ -103,7 +103,7 @@ when the repo was set up; recording for VLAs and VLA inference need at least one
 ```bash
 yamkit record --name pick_cube --task "pick up the red cube and place it in the bowl" \
               --episodes 20 --episode-s 30 --reset-s 10 --fps 30
-# → data/datasets/pick_cube  (LeRobot v3 dataset; --push to upload to the Hub)
+# → data/datasets/pick_cube  (LeRobot v3 dataset; --push syncs to cloud storage, see "Cloud storage")
 yamkit teleoperate                    # same plugins, LeRobot's teleop loop (no recording)
 lerobot-dataset-viz --repo-id yamkit/pick_cube --root data/datasets/pick_cube --episode-index 0
 ```
@@ -124,8 +124,9 @@ lerobot-record --robot.type=yam_follower --robot.rig=configs/rig.yaml --robot.ar
 
 ## 6. Fine-tune a VLA
 
-This box has no NVIDIA GPU, so training happens elsewhere: copy `data/datasets/<name>` (or `--push`
-it to the Hub) to a GPU machine with the same repo, then
+This box has no NVIDIA GPU, so training happens elsewhere: copy `data/datasets/<name>` (or
+`yamkit dataset push <name>`, then `yamkit dataset pull user/<name>` there) to a GPU machine with
+the same repo, then
 
 ```bash
 yamkit train --dataset pick_cube --policy-type smolvla --pretrained lerobot/smolvla_base --steps 20000
@@ -134,7 +135,9 @@ yamkit train --dataset pick_cube --policy-type act --pretrained "" --steps 50000
 # checkpoints → outputs/train/<job>/checkpoints/last/pretrained_model
 ```
 
-Bring the `pretrained_model` directory back under `outputs/` (or push it to the Hub).
+Bring the `pretrained_model` directory back under `outputs/` — or `yamkit model push
+outputs/train/<job>/checkpoints/last/pretrained_model` on the GPU box and `yamkit model pull
+user/<job>` here (lands in `data/models/<job>`, usable as `--policy`).
 
 ## 7. Run a policy on the arms
 
@@ -166,6 +169,40 @@ Tailscale, or copy the checkpoint over.
   it is idle (`candump can0` shows nothing) before starting yamkit.
 * Motor timeout (400 ms) is left at the factory default — do not disable it.
 
+## Cloud storage (datasets & models)
+
+Local storage stays the default; cloud sync is opt-in via `configs/yamkit.yaml` (Hugging Face is
+the only backend for now):
+
+```yaml
+storage:
+  backend: huggingface
+  namespace: null      # HF user/org; null = your logged-in username
+  private: true        # new cloud repos are created private
+  datasets: {save_local: true, auto_push: false}   # save_local+auto_push → local+cloud;
+  models:   {save_local: true, auto_push: false}   # save_local:false + auto_push:true → cloud only
+```
+
+Authenticate the standard HF way (`HF_TOKEN` env var or `hf auth login`) — tokens never go in the
+config. `yamkit storage` shows the resolved config and auth state.
+
+```bash
+yamkit dataset push pick_cube            # data/datasets/pick_cube → <namespace>/pick_cube
+yamkit dataset pull user/pick_cube       # → data/datasets/pick_cube
+yamkit model push outputs/train/model    # checkpoint dir → <namespace>/model
+yamkit model pull user/model             # → data/models/model (usable as --policy for rollout)
+```
+
+`push --delete-local` (and cloud-only mode) removes the local copy only after the upload is
+verified against the remote file list; on any failure the local copy is kept, so data is never
+lost. With `auto_push` (or `yamkit record/train --push`), the artifact is synced automatically
+after a *successful* run; `--no-save-local` stages it under `data/.staging/` until the verified
+upload. Per-command overrides: `--push/--no-push`, `--save-local/--no-save-local`.
+
+Python API (`from yamkit import storage`): `push_dataset`, `pull_dataset`, `resolve_dataset`
+(local path or cloud id → local path, pulling if needed), `push_model`, `pull_model`,
+`resolve_model`, `load_lerobot_dataset`; new backends implement `storage.CloudBackend`.
+
 ## Command reference
 
 | command | what it does |
@@ -184,6 +221,9 @@ Tailscale, or copy the checkpoint over.
 | `yamkit rollout` | Run a policy/VLA on the follower arm(s) (`lerobot-rollout`). |
 | `yamkit train` | Fine-tune a policy with `lerobot-train` (needs a GPU box; see README for the remote workflow). |
 | `yamkit policy-check` | Load a policy/VLA for this rig and run it on a synthetic frame (no arm is energised). |
+| `yamkit dataset push/pull/list` | Sync LeRobot datasets between `data/datasets` and cloud storage. |
+| `yamkit model push/pull/list` | Sync models/checkpoints between local dirs and cloud storage. |
+| `yamkit storage` | Show the storage configuration (`configs/yamkit.yaml`) and cloud auth state. |
 | `yamkit doctor` | Check the environment: venv, torch, CAN, plugins, cameras, rig file, data dirs. |
 | `yamkit env` | Print the environment variables that keep everything inside this repo (for `eval`). |
 

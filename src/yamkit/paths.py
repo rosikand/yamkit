@@ -11,8 +11,11 @@ ROOT: Path = find_root() or Path.cwd()
 CONFIG_DIR = ROOT / "configs"
 DATA_DIR = ROOT / "data"
 DATASETS_DIR = DATA_DIR / "datasets"
+MODELS_DIR = DATA_DIR / "models"  # models/checkpoints pulled from cloud storage
+STAGING_DIR = DATA_DIR / ".staging"  # temporary local staging for cloud-only artifacts
 OUTPUT_DIR = ROOT / "outputs"
 DEFAULT_RIG = CONFIG_DIR / "rig.yaml"
+DEFAULT_SETTINGS = CONFIG_DIR / "yamkit.yaml"
 
 
 def resolve(path: str | os.PathLike[str]) -> Path:

@@ -1,0 +1,16 @@
+# yamkit settings (non-rig). Cloud storage for datasets and models — see README "Cloud storage".
+# Credentials never go here: the huggingface backend uses HF_TOKEN or `hf auth login`.
+storage:
+  backend: huggingface
+  namespace: null # HF user/org to push into; null = your logged-in HF username
+  private: true # newly created cloud repos are private
+
+  # save_local: true,  auto_push: false  -> local only (default)
+  # save_local: true,  auto_push: true   -> local + cloud
+  # save_local: false, auto_push: true   -> cloud only (local copy removed after verified upload)
+  datasets:
+    save_local: true
+    auto_push: false
+  models:
+    save_local: true
+    auto_push: false
