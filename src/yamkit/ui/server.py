@@ -215,7 +215,9 @@ def create_app(
     @app.post("/api/session/teleop")
     def session_teleop(body: TeleopBody) -> dict[str, Any]:
         require_rig()
-        args = ["teleop", "--rig", str(rig_path)]
+        # --print-state adds per-arm q/gripper lines to the child's output so the Live page
+        # can show joint state during teleop (same format `yamkit read` prints)
+        args = ["teleop", "--rig", str(rig_path), "--print-state"]
         for p in body.pairs or []:
             args += ["--pair", p]
         if body.auto_engage:

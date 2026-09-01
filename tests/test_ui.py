@@ -180,6 +180,39 @@ def test_record_requires_name_and_task(client):
     assert client.post("/api/session/record", json={}).status_code == 422
 
 
+def test_cli_teleop_print_state_emits_read_format_lines(rig, fake_connect):
+    """`yamkit teleop --print-state` interleaves per-arm state lines the UI parser understands."""
+    from typer.testing import CliRunner
+
+    from yamkit.cli import app as cli_app
+
+    res = CliRunner().invoke(
+        cli_app, ["teleop", "--rig", str(rig.path), "--pair", "left_follower",
+                  "--duration", "0.6", "--print-state"])
+    assert res.exit_code == 0, res.output
+    parsed = {}
+    for line in res.output.splitlines():
+        parse_line(line, parsed)
+    assert "left_leader->left_follower" in parsed["pairs"]
+    assert len(parsed["arms"]["left_follower"]["q"]) == 6
+    assert parsed["arms"]["left_leader"]["buttons"] is not None
+
+
+def test_teleop_session_requests_state_lines(client, monkeypatch):
+    seen = {}
+
+    def argv(self, *args):
+        seen["args"] = args
+        return [sys.executable, "-c", "pass"]
+
+    monkeypatch.setattr(SessionManager, "yamkit_argv", argv)
+    assert client.post("/api/session/teleop", json={}).status_code == 200
+    assert "--print-state" in seen["args"]
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and client.get("/api/session").json()["active"]:
+        time.sleep(0.05)
+
+
 def test_config_get_and_structured_save(client, rig):
     c = client.get("/api/config").json()
     assert c["found"] and c["control"]["teleop_hz"] == 100.0

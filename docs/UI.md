@@ -18,7 +18,10 @@ The UI adds **no second robot driver and no new control loop**:
   page never connects to — and never energises — an arm.
 * **Hardware actions** (Start state stream / Start Teleop / Start Recording / rollout) spawn the
   unmodified CLI as a child process — `yamkit read`, `yamkit teleop`, `yamkit record`,
-  `yamkit rollout`, `yamkit policy-check` — and parse its stdout for display. Stop sends the
+  `yamkit rollout`, `yamkit policy-check` — and parse its stdout for display. Teleop is launched
+  with `--print-state` (opt-in CLI flag, off by default in a terminal) so per-arm joint state
+  lines flow to the Live page during teleop. A session started in a separate terminal is a
+  different process — the UI cannot see its output. Stop sends the
   process group a SIGINT (identical to Ctrl-C in a terminal), escalating to SIGTERM/SIGKILL only
   if the child hangs. One session at a time.
 * **Camera previews** are MJPEG streams read with OpenCV from the cameras in `configs/rig.yaml`.

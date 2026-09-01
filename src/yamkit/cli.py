@@ -150,6 +150,7 @@ def teleop(
     bilateral_kp: Annotated[float | None, typer.Option(help="leader force-feedback gain scale (0.1–0.2); default from rig")] = None,
     hz: Annotated[float | None, typer.Option(help="loop rate; default from rig")] = None,
     duration: Annotated[float | None, typer.Option(help="seconds; default until Ctrl-C")] = None,
+    print_state: Annotated[bool, typer.Option("--print-state", help="also print per-arm joint state lines (same format as `yamkit read`; used by the web UI)")] = False,
 ) -> None:
     """Leader→follower teleoperation (press the teaching-handle button to engage/disengage)."""
     from .config import RigConfig
@@ -173,6 +174,15 @@ def teleop(
             g = "-" if p.last_leader is None or p.last_leader.gripper is None else f"{p.last_leader.gripper:.2f}"
             parts.append(f"{p.name}: {'ENGAGED' if p.engaged else 'idle   '} err={p.tracking_error:.3f}rad grip={g}")
         console.print(f"[{s.stats.rate_hz:5.1f}Hz] " + " | ".join(parts))
+        if print_state:
+            for p in s.pairs:
+                for arm, st in ((p.leader, p.last_leader), (p.follower, p.last_follower)):
+                    if st is None:
+                        continue
+                    q = " ".join(f"{v:+.3f}" for v in st.q)
+                    sg = "-" if st.gripper is None else f"{st.gripper:.2f}"
+                    b = "" if st.buttons is None else " btn=" + "".join("1" if x else "0" for x in st.buttons)
+                    console.print(f"{arm.name:>16} q=[{q}] grip={sg}{b}")
 
     session = TeleopSession.from_rig(cfg, pairs, on_tick=status, **kw)
     if not auto_engage:
