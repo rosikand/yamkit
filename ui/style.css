@@ -271,6 +271,25 @@ input[type="checkbox"] { accent-color: var(--accent); }
   color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
+/* readiness banner on the Record page (teleop/record setup → ready → engaged) */
+.ready-banner {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 10px 14px; border-radius: 8px; margin-bottom: 12px;
+  font-size: 13.5px; font-weight: 650; letter-spacing: 0.01em;
+}
+.ready-banner.setup {
+  background: color-mix(in srgb, var(--warn) 11%, transparent); color: var(--warn);
+}
+.ready-banner.setup .dot { background: var(--warn); animation: pulse 1.2s infinite; }
+.ready-banner.ready {
+  background: color-mix(in srgb, var(--ok) 13%, transparent); color: var(--ok);
+  border: 1px solid color-mix(in srgb, var(--ok) 30%, transparent);
+}
+.ready-banner.engaged {
+  background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent);
+}
+.ready-banner.engaged .dot { background: var(--accent); animation: pulse 1.2s infinite; }
+
 /* ---------------------------------------------------------------- log --------------------- */
 pre.log {
   background: var(--log-bg); border: 1px solid var(--border); border-radius: 10px;

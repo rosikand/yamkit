@@ -210,6 +210,7 @@ pages.record = {
       <div class="sect"><div class="sect-head">Cameras</div>${camsHTML()}</div>
       <div class="cols cols-2">
         <div class="sect"><div class="sect-head">Teleop</div><div class="panel pad">
+          <div id="teleop-ready"></div>
           <div id="teleop-status"></div>
           <div class="toolbar" style="margin-top:12px">
             <button id="btn-teleop" class="primary">Start Teleop</button>
@@ -255,6 +256,24 @@ pages.record = {
     const ts = $("#teleop-status");
     if (!ts) return;
     const pairs = session.parsed?.pairs || {};
+    // readiness banner: arm connection takes a few seconds after Start — show when the
+    // teleop loop is actually running (status lines flowing) and when a pair is engaged
+    const ready = $("#teleop-ready");
+    if (ready) {
+      const p = session.parsed || {};
+      let html = "";
+      if (session.active && session.mode === "teleop") {
+        const engaged = Object.values(pairs).some((x) => x.engaged);
+        if (!p.rate_hz) html = `<div class="ready-banner setup"><span class="dot"></span>Setting up — connecting arms…</div>`;
+        else if (engaged) html = `<div class="ready-banner engaged"><span class="dot"></span>Engaged — follower tracking leader</div>`;
+        else html = `<div class="ready-banner ready">✓ Ready — press the teaching-handle button to engage</div>`;
+      } else if (session.active && session.mode === "record") {
+        if (p.episode == null && !p.phase) html = `<div class="ready-banner setup"><span class="dot"></span>Setting up recorder — loading LeRobot…</div>`;
+        else if (p.phase === "reset") html = `<div class="ready-banner ready">✓ Reset — reposition the scene for the next episode</div>`;
+        else html = `<div class="ready-banner engaged"><span class="dot"></span>Recording — episode ${p.episode ?? 0}${session.meta?.episodes ? " / " + session.meta.episodes : ""}</div>`;
+      }
+      ready.innerHTML = html;
+    }
     ts.innerHTML = Object.keys(pairs).length
       ? Object.entries(pairs).map(([n, p]) => `<div class="st-list" style="margin:4px 0">
           ${st(p.engaged, `${n}: ${p.engaged ? "ENGAGED" : "idle"}`, !p.engaged)}
