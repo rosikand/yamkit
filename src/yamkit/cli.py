@@ -539,6 +539,22 @@ def doctor(rig: RigOpt = DEFAULT_RIG) -> None:
 
 
 @app.command()
+def ui(
+    rig: RigOpt = DEFAULT_RIG,
+    host: Annotated[str, typer.Option(help="bind address (keep it local)")] = "127.0.0.1",
+    port: int = 8400,
+) -> None:
+    """Serve the local web UI (Live / Record / Datasets / Deployments / Models).
+
+    Serving pages never energises a motor; hardware runs only when a Start button spawns the
+    corresponding `yamkit` command as a child process."""
+    from .ui.server import run
+
+    console.print(f"yamkit ui → http://{host}:{port}  (rig: {rig})")
+    run(rig, host=host, port=port)
+
+
+@app.command()
 def env() -> None:
     """Print the environment variables that keep everything inside this repo (for `eval`)."""
     for var in ("YAMKIT_ROOT", "HF_HOME", "HF_LEROBOT_HOME", "TORCH_HOME", "WANDB_DIR"):

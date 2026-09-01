@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>yamkit</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🦾</text></svg>" />
+</head>
+<body>
+  <header>
+    <div class="logo">yam<span>kit</span></div>
+    <nav id="nav">
+      <a href="#/live">Live</a>
+      <a href="#/record">Record</a>
+      <a href="#/datasets">Datasets</a>
+      <a href="#/deployments">Deployments</a>
+      <a href="#/models">Models</a>
+    </nav>
+    <div class="spacer"></div>
+    <span class="chip" id="mode-chip"><span class="dot"></span><span id="mode-text">idle</span></span>
+    <span class="chip" id="fps-chip" hidden><span id="fps-text"></span></span>
+  </header>
+  <main id="main"></main>
+  <div class="viz-tip" id="viz-tip"></div>
+  <script src="app.js"></script>
+</body>
+</html>
