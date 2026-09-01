@@ -31,3 +31,7 @@
 .md-typeset code {
   border-radius: 0.2rem;
 }
+
+.md-typeset table code {
+  white-space: nowrap;
+}

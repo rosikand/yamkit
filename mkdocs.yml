@@ -44,7 +44,11 @@ nav:
       - Architecture: reference/architecture.md
       - Rig configuration: reference/rig-config.md
       - CLI: reference/cli.md
-      - Working with the API: reference/api.md
+      - Working with the API:
+          - Overview: reference/api.md
+          - Core Python API: reference/api-core.md
+          - LeRobot plugin API: reference/api-lerobot.md
+          - Programmatic recipes: reference/api-recipes.md
   - Develop: development.md
 
 markdown_extensions:

@@ -2,6 +2,32 @@
 
 Use yamkit's Python API when a workflow cannot be expressed through the CLI or the installed LeRobot plugins. Keep `YamArm` as the single hardware boundary so speed limiting and shutdown behavior remain centralized.
 
+## API map
+
+<div class="grid cards" markdown>
+
+-   :material-language-python: **Core Python API**
+
+    Rig dataclasses, passive CAN discovery, arm state and command contracts, lifecycle methods, teleoperation, and offline policy checks.
+
+    [Core API reference →](api-core.md)
+
+-   :material-robot-industrial: **LeRobot plugin API**
+
+    Robot and teleoperator configuration classes, feature dictionaries, cameras, overrides, and connection behavior.
+
+    [LeRobot plugin reference →](api-lerobot.md)
+
+-   :material-code-braces: **Programmatic recipes**
+
+    Passive inventory, telemetry, bounded control loops, session callbacks, checkpoint checks, and fake-backed tests.
+
+    [Programmatic recipes →](api-recipes.md)
+
+</div>
+
+The package is intentionally import-light at `import yamkit`. Application code imports concrete building blocks from `yamkit.config`, `yamkit.arm`, `yamkit.can`, `yamkit.discovery`, `yamkit.teleop`, and `yamkit.policy_check`.
+
 ## Load and inspect a rig
 
 Configuration objects are dataclasses. Loading resolves relative paths against the repository root.
