@@ -22,13 +22,22 @@ third_party/i2rt            vendored I2RT SDK (+ one documented local patch)
 tests/                      hardware-free unit tests (fake robot)
 ```
 
-## Setup (already done on this machine)
+## Setup on a fresh machine
 
 ```bash
-make setup            # project-local Python 3.12 + all deps (torch CPU build; no NVIDIA GPU here)
-source scripts/env.sh # activate; also exports HF_HOME/HF_LEROBOT_HOME/... into ./data
-yamkit doctor         # sanity check: venv, torch, lerobot, plugins, CAN, cameras, rig
+git clone <this repo> yamkit && cd yamkit
+./setup.sh             # installs uv (if missing), Python 3.12 and all deps — all inside this directory
+source scripts/env.sh  # activate; also exports HF_HOME/HF_LEROBOT_HOME/... into ./data
+scripts/can_up.sh      # bring the CAN adapters up at 1 Mbit/s (needs sudo, once per boot)
+yamkit doctor          # sanity check: venv, torch, lerobot, plugins, CAN, cameras, rig
 ```
+
+Prerequisites on the box: Linux with SocketCAN (any Ubuntu), `build-essential` + `curl`, internet.
+Optional: `can-utils` (`candump`), `sudo` for bringing CAN up.
+`configs/rig.yaml` identifies the arms by CAN-adapter USB serial, so the same arms + adapters work
+unchanged on a new computer; with different adapters run `yamkit discover --write` (then check
+left/right with `yamkit read`/`yamkit teleop` and fix with `yamkit swap` if needed).
+The lockfile (`uv.lock`) pins every package, so installs are reproducible.
 
 You can also skip activation and use `uv run yamkit ...` or `.venv/bin/yamkit ...`.
 Any Python started from `.venv` automatically redirects HuggingFace/LeRobot/torch caches into
@@ -156,6 +165,35 @@ Tailscale, or copy the checkpoint over.
 * Another program on this machine (`ctrl_pi` Docker container) can drive the same buses; make sure
   it is idle (`candump can0` shows nothing) before starting yamkit.
 * Motor timeout (400 ms) is left at the factory default — do not disable it.
+
+## How it fits together
+
+```
+teaching handle ─┐                      ┌─ YamArm.command() (speed-clamped) ─► follower motors
+leader motors ───┴─► YamArm.read() ──► TeleopSession (yamkit teleop)
+                                  └──► YamLeader.get_action() ─► lerobot-record / -teleoperate ─► YamFollower.send_action()
+cameras (rig.yaml) ─► YamFollower.get_observation() ─► LeRobotDataset (data/datasets/<name>)
+checkpoint ─► lerobot-rollout ─► policy.select_action() ─► YamFollower.send_action()
+```
+
+* `yamkit.arm.YamArm` is the only place that talks to the vendor SDK (`i2rt.MotorChainRobot`).
+* The LeRobot plugins (`plugins/`) adapt `YamArm` to LeRobot's `Robot` / `Teleoperator` interfaces;
+  everything LeRobot offers (datasets, viz, training, rollout strategies, async inference) works
+  through them.
+* The rig file is the single source of truth for hardware identity and control limits.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `CAN interface … is DOWN` | `scripts/can_up.sh` |
+| `no CAN adapter with serial …` | adapter unplugged / different adapters → `yamkit can`, `yamkit discover --write` |
+| bus errors, arm unresponsive | `scripts/can_up.sh --reset`, power-cycle the arm |
+| wrong arm responds to a name | `yamkit swap <a> <b>` |
+| trigger reads ~0 while released | `yamkit zero-handle <leader>` |
+| follower moves too fast | lower `control.max_joint_speed` in `configs/rig.yaml` |
+| torchcodec / libavutil errors in logs | harmless: LeRobot falls back to PyAV for video |
+| policy too slow on CPU | `yamkit rollout --rtc`, or serve the policy from a GPU box |
 
 ## Development
 

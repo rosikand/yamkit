@@ -3,9 +3,8 @@ export UV_PYTHON_INSTALL_DIR := $(CURDIR)/.uv-python
 
 .PHONY: setup sync test lint doctor can discover
 
-setup:            ## first-time: project-local Python 3.12 + all deps
-	uv python install 3.12
-	uv sync --extra dev
+setup:            ## first-time bootstrap (uv, Python 3.12, deps) — all inside this directory
+	./setup.sh
 
 sync:             ## re-install after editing pyproject / plugins
 	uv sync --extra dev
