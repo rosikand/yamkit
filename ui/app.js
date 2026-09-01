@@ -108,7 +108,8 @@ function camsHTML() {
     </div>`).join("") + `</div>`;
 }
 
-function armPanelHTML(armName, stt) {
+function armPanelHTML(armName, stt, role) {
+  const isLeader = role === "leader";
   const range = Math.PI; // display range ±π rad
   const rows = (stt?.q || []).map((v, i) => {
     const frac = Math.max(-1, Math.min(1, v / range));
@@ -118,11 +119,19 @@ function armPanelHTML(armName, stt) {
       <span class="val">${v.toFixed(3)}</span></div>`;
   }).join("");
   const grip = stt?.gripper;
-  const gripRow = `<div class="joint"><span class="name">gripper</span>
+  const gripRow = `<div class="joint"><span class="name">${isLeader ? "trigger" : "gripper"}</span>
       <span class="track"><span class="fill" style="left:0;width:${grip != null ? grip * 100 : 0}%"></span></span>
       <span class="val">${grip != null ? grip.toFixed(2) : "–"}</span></div>`;
-  return `<div class="panel arm-panel"><div class="arm-name">${esc(armName)}</div>
-    ${stt ? rows + gripRow : `<div class="empty">no state — start the state stream or teleop</div>`}</div>`;
+  // teaching-handle buttons (leaders only; parsed as a string of 0/1)
+  const btnRow = stt?.buttons
+    ? `<div class="joint"><span class="name">buttons</span>
+        <span class="btns">${[...stt.buttons].map((b, i) =>
+          `<span class="btn-ind${b === "1" ? " on" : ""}">${i === 0 ? "engage" : "btn " + (i + 1)}</span>`).join("")}</span>
+        <span></span></div>`
+    : "";
+  return `<div class="panel arm-panel"><div class="arm-name">${esc(armName)}
+      ${role ? `<span class="crumb role-tag">${esc(role)}</span>` : ""}</div>
+    ${stt ? rows + gripRow + btnRow : `<div class="empty">no state — start the state stream or teleop</div>`}</div>`;
 }
 
 const logPaneHTML = (id = "log", tall = false) => `<pre class="log${tall ? " tall" : ""}" id="${id}"></pre>`;
@@ -155,7 +164,7 @@ pages.live = {
       <div class="hint">The state stream runs <code>yamkit read</code>: arms connect in gravity-compensation
         mode (motors energised but compliant — nothing moves).</div>
       <div class="sect"><div class="sect-head">Cameras</div>${camsHTML()}</div>
-      <div class="sect"><div class="sect-head">Follower state</div><div class="cols cols-2" id="arm-panels"></div></div>
+      <div class="sect"><div class="sect-head">Arm state</div><div class="cols cols-2" id="arm-panels"></div></div>
       <div class="sect"><div class="sect-head">Status</div><div class="st-list" id="status-list"></div>
         <div class="hint" id="bringup"></div></div>
       <div class="sect"><div class="sect-head">Session output</div>${logPaneHTML()}</div>`;
@@ -167,9 +176,12 @@ pages.live = {
   update() {
     const panels = $("#arm-panels");
     if (!panels) return;
-    const followers = Object.entries(overview?.rig?.arms || {}).filter(([, a]) => a.role === "follower").map(([n]) => n);
-    const names = followers.length ? followers : Object.keys(session.parsed?.arms || {});
-    panels.innerHTML = names.map((n) => armPanelHTML(n, session.parsed?.arms?.[n])).join("") ||
+    const rigArms = Object.entries(overview?.rig?.arms || {});
+    const byRole = (role) => rigArms.filter(([, a]) => a.role === role).map(([n, a]) => [n, a.role]);
+    const arms = rigArms.length
+      ? [...byRole("follower"), ...byRole("leader")]
+      : Object.keys(session.parsed?.arms || {}).map((n) => [n, null]);
+    panels.innerHTML = arms.map(([n, role]) => armPanelHTML(n, session.parsed?.arms?.[n], role)).join("") ||
       `<div class="empty">no rig file — run <code>yamkit discover --write</code></div>`;
     const list = $("#status-list");
     if (list) {
