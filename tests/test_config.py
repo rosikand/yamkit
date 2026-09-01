@@ -26,3 +26,17 @@ def test_validation_errors():
 def test_missing_file(tmp_path):
     with pytest.raises(FileNotFoundError):
         RigConfig.load(tmp_path / "nope.yaml")
+
+
+def test_swap_command(rig, tmp_path):
+    from typer.testing import CliRunner
+
+    from yamkit.cli import app
+
+    res = CliRunner().invoke(app, ["swap", "left_leader", "right_leader", "--rig", str(tmp_path / "rig.yaml")])
+    assert res.exit_code == 0, res.output
+    loaded = RigConfig.load(tmp_path / "rig.yaml")
+    assert loaded.arm("left_leader").can_serial == "CCC" and loaded.arm("right_leader").can_serial == "AAA"
+    assert [(p.leader, p.follower) for p in loaded.pairs] == [("left_leader", "left_follower"), ("right_leader", "right_follower")]
+    bad = CliRunner().invoke(app, ["swap", "left_leader", "left_follower", "--rig", str(tmp_path / "rig.yaml")])
+    assert bad.exit_code == 1

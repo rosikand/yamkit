@@ -6,8 +6,8 @@ arms:
     side: left
     arm_type: yam
     gripper: yam_teaching_handle
-    can_serial: 2080377E45465008
-    notes: discovered on can0
+    can_serial: 004A001633354B0432333837
+    notes: discovered on can3
   left_follower:
     role: follower
     side: left
@@ -23,8 +23,8 @@ arms:
     side: right
     arm_type: yam
     gripper: yam_teaching_handle
-    can_serial: 004A001633354B0432333837
-    notes: discovered on can3
+    can_serial: 2080377E45465008
+    notes: discovered on can0
   right_follower:
     role: follower
     side: right

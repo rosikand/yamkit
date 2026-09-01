@@ -207,6 +207,28 @@ def calibrate_gripper(arm: str, rig: RigOpt = DEFAULT_RIG) -> None:
     console.print(f"[green]{arm}: gripper_limits = {spec.gripper_limits} saved to {cfg.path}[/]")
 
 
+@app.command()
+def swap(a: str, b: str, rig: RigOpt = DEFAULT_RIG) -> None:
+    """Swap the physical arms behind two rig names (e.g. after finding "left_leader" is really the right one).
+
+    Exchanges the CAN adapter (serial/iface) and per-arm calibration between the two entries; names,
+    sides and pairs stay as they are."""
+    from .config import RigConfig
+
+    cfg = RigConfig.load(rig)
+    x, y = cfg.arm(a), cfg.arm(b)
+    if x.role != y.role:
+        err.print(f"[red]{a} is a {x.role} and {b} is a {y.role}; only arms with the same role can be swapped[/]")
+        raise typer.Exit(1)
+    for f in ("can_serial", "can_iface", "gripper_limits", "rest_pose", "notes"):
+        xv, yv = getattr(x, f), getattr(y, f)
+        setattr(x, f, yv)
+        setattr(y, f, xv)
+    cfg.save()
+    console.print(f"[green]swapped adapters: {a} is now {x.can_serial or x.can_iface}, {b} is now {y.can_serial or y.can_iface}[/]")
+    console.print(f"verify with:  yamkit read {a}")
+
+
 @app.command("zero-handle")
 def zero_handle(arm: str, rig: RigOpt = DEFAULT_RIG, yes: Annotated[bool, typer.Option("--yes", help="skip confirmation")] = False) -> None:
     """Re-zero a leader's teaching-handle trigger encoder at its current (released) position.
