@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>yamkit</title>
+  <script>
+    // Resolve theme before first paint. Preference: ?theme= param > localStorage > system.
+    (function () {
+      var pref = new URLSearchParams(location.search).get("theme") ||
+                 localStorage.getItem("yamkit-theme") || "system";
+      var mode = pref === "system"
+        ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
+        : pref;
+      document.documentElement.dataset.theme = mode;
+      document.documentElement.dataset.themePref = pref;
+    })();
+  </script>
+  <link rel="preload" href="InterVariable.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='4' fill='%231a1a19'/><rect x='4' y='4' width='8' height='8' rx='2' fill='%233987e5'/></svg>" />
+</head>
+<body>
+  <aside id="sidebar">
+    <div class="brand">yamkit<span class="brand-sub">robot console</span></div>
+    <nav id="nav">
+      <a href="#/live"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Live</a>
+      <a href="#/record"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"/></svg>Record</a>
+      <a href="#/datasets"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></svg>Datasets</a>
+      <a href="#/inference"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Inference</a>
+      <a href="#/models"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>Models</a>
+      <a href="#/settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>Settings</a>
+    </nav>
+    <div class="side-foot">
+      <div class="side-session">
+        <span class="dot" id="side-dot"></span>
+        <span id="side-mode">idle</span>
+        <span class="mono" id="side-hz"></span>
+      </div>
+      <div class="theme-switch" id="theme-switch" role="group" aria-label="theme">
+        <button data-theme-pref="light">Light</button>
+        <button data-theme-pref="dark">Dark</button>
+        <button data-theme-pref="system">Auto</button>
+      </div>
+    </div>
+  </aside>
+  <main id="main"></main>
+  <div class="viz-tip" id="viz-tip"></div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -158,6 +158,17 @@ on CPU. The same speed clamps as in teleop bound every commanded step. For a rem
 `lerobot-rollout` here with the policy served by LeRobot's async inference (`lerobot[async]`) over
 Tailscale, or copy the checkpoint over.
 
+## 8. Web UI
+
+```bash
+yamkit ui        # → http://127.0.0.1:8400
+```
+
+Local dashboard: live camera/state/CAN view, teleop + recording control, dataset browser with an
+episode viewer, policy-run history, checkpoint list. It is a thin wrapper — every hardware action
+spawns the corresponding `yamkit` command as a child process, and opening pages never energises a
+motor. See `docs/UI.md` and `docs/ui-screenshots/`.
+
 ## Safety notes
 
 * Nothing is enabled during `yamkit can` / `yamkit discover`. Everything else energises motors.
@@ -184,6 +195,7 @@ Tailscale, or copy the checkpoint over.
 | `yamkit rollout` | Run a policy/VLA on the follower arm(s) (`lerobot-rollout`). |
 | `yamkit train` | Fine-tune a policy with `lerobot-train` (needs a GPU box; see README for the remote workflow). |
 | `yamkit policy-check` | Load a policy/VLA for this rig and run it on a synthetic frame (no arm is energised). |
+| `yamkit ui` | Serve the local web UI (viewer + launcher for the commands above; pages never energise a motor). |
 | `yamkit doctor` | Check the environment: venv, torch, CAN, plugins, cameras, rig file, data dirs. |
 | `yamkit env` | Print the environment variables that keep everything inside this repo (for `eval`). |
 
