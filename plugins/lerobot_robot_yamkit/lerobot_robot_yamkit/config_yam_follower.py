@@ -1,3 +1,6 @@
+"""LeRobot `RobotConfig`s for YAM followers. Select with `--robot.type=yam_follower` / `bi_yam_follower`;
+hardware identity comes from the rig file, so the CLI only needs the arm name(s) and optional cameras."""
+
 from dataclasses import dataclass, field
 
 from lerobot.cameras import CameraConfig

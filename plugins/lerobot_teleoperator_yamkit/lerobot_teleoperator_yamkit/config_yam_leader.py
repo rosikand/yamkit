@@ -1,3 +1,6 @@
+"""LeRobot `TeleoperatorConfig`s for YAM leaders (teaching handle). Select with `--teleop.type=yam_leader` /
+`bi_yam_leader`; the arm name(s) refer to entries in the rig file."""
+
 from dataclasses import dataclass
 
 from lerobot.teleoperators.config import TeleoperatorConfig

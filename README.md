@@ -166,6 +166,29 @@ Tailscale, or copy the checkpoint over.
   it is idle (`candump can0` shows nothing) before starting yamkit.
 * Motor timeout (400 ms) is left at the factory default — do not disable it.
 
+## Command reference
+
+| command | what it does |
+|---|---|
+| `yamkit can` | List CAN adapters (state, bitrate, USB serial) and how to bring them up. |
+| `yamkit discover` | Passively probe each CAN interface (no motor is enabled) and classify leader/follower arms. |
+| `yamkit read` | Connect (gravity-compensation mode, arm stays free to move) and stream joint state. |
+| `yamkit teleop` | Leader→follower teleoperation (press the teaching-handle button to engage/disengage). |
+| `yamkit calibrate-gripper` | Run the SDK gripper limit auto-calibration once and store the limits in the rig (skipped afterwards). |
+| `yamkit swap` | Swap the physical arms behind two rig names (e.g. after finding "left_leader" is really the right one). |
+| `yamkit zero-handle` | Re-zero a leader's teaching-handle trigger encoder at its current (released) position. |
+| `yamkit set-rest` | Store the arm's current pose as its rest pose (used by `yamkit rest`). |
+| `yamkit rest` | Move arm(s) slowly to their stored rest pose, then release. |
+| `yamkit teleoperate` | Teleop through LeRobot's `lerobot-teleoperate` (same plugins used for recording). |
+| `yamkit record` | Record teleop episodes into a LeRobot dataset (`lerobot-record`). |
+| `yamkit rollout` | Run a policy/VLA on the follower arm(s) (`lerobot-rollout`). |
+| `yamkit train` | Fine-tune a policy with `lerobot-train` (needs a GPU box; see README for the remote workflow). |
+| `yamkit policy-check` | Load a policy/VLA for this rig and run it on a synthetic frame (no arm is energised). |
+| `yamkit doctor` | Check the environment: venv, torch, CAN, plugins, cameras, rig file, data dirs. |
+| `yamkit env` | Print the environment variables that keep everything inside this repo (for `eval`). |
+
+Every command accepts `--help`; `record`/`teleoperate`/`rollout`/`train` pass unknown `--flags` straight to the underlying `lerobot-*` script and `--dry-run` prints the exact command instead of running it.
+
 ## How it fits together
 
 ```
