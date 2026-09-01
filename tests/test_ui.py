@@ -178,3 +178,48 @@ def test_session_endpoints_spawn_and_stop(client, monkeypatch):
 
 def test_record_requires_name_and_task(client):
     assert client.post("/api/session/record", json={}).status_code == 422
+
+
+def test_config_get_and_structured_save(client, rig):
+    c = client.get("/api/config").json()
+    assert c["found"] and c["control"]["teleop_hz"] == 100.0
+    assert set(c["arms"]) == {"left_leader", "left_follower", "right_leader", "right_follower"}
+    r = client.post("/api/config", json={"control": {"max_joint_speed": 2.5}})
+    assert r.status_code == 200 and r.json()["control"]["max_joint_speed"] == 2.5
+    assert "max_joint_speed: 2.5" in rig.path.read_text()
+    assert client.post("/api/config", json={"control": {"nope": 1}}).status_code == 422
+
+
+def test_config_yaml_save_validates_before_writing(client, rig):
+    before = rig.path.read_text()
+    # invalid: broken syntax, bad role, and pair referencing a missing arm — none may be written
+    for bad in ("{{not yaml", "arms:\n  a:\n    role: sideways\n",
+                before.replace("left_follower:", "other_follower:", 1)):
+        assert client.post("/api/config", json={"yaml_text": bad}).status_code == 422
+        assert rig.path.read_text() == before
+    good = before + "\n# tuned on 2026-09-01\n"
+    r = client.post("/api/config", json={"yaml_text": good})
+    assert r.status_code == 200
+    assert rig.path.read_text() == good  # verbatim write keeps comments
+
+
+def test_config_save_rejected_while_session_runs(client, monkeypatch):
+    monkeypatch.setattr(SessionManager, "yamkit_argv",
+                        lambda self, *args: [sys.executable, "-c", "import time; time.sleep(30)"])
+    client.post("/api/session/teleop", json={})
+    try:
+        assert client.post("/api/config", json={"control": {"teleop_hz": 50}}).status_code == 409
+    finally:
+        client.post("/api/session/stop")
+
+
+def test_model_detail_endpoint(client, tmp_path):
+    ckpt = tmp_path / "train" / "job" / "pretrained_model"
+    ckpt.mkdir(parents=True)
+    (ckpt / "config.json").write_text('{"type": "act", "n_action_steps": 100}')
+    (ckpt / "model.safetensors").write_bytes(b"\0" * 16)
+    d = client.get("/api/models/train/job/pretrained_model").json()
+    assert d["policy_type"] == "act" and d["config"]["n_action_steps"] == 100
+    assert {f["name"] for f in d["files"]} == {"config.json", "model.safetensors"}
+    assert client.get("/api/models/nope").status_code == 404
+    assert client.get("/api/models/../secrets").status_code == 404

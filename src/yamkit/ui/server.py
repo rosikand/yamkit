@@ -7,6 +7,7 @@ or opening any page never connects to (and never energises) an arm.
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,14 @@ class PolicyCheckBody(BaseModel):
     policy: str
     task: str = "pick up the object"
     device: str = "cpu"
+
+
+class ConfigBody(BaseModel):
+    """Either a full raw-YAML replacement of the rig file or a structured `control` update."""
+
+    yaml_text: str | None = None
+    control: dict[str, float | int] | None = None
+    validate_only: bool = False
 
 
 def create_app(
@@ -262,6 +271,73 @@ def create_app(
         run_dir_box["dir"] = deployments.create(sessions.status())
         return st
 
+    # ------------------------------------------------------------------------------ config --
+    def config_payload() -> dict[str, Any]:
+        rig = load_rig()
+        text = rig_path.read_text() if rig_path.is_file() else ""
+        return {
+            "path": str(rig_path),
+            "found": rig is not None,
+            "yaml": text,
+            "control": dataclasses.asdict(rig.control) if rig else None,
+            "arms": {
+                n: {k: v for k, v in dataclasses.asdict(a).items() if k != "name"}
+                for n, a in (rig.arms.items() if rig else {}.items())
+            },
+            "pairs": [dataclasses.asdict(p) for p in (rig.pairs if rig else [])],
+            "cameras": rig.cameras if rig else {},
+            "problems": rig.validate() if rig else [],
+        }
+
+    def validate_rig_yaml(text: str) -> RigConfig:
+        """Parse + validate raw YAML as a rig file; raise HTTPException(422) with details if bad."""
+        import yaml as pyyaml
+
+        try:
+            data = pyyaml.safe_load(text)
+        except pyyaml.YAMLError as e:
+            raise HTTPException(422, f"YAML syntax error: {e}") from None
+        if not isinstance(data, dict):
+            raise HTTPException(422, "rig file must be a YAML mapping")
+        try:
+            cfg = RigConfig.from_dict(data)
+        except (TypeError, ValueError, KeyError) as e:
+            raise HTTPException(422, f"invalid rig config: {e}") from None
+        problems = cfg.validate()
+        if problems:
+            raise HTTPException(422, "invalid rig config: " + "; ".join(problems))
+        return cfg
+
+    @app.get("/api/config")
+    def config_get() -> dict[str, Any]:
+        return config_payload()
+
+    @app.post("/api/config")
+    def config_save(body: ConfigBody) -> dict[str, Any]:
+        if body.validate_only:
+            if body.yaml_text is None:
+                raise HTTPException(422, "validate_only needs yaml_text")
+            validate_rig_yaml(body.yaml_text)
+            return {"valid": True}
+        if sessions.active:
+            raise HTTPException(409, f"a {sessions.mode!r} session is running — stop it before editing the rig")
+        if body.yaml_text is not None:
+            validate_rig_yaml(body.yaml_text)
+            rig_path.parent.mkdir(parents=True, exist_ok=True)
+            rig_path.write_text(body.yaml_text)  # verbatim: keeps the user's comments/ordering
+        elif body.control is not None:
+            rig = require_rig()
+            known = set(dataclasses.asdict(rig.control))
+            unknown = set(body.control) - known
+            if unknown:
+                raise HTTPException(422, f"unknown control field(s): {sorted(unknown)}")
+            for k, v in body.control.items():
+                setattr(rig.control, k, int(v) if k == "engage_button" else float(v))
+            rig.save(rig_path)
+        else:
+            raise HTTPException(422, "provide yaml_text or control")
+        return config_payload()
+
     # ---------------------------------------------------------------------------- datasets --
     def dataset_dir(name: str) -> Path:
         d = (datasets_dir / name).resolve()
@@ -316,6 +392,16 @@ def create_app(
     @app.get("/api/models")
     def models() -> list[dict[str, Any]]:
         return catalog.list_models(outputs_dir)
+
+    @app.get("/api/models/{model_path:path}")
+    def model(model_path: str) -> dict[str, Any]:
+        d = (outputs_dir / model_path).resolve()
+        if outputs_dir.resolve() not in d.parents or not d.is_dir():
+            raise HTTPException(404, f"no checkpoint at {model_path!r}")
+        detail = catalog.model_detail(outputs_dir, d)
+        if detail is None:
+            raise HTTPException(404, f"{model_path!r} does not look like a checkpoint directory")
+        return detail
 
     @app.get("/api/health")
     def health() -> JSONResponse:

@@ -27,13 +27,17 @@ The UI adds **no second robot driver and no new control loop**:
 
 ## Pages
 
+Navigation is a fixed left sidebar; the theme switcher (Light / Dark / System) lives at its foot
+(preference in `localStorage`; `?theme=light|dark` overrides for a single load).
+
 | page | contents |
 |---|---|
 | **Live** | camera tiles (top / left wrist / right wrist), follower joint+gripper state, CAN/camera/rig status, current mode + loop rate, read-only controls (`yamkit read` stream) |
 | **Record** | camera tiles, teleop pair status (engaged, tracking error, Hz), dataset name / task / episodes / durations form, Start Teleop / Start Recording / Stop, episode + elapsed progress, live log |
-| **Datasets** | LeRobot v3 datasets under `data/datasets/` (episodes, frames, fps, tasks, cameras); per-episode viewer with synchronized videos and state/action small-multiple charts |
-| **Deployments** | policy runs launched from the UI (rollout + policy-check), with model, task, latency, status, termination reason, log, and replay videos when present (`outputs/ui/deployments/`) |
-| **Models** | checkpoint directories under `outputs/` with policy type, train steps, dataset, size |
+| **Datasets** | LeRobot v3 datasets under `data/datasets/` (episodes, frames, fps, tasks, cameras); per-episode detail page with synchronized videos and state/action small-multiple charts |
+| **Inference** | policy runs launched from the UI (rollout + policy-check) with model, task, latency, status, termination reason; per-run detail page with log and replay videos (`outputs/ui/deployments/`) |
+| **Models** | checkpoint directories under `outputs/`; per-checkpoint detail page with file sizes and `config.json` / `train_config.json` contents |
+| **Settings** | view/edit `configs/rig.yaml`: structured fields for the control knobs, read-only arm/camera tables, and a raw-YAML editor. Every save is validated server-side first (parse → `RigConfig` → `validate()`), raw YAML is written verbatim (comments kept), and saving is refused while a hardware session runs. The rig file holds hardware identifiers only — no credentials pass through the UI. |
 
 ## Code layout
 
@@ -48,5 +52,7 @@ tests/test_ui.py  hardware-free tests (parsers, sessions with stub children, API
 ```
 
 The frontend is a single-page app (`ui/app.js`) with hash routing; it polls `/api/session` (1 s)
-and `/api/overview` (5 s). Chart colors are the validated dark-mode categorical pair
-(state `#3987e5`, action `#d95926`).
+and `/api/overview` (5 s). Chart colors are the validated categorical pair per theme
+(light: state `#2a78d6` / action `#eb6834`; dark: `#3987e5` / `#d95926`).
+
+Screenshots (light + dark for every page): `docs/ui-screenshots/<page>-<theme>.png`.

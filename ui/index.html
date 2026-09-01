@@ -4,23 +4,45 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>yamkit</title>
+  <script>
+    // Resolve theme before first paint. Preference: ?theme= param > localStorage > system.
+    (function () {
+      var pref = new URLSearchParams(location.search).get("theme") ||
+                 localStorage.getItem("yamkit-theme") || "system";
+      var mode = pref === "system"
+        ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
+        : pref;
+      document.documentElement.dataset.theme = mode;
+      document.documentElement.dataset.themePref = pref;
+    })();
+  </script>
   <link rel="stylesheet" href="style.css" />
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🦾</text></svg>" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%231a1a19'/><rect x='3' y='3' width='10' height='10' fill='%233987e5'/></svg>" />
 </head>
 <body>
-  <header>
-    <div class="logo">yam<span>kit</span></div>
+  <aside id="sidebar">
+    <div class="brand">yamkit<span class="brand-sub">robot console</span></div>
     <nav id="nav">
       <a href="#/live">Live</a>
       <a href="#/record">Record</a>
       <a href="#/datasets">Datasets</a>
-      <a href="#/deployments">Deployments</a>
+      <a href="#/inference">Inference</a>
       <a href="#/models">Models</a>
+      <a href="#/settings">Settings</a>
     </nav>
-    <div class="spacer"></div>
-    <span class="chip" id="mode-chip"><span class="dot"></span><span id="mode-text">idle</span></span>
-    <span class="chip" id="fps-chip" hidden><span id="fps-text"></span></span>
-  </header>
+    <div class="side-foot">
+      <div class="side-session">
+        <span class="dot" id="side-dot"></span>
+        <span id="side-mode">idle</span>
+        <span class="mono" id="side-hz"></span>
+      </div>
+      <div class="theme-switch" id="theme-switch" role="group" aria-label="theme">
+        <button data-theme-pref="light">Light</button>
+        <button data-theme-pref="dark">Dark</button>
+        <button data-theme-pref="system">System</button>
+      </div>
+    </div>
+  </aside>
   <main id="main"></main>
   <div class="viz-tip" id="viz-tip"></div>
   <script src="app.js"></script>

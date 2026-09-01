@@ -215,6 +215,25 @@ def list_models(outputs_dir: Path, max_depth: int = 6) -> list[dict[str, Any]]:
     return found
 
 
+def model_detail(outputs_dir: Path, d: Path) -> dict[str, Any] | None:
+    """Full metadata for one checkpoint directory (config, train config, per-file sizes)."""
+    files = sorted(c for c in d.iterdir() if c.is_file())
+    names = {f.name for f in files}
+    if not (names & set(CHECKPOINT_MARKERS) or any(n.endswith(".safetensors") for n in names)):
+        return None
+    cfg = _read_json(d / "config.json") or {}
+    train_cfg = _read_json(d / "train_config.json") or _read_json(d.parent / "train_config.json") or {}
+    return {
+        "path": str(d.relative_to(outputs_dir)),
+        "policy_type": cfg.get("type"),
+        "config": cfg,
+        "train_config": train_cfg,
+        "files": [{"name": f.name, "size_bytes": f.stat().st_size} for f in files],
+        "size_bytes": _dir_size(d),
+        "modified": d.stat().st_mtime,
+    }
+
+
 # ------------------------------------------------------------------------------- deployments --
 def list_deployments(depl_dir: Path) -> list[dict[str, Any]]:
     out = []
