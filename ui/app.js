@@ -134,6 +134,19 @@ function armPanelHTML(armName, stt, role) {
     ${stt ? rows + gripRow + btnRow : `<div class="empty">no state — start the state stream or teleop</div>`}</div>`;
 }
 
+// show Start buttons only when idle, Stop only while a session runs
+function syncRunButtons(startIds, stopId) {
+  const stop = $(stopId);
+  if (!stop) return;
+  for (const id of startIds) {
+    const b = $(id);
+    if (b) b.hidden = session.active;
+  }
+  stop.hidden = !session.active;
+  stop.disabled = !!(session.stopping && session.active);
+  stop.textContent = session.stopping && session.active ? "Stopping…" : "Stop";
+}
+
 const logPaneHTML = (id = "log", tall = false) => `<pre class="log${tall ? " tall" : ""}" id="${id}"></pre>`;
 function fillLog(id = "log") {
   const el = document.getElementById(id);
@@ -176,6 +189,7 @@ pages.live = {
   update() {
     const panels = $("#arm-panels");
     if (!panels) return;
+    syncRunButtons(["#btn-read"], "#btn-stop");
     const rigArms = Object.entries(overview?.rig?.arms || {});
     const byRole = (role) => rigArms.filter(([, a]) => a.role === role).map(([n, a]) => [n, a.role]);
     const arms = rigArms.length
@@ -255,7 +269,9 @@ pages.record = {
   update() {
     const ts = $("#teleop-status");
     if (!ts) return;
-    const pairs = session.parsed?.pairs || {};
+    syncRunButtons(["#btn-teleop", "#btn-record"], "#btn-stop-top");
+    // pair status is only meaningful while a teleop session is actually running
+    const pairs = session.active && session.mode === "teleop" ? (session.parsed?.pairs || {}) : {};
     // readiness banner: arm connection takes a few seconds after Start — show when the
     // teleop loop is actually running (status lines flowing) and when a pair is engaged
     const ready = $("#teleop-ready");
