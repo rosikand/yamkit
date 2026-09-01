@@ -1,0 +1,33 @@
+:root {
+  --md-primary-fg-color: #56369b;
+  --md-accent-fg-color: #00897b;
+}
+
+.md-typeset .hero {
+  margin: 1.5rem 0 2rem;
+  padding: 2rem;
+  border: 1px solid color-mix(in srgb, var(--md-default-fg-color) 15%, transparent);
+  border-radius: 0.8rem;
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--md-accent-fg-color) 18%, transparent), transparent 38%),
+    color-mix(in srgb, var(--md-primary-fg-color) 7%, var(--md-default-bg-color));
+}
+
+.md-typeset .hero h1 {
+  margin: 0 0 0.35rem;
+  font-weight: 750;
+}
+
+.md-typeset .hero p {
+  max-width: 44rem;
+  margin-bottom: 1.25rem;
+  font-size: 1.05rem;
+}
+
+.md-typeset .grid.cards > ul > li {
+  border-radius: 0.55rem;
+}
+
+.md-typeset code {
+  border-radius: 0.2rem;
+}

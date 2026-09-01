@@ -27,6 +27,7 @@ dependencies = [
 [project.optional-dependencies]
 realsense = ["lerobot[intelrealsense]"]
 dev = ["pytest>=8.0", "ruff>=0.6"]
+docs = ["mkdocs-material>=9.5,<10"]
 
 [project.scripts]
 yamkit = "yamkit.cli:app"

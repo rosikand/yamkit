@@ -15,3 +15,4 @@ outputs/
 wandb/
 *.mcap
 *.log
+site/

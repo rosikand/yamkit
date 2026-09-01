@@ -1,5 +1,9 @@
 # yamkit — I2RT YAM arms: CAN setup → teleop → LeRobot datasets → VLA inference
 
+> Practical guides, architecture, API examples, and the full operator reference are in
+> [`docs/`](docs/index.md). Preview the Material for MkDocs site with
+> `uv run --extra docs mkdocs serve`.
+
 Self-contained toolkit for the four YAM arms on this machine. **Everything lives in this directory**:
 the Python interpreter (`.uv-python/`), the virtualenv (`.venv/`), the uv cache (`.uv-cache/`), the
 vendored vendor SDK (`third_party/i2rt`, pinned in `third_party/i2rt.VERSION`), datasets/models
