@@ -36,7 +36,7 @@ Navigation is a fixed left sidebar; the theme switcher (Light / Dark / System) l
 | page | contents |
 |---|---|
 | **Live** | camera tiles (top / left wrist / right wrist), follower joint+gripper state, CAN/camera/rig status, current mode + loop rate, read-only controls (`yamkit read` stream), Park arms (`yamkit rest`: every arm moves slowly home and is released) |
-| **Record** | camera tiles, teleop pair status (engaged, tracking error, Hz), dataset name / task / episodes / durations form, Start Teleop / Start Recording / Park / Stop, episode + elapsed progress, live log. Start moves every arm home first; Stop sends Ctrl-C, the arms return home and are released; clicking Stop again during that move releases them immediately |
+| **Record** | camera tiles, teleop pair status (engaged, tracking error, Hz), dataset name / task / episodes / durations form (recording rate fixed at 30 fps unless changed under "Advanced", capped by the slowest camera), Start Teleop / Start Recording / Park / Stop, episode + elapsed progress, live log. Start moves every arm home first; Stop sends Ctrl-C, the arms return home and are released; clicking Stop again during that move releases them immediately |
 | **Datasets** | LeRobot v3 datasets under `data/datasets/` (episodes, frames, fps, tasks, cameras); per-episode detail page with synchronized videos and state/action small-multiple charts |
 | **Inference** | policy runs launched from the UI (rollout + policy-check) with model, task, latency, status, termination reason; per-run detail page with log and replay videos (`outputs/ui/deployments/`) |
 | **Models** | checkpoint directories under `outputs/`; per-checkpoint detail page with file sizes and `config.json` / `train_config.json` contents |

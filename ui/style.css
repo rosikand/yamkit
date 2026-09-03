@@ -130,6 +130,9 @@ main { margin-left: 212px; padding: 26px 32px 48px; max-width: 1280px; }
 
 .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .hint { color: var(--muted); font-size: 12.5px; margin: 8px 0 0; }
+details.advanced { margin-top: 12px; }
+details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; font-weight: 500; user-select: none; }
+details.advanced[open] > summary { color: var(--text-2); }
 .hint.warn { color: var(--warn); }
 .divider { border: 0; border-top: 1px solid var(--hairline); margin: 16px 0; }
 

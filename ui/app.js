@@ -220,8 +220,11 @@ pages.live = {
 };
 
 // ---- record ----
+const DEFAULT_FPS = 30;
 pages.record = {
   render(el) {
+    const camFps = (overview?.cameras || []).map((c) => +c.fps).filter((f) => f > 0);
+    const maxFps = camFps.length ? Math.min(...camFps) : DEFAULT_FPS;
     el.innerHTML = `
       ${pageHead("Record", "teleoperation and dataset recording", `<button id="btn-park-rec">Park arms</button><button id="btn-stop-top" class="danger">Stop</button>`)}
       <div class="sect"><div class="sect-head">Cameras</div>${camsHTML()}</div>
@@ -242,10 +245,15 @@ pages.record = {
           <label class="field">task instruction<input type="text" id="rec-task" placeholder="pick up the red cube and place it in the bowl" /></label>
           <div class="form-grid">
             <label class="field">episodes<input type="number" id="rec-episodes" value="10" min="1" /></label>
-            <label class="field">fps<input type="number" id="rec-fps" value="30" min="1" /></label>
             <label class="field">episode duration (s)<input type="number" id="rec-episode-s" value="30" /></label>
             <label class="field">reset duration (s)<input type="number" id="rec-reset-s" value="10" /></label>
           </div>
+          <details class="advanced">
+            <summary>Advanced</summary>
+            <label class="field">recording rate (frames per second)<input type="number" id="rec-fps" value="${DEFAULT_FPS}" min="10" max="${maxFps}" step="5" /></label>
+            <div class="hint">${DEFAULT_FPS} is the standard for YAM datasets and what the pretrained policies expect. Valid: 10 to ${maxFps}
+              (your slowest camera). Lower values make smaller datasets but choppier policies. Leave it unless you know why.</div>
+          </details>
           <div class="toolbar" style="margin-top:12px">
             <button id="btn-record" class="primary">Start Recording</button>
           </div>
@@ -264,7 +272,7 @@ pages.record = {
         episodes: +$("#rec-episodes").value || 10,
         episode_s: +$("#rec-episode-s").value || 30,
         reset_s: +$("#rec-reset-s").value || 10,
-        fps: +$("#rec-fps").value || 30,
+        fps: Math.min(Math.max(+$("#rec-fps").value || DEFAULT_FPS, 1), maxFps),
       }, e.target);
     };
     $("#btn-stop-top").onclick = (e) => doPost("/session/stop", {}, e.target);
