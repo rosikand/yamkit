@@ -24,7 +24,8 @@ The UI adds **no second robot driver and no new control loop**:
   different process — the UI cannot see its output. Stop sends the
   process group a SIGINT (identical to Ctrl-C in a terminal), escalating to SIGTERM/SIGKILL only
   if the child hangs. One session at a time.
-* **Camera previews** are MJPEG streams read with OpenCV from the cameras in `configs/rig.yaml`.
+* **Camera previews**: the tiles poll `/api/cameras/<name>/frame` about ten times a second for the newest JPEG (read with OpenCV from the cameras in `configs/rig.yaml`); no long-lived connection, so a dropped stream or the browser's per-host connection limit can never freeze a tile. The MJPEG `/stream` endpoint is still there for other clients. While a record / teleoperate / rollout session owns the cameras, the follower plugin publishes each camera's newest frame as a JPEG into `outputs/ui/frames/` (`$YAMKIT_FRAMES_DIR`, a few Hz) and the same stream endpoints serve those, so the tiles keep showing what the robot sees.
+* **UI-started sessions get no display**: `DISPLAY` / `WAYLAND_DISPLAY` are stripped from the child environment so LeRobot's recorder does not install its system-wide keyboard hook (Esc / arrows / n / r / q pressed in any window would otherwise end or skip an episode). Sessions are driven by the UI buttons only.
   They are released automatically while a record/teleoperate/rollout session runs, because the
   LeRobot child process needs exclusive access to the V4L2 devices.
 
@@ -37,10 +38,10 @@ Navigation is a fixed left sidebar; the theme switcher (Light / Dark / System) l
 |---|---|
 | **Live** | camera tiles (top / left wrist / right wrist), follower joint+gripper state, CAN/camera/rig status, current mode + loop rate, read-only controls (`yamkit read` stream), Park arms (`yamkit rest`: every arm moves slowly home and is released) |
 | **Record** | camera tiles, teleop pair status (engaged, tracking error, Hz), dataset name / task / episodes / durations form (recording rate fixed at 30 fps unless changed under "Advanced", capped by the slowest camera), Start Teleop / Start Recording / Park / Stop, episode + elapsed progress, live log. Start moves every arm home first; Stop sends Ctrl-C, the arms return home and are released; clicking Stop again during that move releases them immediately |
-| **Datasets** | LeRobot v3 datasets under `data/datasets/` (episodes, frames, fps, tasks, cameras); per-episode detail page with synchronized videos and state/action small-multiple charts |
+| **Datasets** | LeRobot v3 datasets under `data/datasets/` and, when signed in, the account's Hub datasets in the same table with a local / cloud / both tag, Upload and Download buttons and Hub links; per-episode detail page with synchronized videos and state/action small-multiple charts |
 | **Inference** | policy runs launched from the UI (rollout + policy-check) with model, task, latency, status, termination reason; per-run detail page with log and replay videos (`outputs/ui/deployments/`) |
-| **Models** | checkpoint directories under `outputs/`; per-checkpoint detail page with file sizes and `config.json` / `train_config.json` contents |
-| **Settings** | view/edit `configs/rig.yaml`: structured fields for the control knobs, read-only arm/camera tables (with the discovery notes: model, serial, USB port), and a raw-YAML editor. Every save is validated server-side first (parse → `RigConfig` → `validate()`), raw YAML is written verbatim (comments kept), saving is refused while a hardware session runs, and the camera feeds are reloaded from the saved file (no restart). The rig file holds hardware identifiers only — no credentials pass through the UI. |
+| **Models** | checkpoint directories under `outputs/` and the account's Hub models, tagged local / cloud / both; per-checkpoint detail page with file sizes and `config.json` / `train_config.json` contents; Upload buttons; Hub models get their own detail page and can be typed straight into the rollout form |
+| **Settings** | Hugging Face sign-in (the token goes to `data/hf/token`, never through the rig) and the rig's hub settings (account, private, default destination); view/edit `configs/rig.yaml`: structured fields for the control knobs, read-only arm/camera tables (with the discovery notes: model, serial, USB port), and a raw-YAML editor. Every save is validated server-side first (parse → `RigConfig` → `validate()`), raw YAML is written verbatim (comments kept), saving is refused while a hardware session runs, and the camera feeds are reloaded from the saved file (no restart). The rig file holds hardware identifiers only — no credentials pass through the UI. |
 
 ## Code layout
 

@@ -94,11 +94,25 @@ class ControlSpec:
 
 
 @dataclass
+class HubSpec:
+    """Hugging Face Hub settings (no secrets: the token lives in HF's token file under ./data/hf)."""
+
+    username: str | None = None  # account datasets/models are pushed under; default: the signed-in account
+    private: bool = True  # pushed datasets/models are private unless this is false
+    datasets: str = "local"  # where recordings go by default: local | hub | both (uploading is opt-in)
+
+    def __post_init__(self) -> None:
+        if self.datasets not in ("local", "hub", "both"):
+            raise ValueError(f"hub.datasets must be local, hub or both, got {self.datasets!r}")
+
+
+@dataclass
 class RigConfig:
     arms: dict[str, ArmSpec] = field(default_factory=dict)
     pairs: list[PairSpec] = field(default_factory=list)
     cameras: dict[str, dict[str, Any]] = field(default_factory=dict)  # LeRobot camera configs
     control: ControlSpec = field(default_factory=ControlSpec)
+    hub: HubSpec = field(default_factory=HubSpec)
     path: Path | None = None
 
     # ----- accessors --------------------------------------------------------------------------
@@ -146,6 +160,7 @@ class RigConfig:
             "pairs": [dataclasses.asdict(p) for p in self.pairs],
             "cameras": self.cameras,
             "control": dataclasses.asdict(self.control),
+            "hub": dataclasses.asdict(self.hub),
         }
 
     @classmethod
@@ -153,7 +168,8 @@ class RigConfig:
         arms = {n: ArmSpec(name=n, **(spec or {})) for n, spec in (d.get("arms") or {}).items()}
         pairs = [PairSpec(**p) for p in (d.get("pairs") or [])]
         control = ControlSpec(**(d.get("control") or {}))
-        return cls(arms=arms, pairs=pairs, cameras=d.get("cameras") or {}, control=control, path=path)
+        hub = HubSpec(**(d.get("hub") or {}))
+        return cls(arms=arms, pairs=pairs, cameras=d.get("cameras") or {}, control=control, hub=hub, path=path)
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> RigConfig:
@@ -240,6 +256,17 @@ _SECTIONS: dict[str, str] = {
 #   home_speed         rad/s of the followers' automatic move to home at Start / Stop (0 turns it off)
 #   leader_home_speed  rad/s of the leaders' move to home (all arms move at the same time)
 """,
+    "hub": """\
+
+# ---- Hugging Face Hub (optional) ------------------------------------------------------------
+# Sign in once with `yamkit hub login` (or on the Settings page); the token is kept in ./data/hf,
+# never in this file. Recordings can then be uploaded as <username>/<dataset name>, and models
+# trained elsewhere can be pulled straight from the Hub for rollout.
+#   username   account to push under (leave empty to use the signed-in account)
+#   private    keep pushed datasets and models private (recommended: your rig, your room)
+#   datasets   where a recording goes by default: local | hub | both. "local" = exactly the old
+#              behaviour; with hub/both the upload happens only AFTER the recording session ends.
+""",
 }
 
 
@@ -259,11 +286,11 @@ def render_rig_yaml(d: dict[str, Any]) -> str:
     """Render a rig dict (see `RigConfig.to_dict`) as commented YAML."""
     d = dict(d)
     out = [_HEADER, f"version: {d.pop('version', 1)}\n"]
-    for key in ("arms", "pairs", "cameras", "control"):
+    for key in ("arms", "pairs", "cameras", "control", "hub"):
         out.append(_SECTIONS[key])
         value = d.pop(key, None)
         if not value:
-            out.append(f"{key}: {{}}\n" if key in ("arms", "cameras") else f"{key}: []\n")
+            out.append(f"{key}: {{}}\n" if key in ("arms", "cameras", "hub") else f"{key}: []\n")
             continue
         out.append(yaml.dump({key: value}, Dumper=_RigDumper, sort_keys=False, allow_unicode=True, width=120))
     for key, value in d.items():  # anything else, verbatim

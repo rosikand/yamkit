@@ -11,12 +11,15 @@ import logging
 import threading
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
 
 BOUNDARY = b"--yamkitframe"
 IDLE_RELEASE_S = 5.0
+STOP_JOIN_S = 10.0  # a capture thread blocked in cap.read() must have released the device before a recorder opens it
+REOPEN_DELAY_S = 1.0  # after a failed open/read: the next poll retries (RealSense needs a moment after another process lets go)
 
 
 class _Camera:
@@ -52,7 +55,9 @@ class _Camera:
         with self.cond:
             self.cond.notify_all()
         if join and self._thread is not None:
-            self._thread.join(timeout=3.0)
+            self._thread.join(timeout=STOP_JOIN_S)
+            if self._thread.is_alive():
+                log.warning("camera %s: capture thread did not stop in %.0fs — the device may still be busy", self.name, STOP_JOIN_S)
 
     def _loop(self) -> None:
         try:
@@ -65,17 +70,25 @@ class _Camera:
         try:
             if not cap.isOpened():
                 self.error = f"could not open {dev}"
+                self._stop.wait(REOPEN_DELAY_S)  # the next poll starts a fresh attempt
                 return
             if self.cfg.get("width"):
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(self.cfg["width"]))
             if self.cfg.get("height"):
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(self.cfg["height"]))
             period = 1.0 / max(self.fps, 1.0)
+            failures = 0
             while not self._stop.is_set():
                 ok, frame = cap.read()
                 if not ok:
+                    failures += 1
+                    if failures < 5:  # a RealSense returns a few empty reads right after opening
+                        time.sleep(0.05)
+                        continue
                     self.error = f"read failed on {dev}"
+                    self._stop.wait(REOPEN_DELAY_S)
                     break
+                failures = 0
                 ok, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
                 if ok:
                     with self.cond:
@@ -88,8 +101,15 @@ class _Camera:
                 time.sleep(period)
         finally:
             cap.release()
+            del cap  # make sure OpenCV drops the device handle right now, not at some later GC
             with self.cond:
                 self.cond.notify_all()
+
+    def snapshot(self) -> bytes | None:
+        """The newest JPEG (starts the capture thread if needed; polling keeps it alive)."""
+        self.last_client_t = time.time()
+        self.ensure_running()
+        return self.frame
 
     def frames(self, stop_flag: threading.Event) -> Iterator[bytes]:
         """Yield multipart JPEG parts until the camera stops or the client goes away."""
@@ -134,12 +154,38 @@ class _Camera:
         }
 
 
+def file_frames(path: Path, stop: threading.Event, hz: float = 10.0, stale_s: float = 5.0, alive=lambda: True) -> Iterator[bytes]:
+    """Multipart JPEG parts from a file that another process rewrites (see yamkit.frames).
+
+    Ends when `stop` is set, when `alive()` turns false (the session gave the cameras back), or when
+    nothing was ever published within `stale_s`."""
+    last_mtime = -1.0
+    started = time.time()
+    while not stop.is_set() and alive():
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = -1.0
+        if mtime > last_mtime:
+            try:
+                data = path.read_bytes()
+            except OSError:
+                data = b""
+            if data.startswith(b"\xff\xd8"):  # a complete JPEG (writes are atomic renames)
+                last_mtime = mtime
+                yield BOUNDARY + b"\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(data)).encode() + b"\r\n\r\n" + data + b"\r\n"
+        elif last_mtime < 0 and time.time() - started > stale_s:
+            return  # the session never published anything: let the tile fall back to "no signal"
+        time.sleep(1.0 / hz)
+
+
 class CameraHub:
     """All rig cameras + a suspend switch used while a recording session owns the devices."""
 
-    def __init__(self, cameras: dict[str, dict[str, Any]]) -> None:
+    def __init__(self, cameras: dict[str, dict[str, Any]], frames_dir: Path | None = None) -> None:
         self.cams = {name: _Camera(name, dict(cfg)) for name, cfg in (cameras or {}).items()}
         self.suspended_by: str | None = None
+        self.frames_dir = frames_dir  # previews published by the session that owns the cameras
 
     def get(self, name: str) -> _Camera | None:
         return self.cams.get(name)

@@ -561,33 +561,88 @@ def record(
     episode_s: float = 30,
     reset_s: float = 10,
     fps: int = 30,
-    repo_id: Annotated[str | None, typer.Option(help="HF repo id (default yamkit/<name>)")] = None,
-    push: Annotated[bool, typer.Option(help="push to the HF hub when done")] = False,
+    to: Annotated[str | None, typer.Option(help="where the dataset goes: local | hub | both (default: hub.datasets in the rig)")] = None,
+    repo_id: Annotated[str | None, typer.Option(help="Hub repo id (default <hub.username>/<name>)")] = None,
+    push: Annotated[bool, typer.Option(help="same as --to both")] = False,
     resume: bool = False,
     display: bool = False,
     dry_run: bool = False,
 ) -> None:
-    """Record teleop episodes into a LeRobot dataset (`lerobot-record`)."""
-    _, pairs = _rig_arms(rig, arms)
+    """Record teleop episodes into a LeRobot dataset (`lerobot-record`), then upload it if asked.
+
+    The recording is always written locally first (video encoding); with `--to hub` the local copy is
+    removed after a successful upload. Uploading is done by yamkit after the recorder exits, so a
+    session stopped early still uploads what it recorded."""
+    from . import hub
+
+    cfg, pairs = _rig_arms(rig, arms)
+    dest = to or ("both" if push else cfg.hub.datasets)
+    if dest not in hub.DESTINATIONS:
+        raise typer.BadParameter(f"--to must be one of {hub.DESTINATIONS}")
     root = DATASETS_DIR / name
+    # The recorder is started exactly as before (no Hub lookup, no network); the Hub account is only
+    # resolved after the session, at upload time.
+    rid = repo_id or f"yamkit/{name}"
     args = [
         *_robot_args(rig, pairs, "yam"),
         *_teleop_args(rig, pairs, "yam_leader"),
-        f"--dataset.repo_id={repo_id or 'yamkit/' + name}",
+        f"--dataset.repo_id={rid}",
         f"--dataset.root={root}",
         f"--dataset.single_task={task}",
         f"--dataset.num_episodes={episodes}",
         f"--dataset.episode_time_s={episode_s}",
         f"--dataset.reset_time_s={reset_s}",
         f"--dataset.fps={fps}",
-        f"--dataset.push_to_hub={str(push).lower()}",
+        "--dataset.push_to_hub=false",  # yamkit uploads itself (also after an early stop)
         "--dataset.no_stamp=true",
         f"--resume={str(resume).lower()}",
         f"--display_data={str(display).lower()}",
         "--play_sounds=false",
         *ctx.args,
     ]
-    _exec_lerobot("lerobot_record", args, dry_run)
+    if dest == "local":
+        _exec_lerobot("lerobot_record", args, dry_run)
+        return
+    if dry_run:
+        _exec_lerobot("lerobot_record", args, True)
+        console.print("[dim]then: upload to the Hub" + (" and remove the local copy" if dest == "hub" else "") + "[/]")
+        return
+    _run_lerobot("lerobot_record", args)
+    if not (root / "meta" / "info.json").is_file():
+        err.print(f"[red]no dataset was written at {root} — nothing to upload[/]")
+        raise typer.Exit(1)
+    console.print(f"[yamkit] recording finished — uploading {name} to the Hub")
+    try:
+        url = hub.push_dataset(name, private=cfg.hub.private, rig_username=cfg.hub.username)
+    except KeyboardInterrupt:
+        err.print(f"[yellow][yamkit] upload cancelled — the recording is kept at {root}[/]")
+        raise typer.Exit(130) from None
+    except Exception as e:  # noqa: BLE001 — offline, not signed in, Hub error: the recording is safe locally
+        err.print(f"[yellow][yamkit] upload failed ({e}) — the recording is kept at {root}; retry with: yamkit push-dataset {name}[/]")
+        raise typer.Exit(2) from None
+    console.print(f"[yamkit] uploaded: {url}")
+    if dest == "hub":
+        hub.remove_local_dataset(name)
+        console.print(f"[yamkit] local copy removed ({root})")
+
+
+def _run_lerobot(script: str, args: list[str]) -> int:
+    """Run a lerobot script as a child and wait for it. Ctrl-C reaches the child too (same process
+    group), which parks the arms and finalises the dataset; we keep waiting so the caller can upload."""
+    import subprocess
+
+    cmd = [sys.executable, "-m", f"lerobot.scripts.{script}", *args]
+    console.print("[dim]$ " + " ".join(shlex.quote(c) for c in cmd) + "[/]")
+    proc = subprocess.Popen(cmd)
+    interrupts = 0
+    while True:
+        try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            interrupts += 1
+            if interrupts >= 3:
+                proc.terminate()
+            console.print("[yellow]stopping — waiting for the arms to park and the dataset to be finalised[/]")
 
 
 @app.command(context_settings=PASSTHROUGH)
@@ -627,32 +682,68 @@ def rollout(
 @app.command(context_settings=PASSTHROUGH)
 def train(
     ctx: typer.Context,
-    dataset: Annotated[str, typer.Option(help="dataset name under data/datasets (or repo id with --dataset-root)")],
+    dataset: Annotated[str, typer.Option(help="dataset name under data/datasets, or a Hub id like <user>/<name>")],
     policy_type: Annotated[str, typer.Option(help="smolvla | act | pi05 | pi0 | diffusion")] = "smolvla",
     pretrained: Annotated[str | None, typer.Option(help="init from this checkpoint (e.g. lerobot/smolvla_base)")] = "lerobot/smolvla_base",
     steps: int = 20000,
     batch_size: int = 8,
     job_name: str | None = None,
     wandb: bool = False,
+    push: Annotated[bool, typer.Option(help="upload the finished checkpoint to the Hub as <hub.username>/<job>")] = False,
+    rig: RigOpt = DEFAULT_RIG,
     dry_run: bool = False,
 ) -> None:
-    """Fine-tune a policy with `lerobot-train` (needs a GPU box; see README for the remote workflow)."""
-    root = DATASETS_DIR / dataset
-    job = job_name or f"{policy_type}_{dataset}"
-    args = [
-        f"--dataset.repo_id=yamkit/{dataset}",
-        f"--dataset.root={root}",
+    """Fine-tune a policy with `lerobot-train` (a GPU box for VLAs; ACT also trains on this CPU — slowly).
+
+    A Hub dataset id (`<user>/<name>`) is downloaded automatically. Without CUDA the policy runs on
+    the CPU and the data loader stays in-process (`--num_workers=0`): forked loader workers die
+    silently at the first step on this box. Pass either flag to override."""
+    from .config import RigConfig
+
+    name = dataset.split("/", 1)[1] if "/" in dataset else dataset
+    root = DATASETS_DIR / name
+    job = job_name or f"{policy_type}_{name}"
+    args = _cpu_train_defaults(ctx.args) + [
+        f"--dataset.repo_id={dataset if '/' in dataset else 'yamkit/' + dataset}",
         f"--policy.type={policy_type}",
         f"--steps={steps}",
         f"--batch_size={batch_size}",
         f"--output_dir={OUTPUT_DIR / 'train' / job}",
         f"--job_name={job}",
         f"--wandb.enable={str(wandb).lower()}",
-        "--policy.push_to_hub=false",
     ]
+    if "/" not in dataset or root.is_dir():
+        args.insert(1, f"--dataset.root={root}")  # local copy; otherwise LeRobot pulls from the Hub
+    if push:
+        from . import hub
+
+        hub_cfg = RigConfig.load(rig).hub if rig.exists() else None
+        rid = hub.repo_id(job, hub_cfg.username if hub_cfg else None, kind="model")
+        args += ["--policy.push_to_hub=true", f"--policy.repo_id={rid}", f"--policy.private={str(hub_cfg.private if hub_cfg else True).lower()}"]
+    else:
+        args.append("--policy.push_to_hub=false")
     if pretrained:
         args.append(f"--policy.pretrained_path={pretrained}")
     _exec_lerobot("lerobot_train", [*args, *ctx.args], dry_run)
+
+
+def _cpu_train_defaults(extra: list[str]) -> list[str]:
+    """`--policy.device=cpu --num_workers=0` on a machine without CUDA, unless given explicitly."""
+    try:
+        import torch
+
+        has_cuda = torch.cuda.is_available()
+    except Exception:  # noqa: BLE001
+        has_cuda = False
+    if has_cuda:
+        return []
+    given = {a.split("=", 1)[0] for a in extra}
+    out = []
+    if "--policy.device" not in given:
+        out.append("--policy.device=cpu")
+    if "--num_workers" not in given:
+        out.append("--num_workers=0")
+    return out
 
 
 @app.command("policy-check")
@@ -683,6 +774,92 @@ def policy_check(
 
 
 # ------------------------------------------------------------------------------------ doctor --
+# ------------------------------------------------------------------------------- Hugging Face Hub --
+hub_app = typer.Typer(help="Hugging Face Hub sign-in (datasets and models can then be uploaded / pulled).", no_args_is_help=True)
+app.add_typer(hub_app, name="hub")
+
+
+@hub_app.command("login")
+def hub_login(token: Annotated[str | None, typer.Option(help="access token (https://huggingface.co/settings/tokens, 'write'); prompted if omitted")] = None) -> None:
+    """Sign in once. The token is stored in ./data/hf (git-ignored), never in the rig file."""
+    from . import hub
+
+    tok = token or typer.prompt("Hugging Face token", hide_input=True)
+    try:
+        name = hub.login(tok)
+    except Exception as e:  # noqa: BLE001
+        err.print(f"[red]sign-in failed: {e}[/]")
+        raise typer.Exit(1) from None
+    console.print(f"[green]signed in as {name}[/] (token in {hub.token_path()})")
+
+
+@hub_app.command("logout")
+def hub_logout() -> None:
+    """Forget the stored token."""
+    from . import hub
+
+    hub.logout()
+    console.print("signed out")
+
+
+@hub_app.command("status")
+def hub_status(rig: RigOpt = DEFAULT_RIG) -> None:
+    """Who is signed in, and what the rig's hub settings are."""
+    from . import hub
+    from .config import RigConfig
+
+    st = hub.status()
+    if not st["logged_in"]:
+        console.print("not signed in — run:  yamkit hub login")
+    elif st["online"]:
+        console.print(f"[green]signed in as {st['username']}[/]")
+    else:
+        console.print(f"[yellow]token stored, but the Hub could not be reached: {st['error']}[/]")
+    if rig.exists():
+        h = RigConfig.load(rig).hub
+        console.print(f"rig hub settings: username={h.username or '(signed-in account)'} private={h.private} datasets={h.datasets}")
+
+
+@app.command("push-dataset")
+def push_dataset(name: str, rig: RigOpt = DEFAULT_RIG, remove_local: Annotated[bool, typer.Option("--remove-local", help="delete data/datasets/<name> after a successful upload")] = False) -> None:
+    """Upload a local dataset to the Hub as <hub.username>/<name>."""
+    from . import hub
+    from .config import RigConfig
+
+    h = RigConfig.load(rig).hub if rig.exists() else None
+    url = hub.push_dataset(name, private=h.private if h else True, rig_username=h.username if h else None)
+    console.print(f"[green]uploaded: {url}[/]")
+    if remove_local:
+        hub.remove_local_dataset(name)
+        console.print("local copy removed")
+
+
+@app.command("pull-dataset")
+def pull_dataset(repo: Annotated[str, typer.Argument(help="<user>/<name>, or just <name> for your own account")], rig: RigOpt = DEFAULT_RIG) -> None:
+    """Download a Hub dataset into data/datasets/<name>."""
+    from . import hub
+    from .config import RigConfig
+
+    h = RigConfig.load(rig).hub if rig.exists() else None
+    dest = hub.pull_dataset(repo, rig_username=h.username if h else None)
+    console.print(f"[green]downloaded to {dest}[/]")
+
+
+@app.command("push-model")
+def push_model(
+    path: Annotated[Path, typer.Argument(help="checkpoint dir, e.g. outputs/train/<job>/checkpoints/last/pretrained_model")],
+    name: Annotated[str | None, typer.Option(help="model name on the Hub (default: the training job name)")] = None,
+    rig: RigOpt = DEFAULT_RIG,
+) -> None:
+    """Upload a checkpoint to the Hub as <hub.username>/<name>; `yamkit rollout --policy <user>/<name>` then uses it."""
+    from . import hub
+    from .config import RigConfig
+
+    h = RigConfig.load(rig).hub if rig.exists() else None
+    url = hub.push_model(path, name, private=h.private if h else True, rig_username=h.username if h else None)
+    console.print(f"[green]uploaded: {url}[/]")
+
+
 @app.command()
 def doctor(rig: RigOpt = DEFAULT_RIG) -> None:
     """Check the environment: venv, torch, CAN, plugins, cameras, rig file, data dirs."""

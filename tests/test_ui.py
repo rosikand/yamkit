@@ -48,9 +48,11 @@ def test_parse_teleop_line():
 def test_parse_record_and_policy_lines():
     parsed = {}
     parse_line("INFO 2026-01-01 Recording episode 3", parsed)
-    assert parsed == {"episode": 3, "phase": "record"}
+    assert parsed["episode"] == 3 and parsed["phase"] == "record" and time.time() - parsed["phase_since"] < 5
     parse_line("INFO Reset the environment", parsed)
     assert parsed["phase"] == "reset"
+    parse_line("[yamkit] recording finished — uploading x to the Hub", parsed)
+    assert parsed["phase"] == "upload"
     parse_line("│ first call (new chunk) │ 834 ms │", parsed)
     assert parsed["first_call_ms"] == 834.0
 
@@ -283,3 +285,223 @@ def test_park_endpoint_runs_rest(client, monkeypatch):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and client.get("/api/session").json()["active"]:
         time.sleep(0.05)
+
+
+@pytest.fixture
+def fake_hub(monkeypatch):
+    """The UI's hub calls, without network: one cloud dataset that also exists locally ("smoke") and one cloud-only."""
+    from yamkit import hub
+
+    monkeypatch.setattr(hub, "get_token", lambda: "hf_test")
+    monkeypatch.setattr(hub, "status", lambda: {"logged_in": True, "username": "tester", "token_path": "/x/token", "online": True, "error": None})
+    monkeypatch.setattr(hub, "list_datasets", lambda user=None: [
+        {"name": "smoke", "repo_id": "tester/smoke", "private": True, "episodes": 1, "frames": 120, "fps": 30, "robot_type": "bi", "tasks": [], "cameras": [], "size_bytes": 5, "modified": 1.0, "url": "https://huggingface.co/datasets/tester/smoke"},
+        {"name": "cloud_only", "repo_id": "tester/cloud_only", "private": False, "episodes": 30, "frames": 9000, "fps": 30, "robot_type": "bi", "tasks": ["t"], "cameras": ["observation.images.top"], "size_bytes": 99, "modified": 2.0, "url": "https://huggingface.co/datasets/tester/cloud_only"},
+    ])
+    monkeypatch.setattr(hub, "list_models", lambda user=None: [
+        {"name": "job", "repo_id": "tester/job", "path": "tester/job", "private": True, "policy_type": "smolvla", "files": [], "size_bytes": 8, "modified": 1.0, "steps": 100, "dataset": None, "url": "https://huggingface.co/tester/job"},
+        {"name": "cloud_model", "repo_id": "tester/cloud_model", "path": "tester/cloud_model", "private": True, "policy_type": "act", "files": [], "size_bytes": 8, "modified": 1.0, "steps": 100, "dataset": None, "url": "https://huggingface.co/tester/cloud_model"},
+    ])
+    monkeypatch.setattr(hub, "login", lambda token: "tester" if token == "hf_good" else (_ for _ in ()).throw(RuntimeError("Invalid user token")))
+    monkeypatch.setattr(hub, "logout", lambda: None)
+    monkeypatch.setattr(hub, "model_detail", lambda repo: {"path": repo, "repo_id": repo, "where": "cloud", "url": "u", "policy_type": "act", "files": [], "size_bytes": 0, "modified": None, "config": {"type": "act"}, "train_config": {}} if repo == "tester/cloud_model" else None)
+
+
+def test_datasets_and_models_merge_local_and_hub(client, fake_hub, tmp_path):
+    rows = {d["name"]: d for d in client.get("/api/datasets").json()}
+    assert rows["smoke"]["where"] == "both" and rows["smoke"]["repo_id"] == "tester/smoke" and rows["smoke"]["frames"] == 120  # local numbers kept
+    assert rows["cloud_only"]["where"] == "cloud" and rows["cloud_only"]["episodes"] == 30
+    ckpt = tmp_path / "train" / "job" / "checkpoints" / "last" / "pretrained_model"
+    ckpt.mkdir(parents=True)
+    (ckpt / "config.json").write_text('{"type": "smolvla"}')
+    (ckpt / "model.safetensors").write_bytes(b"\0" * 8)
+    models = {m["name"]: m for m in client.get("/api/models").json()}
+    assert models["job"]["where"] == "both" and models["job"]["path"].startswith("train/job/")
+    assert models["cloud_model"]["where"] == "cloud" and models["cloud_model"]["repo_id"] == "tester/cloud_model"
+    assert client.get("/api/hub/models/tester/cloud_model").json()["policy_type"] == "act"
+    assert client.get("/api/hub/models/tester/nope").status_code == 404
+
+
+def test_datasets_without_token_are_local_only(client, monkeypatch):
+    from yamkit import hub
+
+    monkeypatch.setattr(hub, "get_token", lambda: None)
+    rows = client.get("/api/datasets").json()
+    assert rows and all(d["where"] == "local" for d in rows)
+    assert client.get("/api/overview").json()["hub"]["logged_in"] is False
+
+
+def test_hub_login_status_and_settings(client, fake_hub, rig):
+    st = client.get("/api/hub").json()
+    assert st["logged_in"] and st["username"] == "tester" and st["settings"]["datasets"] == "local"
+    assert client.post("/api/hub/login", json={"token": "bad"}).status_code == 400
+    assert client.post("/api/hub/login", json={"token": "hf_good"}).json() == {"username": "tester"}
+    r = client.post("/api/config", json={"hub": {"username": "rigger", "datasets": "hub", "private": False}})
+    assert r.status_code == 200 and r.json()["hub"] == {"username": "rigger", "private": False, "datasets": "hub"}
+    assert "datasets: hub" in rig.path.read_text()
+    assert client.post("/api/config", json={"hub": {"datasets": "moon"}}).status_code == 422
+    assert client.post("/api/config", json={"hub": {"nope": 1}}).status_code == 422
+    assert client.get("/api/overview").json()["hub"] == {"logged_in": True, "username": "rigger", "private": False, "datasets": "hub"}
+
+
+def test_record_and_transfers_pass_destination(client, fake_hub, monkeypatch, tmp_path):
+    seen = []
+
+    def argv(self, *args):
+        seen.append(args)
+        return [sys.executable, "-c", "pass"]
+
+    monkeypatch.setattr(SessionManager, "yamkit_argv", argv)
+
+    def wait():
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and client.get("/api/session").json()["active"]:
+            time.sleep(0.05)
+
+    assert client.post("/api/session/record", json={"name": "x", "task": "y", "to": "hub"}).status_code == 200
+    wait()
+    assert "--to" in seen[-1] and seen[-1][seen[-1].index("--to") + 1] == "hub"
+    assert client.post("/api/session/record", json={"name": "x", "task": "y", "to": "moon"}).status_code == 422
+    assert client.post("/api/hub/push-dataset", json={"name": "smoke", "remove_local": True}).status_code == 200
+    wait()
+    assert seen[-1][:2] == ("push-dataset", "smoke") and "--remove-local" in seen[-1]
+    assert client.post("/api/hub/push-dataset", json={"name": "nope"}).status_code == 404
+    assert client.post("/api/hub/pull-dataset", json={"name": "tester/cloud_only"}).status_code == 200
+    wait()
+    assert seen[-1][:2] == ("pull-dataset", "tester/cloud_only")
+    ckpt = tmp_path / "train" / "job" / "checkpoints" / "last" / "pretrained_model"
+    ckpt.mkdir(parents=True)
+    (ckpt / "config.json").write_text("{}")
+    assert client.post("/api/hub/push-model", json={"name": "train/job/checkpoints/last/pretrained_model"}).status_code == 200
+    wait()
+    assert seen[-1][0] == "push-model" and seen[-1][1].endswith("pretrained_model")
+    assert client.post("/api/hub/push-model", json={"name": "../etc"}).status_code == 404
+
+
+def test_cameras_come_back_when_the_upload_phase_starts(rig, tmp_path, monkeypatch):
+    """A record session owns the cameras; once the recorder has exited (upload phase) the feeds return."""
+    from yamkit import arm as arm_mod
+
+    monkeypatch.setattr(arm_mod.YamArm, "connect", staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError("no arms in tests"))))
+    rig.cameras = {"top": {"type": "opencv", "index_or_path": "/dev/video99", "width": 640, "height": 480, "fps": 30}}
+    rig.save()
+    app = create_app(rig.path, datasets_dir=ROOT / "data" / "datasets", outputs_dir=tmp_path, frontend_dir=ROOT / "ui")
+    child = "print('Recording episode 0'); print('[yamkit] recording finished — uploading x to the Hub'); import time; time.sleep(30)"
+    monkeypatch.setattr(SessionManager, "yamkit_argv", lambda self, *args: [sys.executable, "-u", "-c", child])
+    with TestClient(app) as client:
+        assert client.post("/api/session/record", json={"name": "x", "task": "y", "to": "hub"}).status_code == 200
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and client.get("/api/session").json().get("parsed", {}).get("phase") != "upload":
+            time.sleep(0.05)
+        st = client.get("/api/session").json()
+        assert st["active"] and st["parsed"]["phase"] == "upload"
+        assert client.get("/api/cameras").json()[0]["suspended_by"] is None  # feeds released during the upload
+        client.post("/api/session/stop")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and client.get("/api/session").json()["active"]:
+            time.sleep(0.05)
+
+
+def test_ui_children_get_no_display_and_a_frames_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("DISPLAY", ":1")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    mgr = SessionManager(frames_dir=tmp_path / "frames")
+    probe = "import os, json; print(json.dumps({'d': os.environ.get('DISPLAY'), 'w': os.environ.get('WAYLAND_DISPLAY'), 'f': os.environ.get('YAMKIT_FRAMES_DIR')}))"
+    for mode, expect_frames in (("record", True), ("teleop", False)):
+        mgr.start(mode, [sys.executable, "-c", probe])
+        assert mgr.wait(timeout=10) == 0
+        out = json.loads(next(ln for ln in mgr.log if ln.startswith("{")))
+        assert out["d"] is None and out["w"] is None, mode  # no system-wide keyboard hook in the recorder
+        assert (out["f"] == str(tmp_path / "frames")) is expect_frames, mode
+
+
+def test_phase_timer_is_reported(rig, tmp_path, monkeypatch):
+    from yamkit import arm as arm_mod
+
+    monkeypatch.setattr(arm_mod.YamArm, "connect", staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError("no arms"))))
+    app = create_app(rig.path, datasets_dir=ROOT / "data" / "datasets", outputs_dir=tmp_path, frontend_dir=ROOT / "ui")
+    child = "print('Recording episode 0'); import time; time.sleep(30)"
+    monkeypatch.setattr(SessionManager, "yamkit_argv", lambda self, *args: [sys.executable, "-u", "-c", child])
+    with TestClient(app) as client:
+        client.post("/api/session/record", json={"name": "x", "task": "y"})
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and client.get("/api/session").json().get("parsed", {}).get("phase") != "record":
+            time.sleep(0.05)
+        time.sleep(0.3)
+        st = client.get("/api/session").json()
+        assert st["parsed"]["episode"] == 0 and st["phase_elapsed_s"] is not None and 0.2 <= st["phase_elapsed_s"] < 5
+        client.post("/api/session/stop")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and client.get("/api/session").json()["active"]:
+            time.sleep(0.05)
+
+
+def test_camera_stream_serves_recorder_previews_while_suspended(rig, tmp_path, monkeypatch):
+    from yamkit import arm as arm_mod
+
+    monkeypatch.setattr(arm_mod.YamArm, "connect", staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError("no arms"))))
+    rig.cameras = {"top": {"type": "opencv", "index_or_path": "/dev/video99", "width": 640, "height": 480, "fps": 30}}
+    rig.save()
+    app = create_app(rig.path, datasets_dir=ROOT / "data" / "datasets", outputs_dir=tmp_path, frontend_dir=ROOT / "ui")
+    frames = tmp_path / "ui" / "frames"
+    child = f"import pathlib, time; p = pathlib.Path({str(frames)!r}); p.mkdir(parents=True, exist_ok=True); (p / 'top.jpg').write_bytes(b'\\xff\\xd8preview'); time.sleep(30)"
+    monkeypatch.setattr(SessionManager, "yamkit_argv", lambda self, *args: [sys.executable, "-u", "-c", child])
+    with TestClient(app) as client:
+        assert client.post("/api/session/record", json={"name": "x", "task": "y"}).status_code == 200
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not (frames / "top.jpg").exists():
+            time.sleep(0.05)
+        assert client.get("/api/cameras").json()[0]["suspended_by"] == "record"
+        with client.stream("GET", "/api/cameras/top/stream") as r:
+            assert r.status_code == 200
+            chunks = r.iter_bytes()
+            chunk = b""
+            while b"preview" not in chunk:
+                chunk += next(chunks)
+            assert b"Content-Type: image/jpeg" in chunk
+            # the session ends → the cameras are handed back → the preview stream ends by itself
+            # (a second client: the first one is busy with the open stream)
+            with TestClient(app) as other:
+                other.post("/api/session/stop")
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and other.get("/api/session").json()["active"]:
+                    time.sleep(0.05)
+            t0 = time.monotonic()
+            for _ in chunks:  # drains until the server-side generator returns
+                pass
+            assert time.monotonic() - t0 < 5
+        assert client.get("/api/cameras").json()[0]["suspended_by"] is None
+        assert client.get("/api/cameras/nope/stream").status_code == 404
+
+
+def test_camera_frame_endpoint(rig, tmp_path, monkeypatch):
+    """Tiles poll /frame: 503 while a live camera has no frame yet, the recorder's preview while a session owns the cameras."""
+    from yamkit import arm as arm_mod
+    from yamkit import hub
+
+    monkeypatch.setattr(arm_mod.YamArm, "connect", staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError("no arms"))))
+    cleared = []
+    monkeypatch.setattr(hub, "clear_cache", lambda: cleared.append(1))
+    rig.cameras = {"top": {"type": "opencv", "index_or_path": "/dev/video99", "width": 640, "height": 480, "fps": 30}}
+    rig.save()
+    app = create_app(rig.path, datasets_dir=ROOT / "data" / "datasets", outputs_dir=tmp_path, frontend_dir=ROOT / "ui")
+    frames = tmp_path / "ui" / "frames"
+    child = f"import pathlib, time; p = pathlib.Path({str(frames)!r}); p.mkdir(parents=True, exist_ok=True); (p / 'top.jpg').write_bytes(b'\\xff\\xd8preview'); time.sleep(30)"
+    monkeypatch.setattr(SessionManager, "yamkit_argv", lambda self, *args: [sys.executable, "-u", "-c", child])
+    with TestClient(app) as client:
+        r = client.get("/api/cameras/top/frame")
+        assert r.status_code == 503  # no such device: no frame, and the tile keeps trying
+        assert client.get("/api/cameras/nope/frame").status_code == 404
+        assert client.post("/api/session/record", json={"name": "x", "task": "y"}).status_code == 200
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not (frames / "top.jpg").exists():
+            time.sleep(0.05)
+        r = client.get("/api/cameras/top/frame")
+        assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg" and r.content == b"\xff\xd8preview"
+        assert r.headers["x-source"] == "record" and r.headers["cache-control"] == "no-store"
+        client.post("/api/session/stop")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and client.get("/api/session").json()["active"]:
+            time.sleep(0.05)
+        time.sleep(0.2)
+    assert cleared  # a record session may have changed what is on the Hub → listing cache dropped

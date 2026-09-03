@@ -164,10 +164,31 @@ lerobot-record --robot.type=yam_follower --robot.rig=configs/rig.yaml --robot.ar
                --dataset.single_task="pick up the red cube" --dataset.num_episodes=20
 ```
 
+## 5b. Hugging Face Hub (optional)
+
+Sign in once, then recordings can go to the Hub instead of (or as well as) this computer, and
+models trained anywhere can be pulled straight from the Hub for rollout. The token is stored in
+`data/hf/token` (git-ignored), never in the rig file.
+
+```bash
+yamkit hub login                      # paste a "write" token from huggingface.co/settings/tokens
+yamkit hub status
+yamkit record --name pick_cube --task "…" --to hub      # local | hub | both (default: hub.datasets in the rig)
+yamkit push-dataset pick_cube          # upload an existing local dataset  (--remove-local to free the disk)
+yamkit pull-dataset andre/pick_cube    # download one into data/datasets/
+yamkit train --dataset andre/pick_cube --push          # on any GPU box: pull the dataset, push the checkpoint
+yamkit push-model outputs/train/<job>/checkpoints/last/pretrained_model
+yamkit rollout --policy andre/act_pick_cube --task "…"  # a Hub id works wherever a checkpoint path does
+```
+
+The rig's `hub:` section holds the account name, whether uploads are private (default yes) and
+where recordings go by default; the Settings page edits it, the Record page overrides it per
+recording, and the Datasets / Models pages list local and Hub entries side by side.
+
 ## 6. Fine-tune a VLA
 
-This box has no NVIDIA GPU, so training happens elsewhere: copy `data/datasets/<name>` (or `--push`
-it to the Hub) to a GPU machine with the same repo, then
+This box has no NVIDIA GPU, so VLA fine-tuning happens elsewhere: copy `data/datasets/<name>` (or
+`--push` it to the Hub) to a GPU machine with the same repo, then
 
 ```bash
 yamkit train --dataset pick_cube --policy-type smolvla --pretrained lerobot/smolvla_base --steps 20000
@@ -175,6 +196,10 @@ yamkit train --dataset pick_cube --policy-type pi05 --pretrained lerobot/pi05_ba
 yamkit train --dataset pick_cube --policy-type act --pretrained "" --steps 50000                   # small, fast
 # checkpoints → outputs/train/<job>/checkpoints/last/pretrained_model
 ```
+
+ACT (52M parameters) does train on this CPU: about 2.5 s per step at batch 2 with three 640x480
+cameras, so a few thousand steps is an overnight job; `yamkit train` keeps the data loader in-process
+on CPU boxes automatically.
 
 Bring the `pretrained_model` directory back under `outputs/` (or push it to the Hub).
 
@@ -241,6 +266,8 @@ motor. See `docs/UI.md` and `docs/ui-screenshots/`.
 | `yamkit policy-check` | Load a policy/VLA for this rig and run it on a synthetic frame (no arm is energised). |
 | `yamkit ui` | Serve the local web UI (viewer + launcher for the commands above; pages never energise a motor). |
 | `yamkit doctor` | Check the environment: venv, torch, CAN (and boot-time bring-up), plugins, cameras, rig file vs attached hardware. |
+| `yamkit hub login/status/logout` | Hugging Face sign-in (token kept in `data/hf`, never in the rig). |
+| `yamkit push-dataset` / `pull-dataset` / `push-model` | Move datasets and checkpoints between this computer and the Hub. |
 | `yamkit env` | Print the environment variables that keep everything inside this repo (for `eval`). |
 
 Every command accepts `--help`; `record`/`teleoperate`/`rollout`/`train` pass unknown `--flags` straight to the underlying `lerobot-*` script and `--dry-run` prints the exact command instead of running it.
@@ -279,6 +306,7 @@ checkpoint ─► lerobot-rollout ─► policy.select_action() ─► YamFollow
 | arms should not move by themselves at Start/Stop | `control.home_speed: 0` in `configs/rig.yaml`, or `yamkit teleop --no-home` |
 | torchcodec / libavutil errors in logs | harmless: LeRobot falls back to PyAV for video |
 | policy too slow on CPU | `yamkit rollout --rtc`, or serve the policy from a GPU box |
+| training stops silently at step 0 (leaked semaphores) | forked data-loader workers; `yamkit train` adds `--num_workers=0` on CPU boxes, pass it yourself to plain `lerobot-train` |
 
 ## Development
 

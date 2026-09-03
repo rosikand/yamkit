@@ -14,6 +14,8 @@ Read `README.md` first. Hard rules for this repository:
   file readable by non-programmers (`RigConfig.save` writes the commented layout — extend the
   comments in `config.py` when adding fields). Left/right of arms and wrist cameras is a physical
   check the user does once (`yamkit read`, `yamkit swap`); do not try to auto-detect it.
+- **Secrets never enter the rig file.** The Hugging Face token lives in HF's own token file under
+  `data/hf/` (git-ignored); `configs/rig.yaml` only carries the account name and preferences.
 - **Do not reuse code from other folders on the machine.** Re-download / vendor instead.
 - **LeRobot is the infrastructure** (datasets, cameras, `lerobot-record/teleoperate/rollout/train`).
   `yamkit` only adds the YAM-specific hardware layer and thin CLI wrappers; the LeRobot plugins in

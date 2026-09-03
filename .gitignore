@@ -13,7 +13,7 @@ __pycache__/
 configs/rig.yaml
 
 # data & artifacts
-data/hf
+data
 outputs/
 wandb/
 *.mcap

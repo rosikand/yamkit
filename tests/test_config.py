@@ -93,3 +93,70 @@ def test_home_pose_offsets_and_home_speed(rig):
     assert loaded.arm("left_leader").joint_offsets == [0.05, 0, 0, 0, 0, 0]
     with pytest.raises(ValueError):
         ArmSpec(name="x", role="leader", can_serial="1", joint_offsets=[0.1, 0.2])
+
+
+def test_train_adds_cpu_defaults_without_cuda(monkeypatch):
+    import torch
+    from typer.testing import CliRunner
+
+    from yamkit.cli import app
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    res = CliRunner().invoke(app, ["train", "--dataset", "x", "--policy-type", "act", "--pretrained", "", "--dry-run"])
+    assert res.exit_code == 0, res.output
+    assert "--policy.device=cpu" in res.output and "--num_workers=0" in res.output
+    res = CliRunner().invoke(app, ["train", "--dataset", "x", "--dry-run", "--num_workers=2"])
+    assert "--num_workers=0" not in res.output and "--num_workers=2" in res.output and "--policy.device=cpu" in res.output
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    res = CliRunner().invoke(app, ["train", "--dataset", "x", "--dry-run"])
+    assert "--policy.device=cpu" not in res.output and "--num_workers" not in res.output
+
+
+def test_hub_settings_roundtrip_and_validation(rig):
+    from yamkit.config import HubSpec
+
+    assert rig.hub == HubSpec() and rig.hub.datasets == "local" and rig.hub.private is True
+    rig.hub.username = "tester"
+    rig.hub.datasets = "hub"
+    rig.save()
+    text = rig.path.read_text()
+    assert "# ---- Hugging Face Hub" in text and "username: tester" in text and "datasets: hub" in text
+    assert not [ln for ln in text.splitlines() if "token" in ln.lower() and not ln.lstrip().startswith("#")]  # comments explain where the token lives; the data holds none
+    loaded = RigConfig.load(rig.path)
+    assert loaded.hub.username == "tester" and loaded.hub.datasets == "hub"
+    with pytest.raises(ValueError):
+        HubSpec(datasets="moon")
+    old = RigConfig.from_dict({"arms": {}, "pairs": [], "control": {}})  # rigs written before this field
+    assert old.hub == HubSpec()
+
+
+def test_record_and_train_hub_flags(rig, monkeypatch):
+    from typer.testing import CliRunner
+
+    from yamkit import hub
+    from yamkit.cli import app
+
+    rig.hub.username = "tester"
+    rig.save()
+    monkeypatch.setattr(hub, "get_token", lambda: None)  # no sign-in needed when hub.username is set
+    res = CliRunner().invoke(app, ["record", "--name", "cube", "--task", "t", "--rig", str(rig.path), "--to", "hub", "--dry-run"])
+    assert res.exit_code == 0, res.output
+    # the recorder itself is started exactly as before: no Hub repo id, no push, nothing Hub-related until afterwards
+    assert "--dataset.repo_id=yamkit/cube" in res.output and "--dataset.push_to_hub=false" in res.output
+    assert "then: upload" in res.output and "remove the local copy" in res.output
+    res = CliRunner().invoke(app, ["record", "--name", "cube", "--task", "t", "--rig", str(rig.path), "--dry-run"])  # rig default: local
+    assert "--dataset.repo_id=yamkit/cube" in res.output and "upload" not in res.output
+    rig.hub.datasets = "both"
+    rig.save()
+    res = CliRunner().invoke(app, ["record", "--name", "cube", "--task", "t", "--rig", str(rig.path), "--dry-run"])  # rig default: both
+    assert "then: upload" in res.output and "remove the local copy" not in res.output
+    res = CliRunner().invoke(app, ["record", "--name", "cube", "--task", "t", "--rig", str(rig.path), "--to", "local", "--dry-run"])
+    assert "--dataset.repo_id=yamkit/cube" in res.output and "upload" not in res.output
+    assert CliRunner().invoke(app, ["record", "--name", "cube", "--task", "t", "--rig", str(rig.path), "--to", "moon", "--dry-run"]).exit_code != 0
+
+    res = CliRunner().invoke(app, ["train", "--dataset", "tester/cube", "--policy-type", "act", "--pretrained", "", "--rig", str(rig.path), "--push", "--dry-run"])
+    assert res.exit_code == 0, res.output
+    assert "--dataset.repo_id=tester/cube" in res.output and "--dataset.root" not in res.output  # pulled from the Hub
+    assert "--policy.push_to_hub=true" in res.output and "--policy.repo_id=tester/act_cube" in res.output and "--policy.private=true" in res.output
+    res = CliRunner().invoke(app, ["train", "--dataset", "cube", "--dry-run"])
+    assert "--policy.push_to_hub=false" in res.output and "--dataset.root=" in res.output

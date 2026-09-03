@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .. import hub
 from ..can import bringup_commands, list_can_interfaces
 from ..config import RigConfig
 from ..paths import DATASETS_DIR, DEFAULT_RIG, OUTPUT_DIR, ROOT
@@ -53,6 +54,16 @@ class RecordBody(BaseModel):
     fps: int = 30
     arms: list[str] | None = None
     resume: bool = False
+    to: str | None = None  # local | hub | both (default: hub.datasets in the rig)
+
+
+class HubLoginBody(BaseModel):
+    token: str
+
+
+class HubTransferBody(BaseModel):
+    name: str  # dataset name / repo id, or a checkpoint path under outputs/ for push-model
+    remove_local: bool = False
 
 
 class RolloutBody(BaseModel):
@@ -75,6 +86,7 @@ class ConfigBody(BaseModel):
 
     yaml_text: str | None = None
     control: dict[str, float | int] | None = None
+    hub: dict[str, Any] | None = None
     validate_only: bool = False
 
 
@@ -101,20 +113,32 @@ def create_app(
             return None
 
     rig0 = load_rig()
-    cameras = CameraHub(rig0.cameras if rig0 else {})
+    frames_dir = outputs_dir / "ui" / "frames"
+    cameras = CameraHub(rig0.cameras if rig0 else {}, frames_dir=frames_dir)
     run_dir_box: dict[str, Path | None] = {"dir": None}
 
     def on_start(mode: str) -> None:
         if mode in CAMERA_MODES:
             cameras.suspend(mode)
+            for old in frames_dir.glob("*.jpg"):  # previews from the previous session must not linger
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+
+    def on_phase(mode: str, phase: str) -> None:
+        if mode == "record" and phase == "upload":
+            cameras.resume()  # the recorder has exited; the live feeds can come back while the upload runs
 
     def on_exit(status: dict[str, Any]) -> None:
         cameras.resume()
+        if status.get("mode") in ("push", "pull", "record"):
+            hub.clear_cache()  # what is on the Hub may just have changed
         if run_dir_box["dir"] is not None:
             deployments.finalize(run_dir_box["dir"], status)
             run_dir_box["dir"] = None
 
-    sessions = session_manager or SessionManager(on_start=on_start, on_exit=on_exit)
+    sessions = session_manager or SessionManager(on_start=on_start, on_exit=on_exit, on_phase=on_phase, frames_dir=frames_dir)
     if session_manager is not None:  # injected (tests): still wire the camera/deployment hooks
         sessions.on_start = on_start
         sessions.on_exit = on_exit
@@ -178,6 +202,7 @@ def create_app(
             "video_devices": sorted(p.name for p in Path("/dev").glob("video*")),
             "cameras": cameras.statuses(),
             "session": {"active": sessions.active, "mode": sessions.mode if sessions.active else None},
+            "hub": {"logged_in": bool(hub.get_token()), **(dataclasses.asdict(rig.hub) if rig else {})},
         }
 
     # ----------------------------------------------------------------------------- cameras --
@@ -185,18 +210,47 @@ def create_app(
     def camera_list() -> list[dict[str, Any]]:
         return cameras.statuses()
 
+    @app.get("/api/cameras/{name}/frame")
+    def camera_frame(name: str) -> Response:
+        """The newest JPEG of one camera — the UI tiles poll this a few times a second (no long-lived
+        connection to freeze or exhaust). While a session owns the cameras it serves that session's
+        published preview instead."""
+        cam = cameras.get(name)
+        if cam is None:
+            raise HTTPException(404, f"no camera {name!r} in the rig")
+        headers = {"Cache-Control": "no-store"}
+        if cameras.suspended_by:
+            path = cameras.frames_dir / f"{name}.jpg" if cameras.frames_dir else None
+            if path is None or not path.is_file():
+                raise HTTPException(404, f"no preview from the {cameras.suspended_by} session yet")
+            data = path.read_bytes()
+            if not data.startswith(b"\xff\xd8"):
+                raise HTTPException(404, "preview not ready")
+            return Response(data, media_type="image/jpeg", headers={**headers, "X-Source": cameras.suspended_by})
+        data = cam.snapshot()
+        if data is None:
+            raise HTTPException(503, cam.error or "camera starting")
+        return Response(data, media_type="image/jpeg", headers={**headers, "X-Source": "live"})
+
     @app.get("/api/cameras/{name}/stream")
     def camera_stream(name: str) -> StreamingResponse:
         cam = cameras.get(name)
         if cam is None:
             raise HTTPException(404, f"no camera {name!r} in the rig")
-        if cameras.suspended_by:
-            raise HTTPException(409, f"cameras are in use by the {cameras.suspended_by} session")
         from starlette.background import BackgroundTask
 
+        from .camstream import file_frames
+
         stop = threading.Event()
+        if cameras.suspended_by:
+            # the session's child process owns the device; it publishes previews for us (yamkit.frames)
+            if cameras.frames_dir is None:
+                raise HTTPException(409, f"cameras are in use by the {cameras.suspended_by} session")
+            source = file_frames(cameras.frames_dir / f"{name}.jpg", stop, alive=lambda: cameras.suspended_by is not None)
+        else:
+            source = cam.frames(stop)
         return StreamingResponse(
-            cam.frames(stop),
+            source,
             media_type="multipart/x-mixed-replace; boundary=yamkitframe",
             background=BackgroundTask(stop.set),
         )
@@ -256,9 +310,53 @@ def create_app(
             args += ["--arms", a]
         if body.resume:
             args.append("--resume")
+        if body.to:
+            if body.to not in hub.DESTINATIONS:
+                raise HTTPException(422, f"to must be one of {hub.DESTINATIONS}")
+            args += ["--to", body.to]
         meta = {"name": body.name, "task": body.task, "episodes": body.episodes,
-                "episode_s": body.episode_s, "reset_s": body.reset_s, "fps": body.fps}
+                "episode_s": body.episode_s, "reset_s": body.reset_s, "fps": body.fps, "to": body.to}
         return start("record", sessions.yamkit_argv(*args), meta)
+
+    # --------------------------------------------------------------------------------- hub --
+    def rig_hub():
+        rig = load_rig()
+        return rig.hub if rig else None
+
+    @app.get("/api/hub")
+    def hub_status() -> dict[str, Any]:
+        h = rig_hub()
+        return {**hub.status(), "settings": dataclasses.asdict(h) if h else None, "token_path": str(hub.token_path())}
+
+    @app.post("/api/hub/login")
+    def hub_login(body: HubLoginBody) -> dict[str, Any]:
+        try:
+            name = hub.login(body.token)
+        except Exception as e:  # noqa: BLE001 — bad token / offline
+            raise HTTPException(400, f"sign-in failed: {e}") from None
+        return {"username": name}
+
+    @app.post("/api/hub/logout")
+    def hub_logout() -> dict[str, Any]:
+        hub.logout()
+        return hub.status()
+
+    @app.post("/api/hub/push-dataset")
+    def hub_push_dataset(body: HubTransferBody) -> dict[str, Any]:
+        dataset_dir(body.name)
+        args = ["push-dataset", body.name, "--rig", str(rig_path)] + (["--remove-local"] if body.remove_local else [])
+        return start("push", sessions.yamkit_argv(*args), {"name": body.name})
+
+    @app.post("/api/hub/pull-dataset")
+    def hub_pull_dataset(body: HubTransferBody) -> dict[str, Any]:
+        return start("pull", sessions.yamkit_argv("pull-dataset", body.name, "--rig", str(rig_path)), {"name": body.name})
+
+    @app.post("/api/hub/push-model")
+    def hub_push_model(body: HubTransferBody) -> dict[str, Any]:
+        d = (outputs_dir / body.name).resolve()
+        if outputs_dir.resolve() not in d.parents or not (d / "config.json").is_file():
+            raise HTTPException(404, f"no checkpoint at outputs/{body.name}")
+        return start("push", sessions.yamkit_argv("push-model", str(d), "--rig", str(rig_path)), {"name": body.name})
 
     @app.post("/api/session/rollout")
     def session_rollout(body: RolloutBody) -> dict[str, Any]:
@@ -299,6 +397,7 @@ def create_app(
             },
             "pairs": [dataclasses.asdict(p) for p in (rig.pairs if rig else [])],
             "cameras": rig.cameras if rig else {},
+            "hub": dataclasses.asdict(rig.hub) if rig else None,
             "problems": rig.validate() if rig else [],
         }
 
@@ -347,6 +446,18 @@ def create_app(
             for k, v in body.control.items():
                 setattr(rig.control, k, int(v) if k == "engage_button" else float(v))
             rig.save(rig_path)
+        elif body.hub is not None:
+            rig = require_rig()
+            unknown = set(body.hub) - set(dataclasses.asdict(rig.hub))
+            if unknown:
+                raise HTTPException(422, f"unknown hub field(s): {sorted(unknown)}")
+            try:
+                from ..config import HubSpec
+
+                rig.hub = HubSpec(**{**dataclasses.asdict(rig.hub), **{k: (v or None) if k == "username" else v for k, v in body.hub.items()}})
+            except (TypeError, ValueError) as e:
+                raise HTTPException(422, str(e)) from None
+            rig.save(rig_path)
         else:
             raise HTTPException(422, "provide yaml_text or control")
         rig = load_rig()
@@ -362,7 +473,16 @@ def create_app(
 
     @app.get("/api/datasets")
     def datasets() -> list[dict[str, Any]]:
-        return catalog.list_datasets(datasets_dir)
+        """Local datasets and the account's Hub datasets in one list (`where`: local | cloud | both)."""
+        h = rig_hub()
+        local = [{**d, "where": "local"} for d in catalog.list_datasets(datasets_dir)]
+        by_name = {d["name"]: d for d in local}
+        for c in hub.list_datasets(h.username if h else None) if hub.get_token() else []:
+            if c["name"] in by_name:
+                by_name[c["name"]].update(where="both", repo_id=c["repo_id"], url=c["url"], private=c["private"])
+            else:
+                local.append({**c, "where": "cloud"})
+        return local
 
     @app.get("/api/datasets/{name}")
     def dataset(name: str) -> dict[str, Any]:
@@ -406,7 +526,23 @@ def create_app(
 
     @app.get("/api/models")
     def models() -> list[dict[str, Any]]:
-        return catalog.list_models(outputs_dir)
+        """Local checkpoints and the account's Hub models in one list (`where`: local | cloud | both)."""
+        h = rig_hub()
+        local = [{**m, "where": "local", "name": m["path"].split("/")[1] if m["path"].startswith("train/") and m["path"].count("/") >= 1 else m["path"]} for m in catalog.list_models(outputs_dir)]
+        by_name = {m["name"]: m for m in local}
+        for c in hub.list_models(h.username if h else None) if hub.get_token() else []:
+            if c["name"] in by_name:
+                by_name[c["name"]].update(where="both", repo_id=c["repo_id"], url=c["url"], private=c["private"])
+            else:
+                local.append({**c, "where": "cloud"})
+        return local
+
+    @app.get("/api/hub/models/{repo:path}")
+    def hub_model(repo: str) -> dict[str, Any]:
+        d = hub.model_detail(repo)
+        if d is None:
+            raise HTTPException(404, f"{repo!r} is not a LeRobot policy on the Hub (or the Hub is unreachable)")
+        return d
 
     @app.get("/api/models/{model_path:path}")
     def model(model_path: str) -> dict[str, Any]:

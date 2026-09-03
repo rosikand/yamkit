@@ -113,3 +113,16 @@ control:
   max_gripper_speed: 3.0
   home_speed: 0.25
   leader_home_speed: 0.25
+
+# ---- Hugging Face Hub (optional) ------------------------------------------------------------
+# Sign in once with `yamkit hub login` (or on the Settings page); the token is kept in ./data/hf,
+# never in this file. Recordings can then be uploaded as <username>/<dataset name>, and models
+# trained elsewhere can be pulled straight from the Hub for rollout.
+#   username   account to push under (leave empty to use the signed-in account)
+#   private    keep pushed datasets and models private (recommended: your rig, your room)
+#   datasets   where a recording goes by default: local | hub | both. "local" = exactly the old
+#              behaviour; with hub/both the upload happens only AFTER the recording session ends.
+hub:
+  username: your-hf-username
+  private: true
+  datasets: local

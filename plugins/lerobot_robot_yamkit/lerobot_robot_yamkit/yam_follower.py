@@ -20,6 +20,7 @@ from lerobot.utils.decorators import check_if_already_connected, check_if_not_co
 from yamkit.arm import YamArm, go_home_all, resolve_channel
 from yamkit.cameras import camera_configs_from_dicts
 from yamkit.config import N_JOINTS, RigConfig
+from yamkit.frames import FramePublisher
 
 from .config_yam_follower import BiYamFollowerConfig, YamFollowerConfig
 
@@ -106,6 +107,7 @@ class YamFollower(Robot):
         self._h = _FollowerHandle(self.rig, config.arm, config.max_joint_speed, config.max_gripper_speed)
         self.camera_configs = _rig_cameras(self.rig, config)
         self.cameras = make_cameras_from_configs(self.camera_configs)
+        self._frames = FramePublisher()  # active only with $YAMKIT_FRAMES_DIR (set by the web UI)
 
     @property
     def _motors_ft(self) -> dict[str, type]:
@@ -153,6 +155,7 @@ class YamFollower(Robot):
         obs: dict = self._h.observation()
         for key, cam in self.cameras.items():
             obs[key] = cam.read_latest()
+            self._frames.publish(key.split(".")[-1], obs[key])  # UI preview while we own the cameras
         return obs
 
     @check_if_not_connected
@@ -183,6 +186,7 @@ class BiYamFollower(Robot):
         }
         self.camera_configs = _rig_cameras(self.rig, config)
         self.cameras = make_cameras_from_configs(self.camera_configs)
+        self._frames = FramePublisher()
 
     @property
     def _motors_ft(self) -> dict[str, type]:
@@ -237,6 +241,7 @@ class BiYamFollower(Robot):
             obs.update({f"{side}_{k}": v for k, v in h.observation().items()})
         for key, cam in self.cameras.items():
             obs[key] = cam.read_latest()
+            self._frames.publish(key.split(".")[-1], obs[key])  # UI preview while we own the cameras
         return obs
 
     @check_if_not_connected

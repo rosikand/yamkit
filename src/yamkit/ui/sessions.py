@@ -38,6 +38,7 @@ _TELEOP_PAIR_RE = re.compile(r"(\S+->\S+): (ENGAGED|idle)\s*err=\s*([-+.\dnaif]+
 # lerobot-record progress (message wording varies between versions; match loosely)
 _EPISODE_RE = re.compile(r"[Rr]ecord(?:ing)?\s+episode\s+(\d+)")
 _RESET_RE = re.compile(r"[Rr]eset the environment")
+_UPLOAD_RE = re.compile(r"\[yamkit\] recording finished")  # recorder exited; only the upload is left
 # `yamkit policy-check` table rows
 _FIRST_CALL_RE = re.compile(r"first call.*?([\d.]+)\s*ms")
 _NEXT_CALLS_RE = re.compile(r"next calls.*?│([^│]*)")
@@ -78,9 +79,15 @@ def parse_line(line: str, parsed: dict[str, Any]) -> None:
     if m:
         parsed["episode"] = int(m.group(1))
         parsed["phase"] = "record"
+        parsed["phase_since"] = time.time()
         return
     if _RESET_RE.search(line):
         parsed["phase"] = "reset"
+        parsed["phase_since"] = time.time()
+        return
+    if _UPLOAD_RE.search(line):
+        parsed["phase"] = "upload"
+        parsed["phase_since"] = time.time()
         return
     m = _FIRST_CALL_RE.search(line)
     if m:
@@ -110,6 +117,8 @@ class SessionManager:
         log_lines: int = 400,
         on_start: Callable[[str], None] | None = None,
         on_exit: Callable[[dict[str, Any]], None] | None = None,
+        on_phase: Callable[[str, str], None] | None = None,
+        frames_dir: Path | None = None,
     ) -> None:
         self._python = python
         self._lock = threading.Lock()
@@ -117,6 +126,8 @@ class SessionManager:
         self._reader: threading.Thread | None = None
         self.on_start = on_start
         self.on_exit = on_exit
+        self.on_phase = on_phase
+        self.frames_dir = frames_dir
         self.log: deque[str] = deque(maxlen=log_lines)
         self.parsed: dict[str, Any] = {}
         self.mode: str | None = None
@@ -140,6 +151,13 @@ class SessionManager:
             if self.active:
                 raise RuntimeError(f"a {self.mode!r} session is already running (stop it first)")
             env = dict(os.environ, PYTHONUNBUFFERED="1", COLUMNS="300", NO_COLOR="1")
+            # LeRobot's recorder grabs the keyboard system-wide when it sees a display (Esc / arrows /
+            # n / r / q in *any* window would end or skip an episode). Sessions started from the UI
+            # are controlled by the UI's buttons only.
+            env.pop("DISPLAY", None)
+            env.pop("WAYLAND_DISPLAY", None)
+            if self.frames_dir is not None and mode in CAMERA_MODES:
+                env["YAMKIT_FRAMES_DIR"] = str(self.frames_dir)  # the child publishes camera previews for the UI
             if self.on_start:
                 self.on_start(mode)
             self.log.clear()
@@ -168,10 +186,16 @@ class SessionManager:
             line = raw.rstrip("\n")
             if line.strip():
                 self.log.append(line)
+                before = self.parsed.get("phase")
                 try:
                     parse_line(line, self.parsed)
                 except Exception:
                     log.debug("unparseable line: %r", line, exc_info=True)
+                if self.on_phase and self.parsed.get("phase") != before:
+                    try:
+                        self.on_phase(self.mode or "", self.parsed.get("phase") or "")
+                    except Exception:
+                        log.exception("session on_phase hook failed")
         proc.wait()
         self.ended_at = time.time()
         self.returncode = proc.returncode
@@ -181,14 +205,17 @@ class SessionManager:
             except Exception:
                 log.exception("session on_exit hook failed")
 
-    def stop(self, grace_s: float = 30.0) -> dict[str, Any]:
+    def stop(self, grace_s: float | None = None) -> dict[str, Any]:
         """SIGINT the child's process group (= Ctrl-C), escalate in the background if it hangs.
 
-        The grace period covers the arms' slow return to home; calling stop() again sends a second
-        SIGINT, which makes the CLIs release the arms immediately."""
+        The grace period covers the arms' slow return to home (30 s), or a recording's upload to the
+        Hub afterwards (10 min); calling stop() again sends a second SIGINT, which makes the CLIs
+        release the arms immediately."""
         proc = self._proc
         if proc is None or proc.poll() is not None:
             return self.status()
+        if grace_s is None:
+            grace_s = 600.0 if self.mode in ("record", "push", "pull") else 30.0
         self.stopping = True
         self._signal(proc, signal.SIGINT)
         threading.Thread(target=self._escalate, args=(proc, grace_s), daemon=True).start()
@@ -237,6 +264,7 @@ class SessionManager:
             "stopping": self.stopping and active,
             "meta": self.meta,
             "parsed": self.parsed,
+            "phase_elapsed_s": round(now - self.parsed["phase_since"], 1) if active and self.parsed.get("phase_since") else None,
             "log": list(self.log),
         }
 
