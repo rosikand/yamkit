@@ -40,7 +40,13 @@ pairs:
   follower: left_follower
 - leader: right_leader
   follower: right_follower
-cameras: {}
+cameras:
+  front:
+    type: opencv
+    index_or_path: /dev/v4l/by-id/usb-Intel_R__RealSense_TM__Depth_Camera_405_Intel_R__RealSense_TM__Depth_Camera_405_255323073691-video-index4
+    width: 640
+    height: 480
+    fps: 30
 control:
   teleop_hz: 100.0
   sync_seconds: 3.0
