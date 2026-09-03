@@ -67,7 +67,7 @@ Any Python started from `.venv` automatically redirects HuggingFace/LeRobot/torc
 yamkit can                 # adapters, state, bitrate, USB serial
 yamkit cameras             # attached cameras (model, serial, USB port) and which rig name uses each
 yamkit discover --write    # passive probe (no motor is enabled) + camera detection → configs/rig.yaml
-scripts/install_system.sh  # one-time (sudo): adapters come up at boot / hot-plug / after bus-off
+scripts/install_system.sh  # one-time (sudo): adapters come up at boot and on hot-plug
 scripts/can_up.sh          # by hand instead (sudo, every boot); --reset recovers a wedged adapter
 ```
 

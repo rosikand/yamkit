@@ -1,4 +1,4 @@
-# Persistent CAN bring-up on boot / hot-plug / bus-off via systemd-networkd.
+# Persistent CAN bring-up on boot / hot-plug via systemd-networkd.
 # Installed by scripts/install_system.sh (offered once by ./setup.sh; the only system change
 # yamkit makes). By hand:
 #   sudo cp system/80-yam-can.network /etc/systemd/network/
@@ -9,4 +9,5 @@ Name=can*
 
 [CAN]
 BitRate=1M
-RestartSec=100ms
+# No RestartSec= here: the gs_usb driver (CANable adapters) rejects automatic bus-off restart and
+# networkd would then leave the link DOWN. A bus-off adapter is recovered with scripts/can_up.sh --reset.

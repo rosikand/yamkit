@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# One-time system setup so the CAN adapters come up by themselves — at boot, on hot-plug and after
-# a bus-off — instead of running scripts/can_up.sh after every reboot.
+# One-time system setup so the CAN adapters come up by themselves — at boot and on hot-plug —
+# instead of running scripts/can_up.sh after every reboot.
 #
 # What it does (the ONLY thing yamkit ever installs outside its own directory):
 #   * copies system/80-yam-can.network to /etc/systemd/network/
@@ -32,6 +32,9 @@ else
   $SUDO systemctl enable --now systemd-networkd >/dev/null
   $SUDO networkctl reload 2>/dev/null || $SUDO systemctl restart systemd-networkd
 fi
+# (Re)apply the unit to adapters that are plugged in right now, including ones networkd gave up on.
+cans=$(ip -brief link show type can 2>/dev/null | awk '{print $1}')
+[[ -n "$cans" ]] && $SUDO networkctl reconfigure $cans 2>/dev/null || true
 
 # Adapters that are plugged in right now get configured by the reload; show the result.
 for _ in 1 2 3 4 5 6; do
@@ -44,4 +47,8 @@ for _ in 1 2 3 4 5 6; do
   sleep 0.5
 done
 ip -brief link show type can 2>/dev/null || true
-echo "done — CAN adapters now come up automatically (at boot, on hot-plug, after bus-off)."
+if ip -brief link show type can 2>/dev/null | grep -q " DOWN "; then
+  echo "some adapters are still DOWN — see:  networkctl status can0   (and journalctl -u systemd-networkd)"
+  exit 1
+fi
+echo "done — CAN adapters now come up automatically (at boot and on hot-plug)."

@@ -30,6 +30,16 @@ def test_list_fake_sysfs(tmp_path):
     assert i.up is False  # `ip` knows nothing about can9
 
 
+def test_networkd_template_has_no_bus_off_restart():
+    """gs_usb (CANable) rejects RestartSec=; with it networkd marks the link failed and leaves it DOWN."""
+    from pathlib import Path
+
+    unit = (Path(__file__).resolve().parents[1] / "system" / "80-yam-can.network").read_text()
+    body = "\n".join(line for line in unit.splitlines() if not line.startswith("#"))
+    assert "RestartSec" not in body
+    assert "Name=can*" in body and "BitRate=1M" in body
+
+
 def test_boot_bringup_status(tmp_path, monkeypatch):
     ok, detail = boot_bringup_installed(tmp_path / "80-yam-can.network")
     assert ok is False and "install_system.sh" in detail
