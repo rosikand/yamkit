@@ -24,6 +24,34 @@ from i2rt.robots.utils import (
 logger = logging.getLogger(__name__)
 
 
+def wrap_correction(pos: float, limits: Optional[np.ndarray] = None) -> float:
+    """How much (0, +2π or -2π) to add to a freshly read joint position so it lands inside the
+    joint's range.
+
+    Each motor's absolute encoder wraps once per turn at a point that depends on where its zero was
+    saved, so an arm parked at e.g. +183° can read -177° on one arm and +183° on another. A reading
+    beyond the joint's own limits is physically impossible (there is a hard stop there), so if the
+    reading shifted by one turn is inside the limits, that is the real position. Without `limits`
+    only readings beyond ±π are corrected (the original behaviour).
+
+    yamkit local patch: the original code corrected only |pos| > π, which left a base parked past the
+    encoder wrap unable to power up ("Joint limit violation ... -3.0885 < -2.8680").
+    """
+    two_pi = 2 * np.pi
+    if limits is None:
+        if pos < -np.pi:
+            return two_pi
+        if pos > np.pi:
+            return -two_pi
+        return 0.0
+    lo, hi = float(limits[0]), float(limits[1])
+    if pos < lo and lo <= pos + two_pi <= hi:
+        return two_pi
+    if pos > hi and lo <= pos - two_pi <= hi:
+        return -two_pi
+    return 0.0
+
+
 def _load_joint_limits_from_xml(*xml_paths: str) -> np.ndarray:
     """Parse joint limits (range attributes) from one or more XML files.
 
@@ -278,12 +306,11 @@ def get_yam_robot(
 
     logging.info(f"current_pos: {[m.pos for m in motor_states]}")
     for idx, state in enumerate(motor_states):
-        if state.pos < -np.pi:
-            logging.info(f"motor {idx} pos={state.pos:.3f}, offset -2π")
-            motor_chain.motor_offset[idx] -= 2 * np.pi
-        elif state.pos > np.pi:
-            logging.info(f"motor {idx} pos={state.pos:.3f}, offset +2π")
-            motor_chain.motor_offset[idx] += 2 * np.pi
+        limits = joint_limits[idx] if joint_limits is not None and idx < len(joint_limits) else None
+        turn = wrap_correction(state.pos, limits)
+        if turn:
+            logging.info(f"motor {idx} pos={state.pos:.3f}, offset {'-' if turn > 0 else '+'}2π")
+            motor_chain.motor_offset[idx] -= turn  # reported pos = absolute - offset
 
     logging.info(f"adjusted motor_offsets: {motor_chain.motor_offset.tolist()}")
 

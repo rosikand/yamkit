@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Self
@@ -25,6 +26,7 @@ STALE_COMMAND_S = 0.5  # after this long without commands, ramp restarts from th
 COMPLIANT_KP_SCALE = 0.15  # gains for moving a leader home: gentle enough that a hand on the handle wins
 COMPLIANT_KD_SCALE = 0.3
 HOME_MIN_S = 0.5  # shortest go_home move, so a tiny correction is still a visible glide
+HOME_SETTLE_S = 1.0  # hold the home target this long before releasing, so a soft (compliant) arm actually gets there
 
 
 @dataclass
@@ -183,14 +185,16 @@ class YamArm:
         self._last_cmd, self._last_cmd_t = target.copy(), now
         return target
 
-    def move_to(self, q: np.ndarray, gripper: float | None = None, duration: float = 3.0, hz: float = 100.0) -> None:
-        """Blocking linear interpolation from the measured pose to the target."""
+    def move_to(self, q: np.ndarray, gripper: float | None = None, duration: float = 3.0, hz: float = 100.0, stop: threading.Event | None = None) -> None:
+        """Blocking linear interpolation from the measured pose to the target (`stop` ends it early)."""
         start = self.read().vector()
         target = self._full_target(q, gripper)
         if start.shape != target.shape:  # arm without gripper
             target = target[: start.shape[0]]
         steps = max(int(duration * hz), 1)
         for i in range(1, steps + 1):
+            if stop is not None and stop.is_set():
+                return
             a = i / steps
             self.command((1 - a) * start[:N_JOINTS] + a * target[:N_JOINTS],
                          (1 - a) * start[-1] + a * target[-1] if self.spec.has_motor_gripper else None,
@@ -202,14 +206,15 @@ class YamArm:
         st = self.read()
         self.command(st.q, st.gripper, limit_speed=False)
 
-    def go_home(self, speed: float = 0.5, *, compliant: bool = False, release: bool = False) -> float:
+    def go_home(self, speed: float = 0.5, *, compliant: bool = False, release: bool = False, stop: threading.Event | None = None) -> float:
         """Move slowly to the home pose (`rest_pose`, default all joints 0 = folded). Blocking.
 
         The move takes max|Δq| / `speed` (rad/s), at least 0.5 s; the gripper is left where it is.
-        `compliant` uses low gains so a hand holding the arm wins (leaders); `release` leaves the arm
-        in gravity-compensation idle afterwards. A KeyboardInterrupt (second Ctrl-C / Stop) releases
-        the arm where it is and propagates, so the caller can skip every remaining move.
-        Returns how far (rad) the arm had to move."""
+        `compliant` uses low gains so a hand holding the arm wins (leaders); `release` holds the target
+        for `HOME_SETTLE_S` and then leaves the arm in gravity-compensation idle (a compliant arm lags
+        the ramp, so without the pause it would be let go short of home). A KeyboardInterrupt, or a set
+        `stop` event (used when several arms move at once), releases the arm where it is; the interrupt
+        propagates so the caller can skip every remaining move. Returns how far (rad) the arm had to move."""
         target = self.home_pose
         dist = float(np.max(np.abs(self.read().q - target)))
         duration = max(dist / max(float(speed), 1e-6), HOME_MIN_S)
@@ -217,7 +222,16 @@ class YamArm:
         if compliant:
             self.scale_gains(COMPLIANT_KP_SCALE, COMPLIANT_KD_SCALE)
         try:
-            self.move_to(target, None, duration=duration)
+            self.move_to(target, None, duration=duration, stop=stop)
+            if stop is not None and stop.is_set():
+                log.warning("%s: home move stopped — releasing here", self.name)
+                self.gravity_idle()
+                return dist
+            if release:  # let a lagging (compliant) arm catch up with the target
+                if stop is not None:
+                    stop.wait(HOME_SETTLE_S)
+                else:
+                    time.sleep(HOME_SETTLE_S)
         except KeyboardInterrupt:
             log.warning("%s: home move interrupted — releasing here", self.name)
             self.gravity_idle()
@@ -283,6 +297,35 @@ class YamArm:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+
+def go_home_all(jobs: list[tuple[YamArm, dict[str, Any]]]) -> None:
+    """`arm.go_home(**kw)` for every (arm, kw) at the same time — one thread per arm, each arm has its
+    own CAN bus. Ctrl-C (raised in the calling thread) stops every move, releases the arms where they
+    are, then propagates; an error in any arm's move is re-raised after all moves have ended."""
+    stop = threading.Event()
+    errors: list[BaseException] = []
+
+    def run(arm: YamArm, kw: dict[str, Any]) -> None:
+        try:
+            arm.go_home(**kw, stop=stop)
+        except BaseException as e:  # noqa: BLE001 — surfaced in the caller's thread below
+            errors.append(e)
+
+    threads = [threading.Thread(target=run, args=(a, kw), daemon=True, name=f"home-{a.name}") for a, kw in jobs]
+    for t in threads:
+        t.start()
+    try:
+        while any(t.is_alive() for t in threads):
+            for t in threads:
+                t.join(timeout=0.05)
+    except KeyboardInterrupt:
+        stop.set()
+        for t in threads:
+            t.join(timeout=3.0)
+        raise
+    if errors:
+        raise errors[0]
 
 
 def resolve_channel(spec: ArmSpec) -> str:

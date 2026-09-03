@@ -102,3 +102,27 @@ def test_plugins_do_not_move_arms_when_home_speed_is_zero(rig, fake_connect, tmp
     robot.disconnect()
     f = fake_connect["left_follower"]
     assert f.commands == [] and np.allclose(f.pos[:6], 0.3) and f.closed
+
+
+def test_bimanual_plugins_park_both_arms_together(rig, fake_connect, tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_LEROBOT_HOME", str(tmp_path / "lr"))
+    from lerobot.robots.utils import make_robot_from_config
+    from lerobot.teleoperators.utils import make_teleoperator_from_config
+    from lerobot_robot_yamkit import BiYamFollowerConfig
+    from lerobot_teleoperator_yamkit import BiYamLeaderConfig
+
+    rig.control.home_speed = rig.control.leader_home_speed = 50.0
+    rig.save()
+    for n in ("left_leader", "left_follower", "right_leader", "right_follower"):
+        fake_connect.presets[n] = np.full(6, 0.3)
+    robot = make_robot_from_config(BiYamFollowerConfig(rig=str(rig.path)))
+    teleop = make_teleoperator_from_config(BiYamLeaderConfig(rig=str(rig.path)))
+    robot.connect()
+    teleop.connect()
+    for n, r in fake_connect.items():
+        assert np.allclose(r.pos[:6], 0), n
+        r.pos[:6] = 0.4
+    robot.disconnect()
+    teleop.disconnect()
+    for n, r in fake_connect.items():
+        assert np.allclose(r.pos[:6], 0) and r.closed, n

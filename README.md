@@ -99,8 +99,9 @@ move). On exit the arm is left compliant; the motors fall back to firmware dampi
 
 **Home** is the folded pose the vendor zeroed every joint at (all joints 0), unless `yamkit set-rest`
 stored another one. Teleop, recording and rollout move every arm home slowly at Start and back home at
-Stop (`control.home_speed`, 0.5 rad/s by default; 0 turns it off; leaders use the gentler
-`control.leader_home_speed`, 0.25 rad/s). Leaders move with low gains so a hand on the handle simply wins. A second Stop / Ctrl-C during the return releases the arms immediately.
+Stop, all arms at the same time (`control.home_speed` for followers and `control.leader_home_speed`
+for leaders, both 0.25 rad/s by default; 0 turns it off). Leaders move with low gains so a hand on
+the handle simply wins. A second Stop / Ctrl-C during the return releases the arms immediately.
 
 **Align** fixes a follower that points slightly off its leader: the two arms' motor zeros never agree
 exactly. `yamkit align` reads both arms folded against their stops and stores the per-joint difference

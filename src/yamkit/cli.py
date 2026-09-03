@@ -380,38 +380,61 @@ def rest(
 
     Home is `rest_pose` if stored (`yamkit set-rest`), otherwise all joints at 0 — the folded pose.
     Leaders move compliantly (a hand on the handle wins). Ctrl-C releases the arms where they are."""
+    from .arm import go_home_all
     from .config import RigConfig
 
     cfg = RigConfig.load(rig)
     if speed is None and cfg.control.home_speed <= 0:
         err.print("[red]home_speed is 0 in the rig — pass --speed (rad/s)[/]")
         raise typer.Exit(1)
-    for n in arms or list(cfg.arms):
-        _, a = _connect(rig, n)
-        leader = a.spec.role == "leader"
-        spd = speed if speed is not None else (cfg.control.leader_home_speed if leader else cfg.control.home_speed)
-        try:
-            console.print(f"{n}: moving home at {spd:g} rad/s" + (" (compliant)" if leader else ""))
-            a.go_home(spd, compliant=leader, release=True)
-        except KeyboardInterrupt:
-            console.print("[yellow]aborted — arms released where they are[/]")
-            raise typer.Exit(130) from None
-        finally:
+    connected = []
+    try:
+        for n in arms or list(cfg.arms):
+            _, a = _connect(rig, n)
+            connected.append(a)
+        jobs = []
+        for a in connected:
+            leader = a.spec.role == "leader"
+            spd = speed if speed is not None else (cfg.control.leader_home_speed if leader else cfg.control.home_speed)
+            console.print(f"{a.name}: moving home at {spd:g} rad/s" + (" (compliant)" if leader else ""))
+            jobs.append((a, {"speed": spd, "compliant": leader, "release": True}))
+        go_home_all(jobs)  # all arms at once
+    except KeyboardInterrupt:
+        console.print("[yellow]aborted — arms released where they are[/]")
+        raise typer.Exit(130) from None
+    finally:
+        for a in connected:
             a.close()
+
+
+def _joint_stops(spec):
+    """(6, 2) lower/upper joint stops (rad) of this arm type, from the vendor's robot model."""
+    from i2rt.robots.get_robot import _load_joint_limits_from_xml
+    from i2rt.robots.utils import ArmType, GripperType
+
+    return _load_joint_limits_from_xml(ArmType.from_string_name(spec.arm_type).get_xml_path(), GripperType.from_string_name(spec.gripper).get_xml_path())[:6]
+
+
+STOP_TOL_DEG = 15.0  # a joint counts as "against its stop" when both arms read within this of the same limit
+JOINT_LABELS = ("base yaw", "shoulder", "elbow", "wrist 1", "wrist 2", "wrist roll")
 
 
 @app.command()
 def align(
     arm: str,
     rig: RigOpt = DEFAULT_RIG,
-    yes: Annotated[bool, typer.Option("--yes", help="skip the confirmations")] = False,
+    yes: Annotated[bool, typer.Option("--yes", help="skip the confirmation prompt")] = False,
+    reset: Annotated[bool, typer.Option("--reset", help="forget the leader's previous offsets first")] = False,
 ) -> None:
     """Line up a leader with its follower (once per pair; give either arm's name).
 
-    Both arms are connected free to move. Fold the leader AND the follower into the same pose — all the
-    way against their stops, the folded rest pose — hold them still and confirm. The per-joint
-    difference is stored on the leader (`joint_offsets`), so from then on "same angle" means "same
-    direction" in teleop, recording and rollout. Re-run after replacing an arm."""
+    Both arms are connected free to move. Push EVERY joint of both arms against a stop, the same
+    way on both: shoulder and elbow folded all the way in, base turned all the way to one side until
+    it stops, each wrist joint turned all the way the same way until it stops.
+    Hold and confirm. Only joints that are at a stop on both arms are measured — metal decides the
+    pose, not the eye — and their per-joint difference is stored on the leader (`joint_offsets`),
+    so from then on "same angle" means "same direction" in teleop, recording and rollout. Both arms
+    are then moved back home before being released."""
     import numpy as np
 
     from .arm import YamArm, resolve_channel
@@ -423,8 +446,9 @@ def align(
         err.print(f"[red]{arm!r} is not part of a leader/follower pair in the rig[/]")
         raise typer.Exit(1)
     lspec, fspec = cfg.arm(pair.leader), cfg.arm(pair.follower)
-    previous = lspec.joint_offsets
+    previous = np.zeros(6) if reset or not lspec.joint_offsets else np.asarray(lspec.joint_offsets, dtype=float)
     lspec.joint_offsets = None  # measure the raw motor frame
+    stops = _joint_stops(fspec)
     leader = YamArm.connect(lspec, resolve_channel(lspec))
     try:
         follower = YamArm.connect(fspec, resolve_channel(fspec))
@@ -432,26 +456,56 @@ def align(
         leader.close()
         raise
     try:
-        console.print(f"[cyan]{pair.leader} and {pair.follower} are free to move. Fold BOTH into the same pose — all the way against their stops — and hold them still.[/]")
-        if not yes and not typer.confirm("Both arms folded into the same pose?", default=True):
+        console.print(f"[cyan]{pair.leader} and {pair.follower} are free to move. Push EVERY joint of BOTH arms against a stop, the same way on both:[/]")
+        console.print("  shoulder + elbow folded all the way in · base turned all the way to one side · each wrist joint turned all the way the same way")
+        if not yes and not typer.confirm("Every joint against its stop on both arms, and holding still?", default=True):
             raise typer.Exit(0)
         ls, fs = [], []
         for _ in range(10):
             ls.append(leader.read().q)
             fs.append(follower.read().q)
             time.sleep(0.05)
-        offsets = np.mean(fs, axis=0) - np.mean(ls, axis=0)
+        lq, fq = np.mean(ls, axis=0), np.mean(fs, axis=0)
+        console.print("measured — let go; both arms now move back home")
+        try:
+            follower.go_home(cfg.control.home_speed or 0.5, release=True)
+            leader.go_home(cfg.control.leader_home_speed or 0.25, compliant=True, release=True)
+        except KeyboardInterrupt:
+            console.print("[yellow]home move aborted — turn the bases back toward the front by hand before powering up again[/]")
     finally:
         leader.close()
         follower.close()
-    deg = np.degrees(offsets)
-    console.print("offset per joint (deg): " + "  ".join(f"j{i + 1}={d:+.1f}" for i, d in enumerate(deg)))
-    if np.max(np.abs(deg)) > 20 and not yes and not typer.confirm("That is a large offset — were both arms really in the same pose? Save anyway?", default=False):
+
+    def near(q: float, lim: float) -> bool:  # distance on the circle: a base at +183° may read -177°
+        return abs((q - lim + np.pi) % (2 * np.pi) - np.pi) < tol
+
+    tol = np.radians(STOP_TOL_DEG)
+    offsets = previous.copy()
+    t = Table(title=f"align {pair.leader} → {pair.follower}")
+    for c in ("joint", "leader (deg)", "follower (deg)", "stops (deg)", "result"):
+        t.add_column(c)
+    aligned, skipped = [], []
+    for j in range(6):
+        lo, hi = stops[j]
+        at = [k for k, lim in enumerate((lo, hi)) if near(lq[j], lim) and near(fq[j], lim)]
+        if at:
+            offsets[j] = float((fq[j] - lq[j] + np.pi) % (2 * np.pi) - np.pi)  # wrap-safe difference
+            aligned.append(j)
+            result = f"[green]at {'lower' if at[0] == 0 else 'upper'} stop → offset {np.degrees(offsets[j]):+.2f}°[/]"
+        else:
+            skipped.append(j)
+            result = f"[yellow]not at a stop on both arms → unchanged ({np.degrees(previous[j]):+.2f}°)[/]"
+        t.add_row(JOINT_LABELS[j], f"{np.degrees(lq[j]):+.1f}", f"{np.degrees(fq[j]):+.1f}", f"{np.degrees(lo):+.0f} / {np.degrees(hi):+.0f}", result)
+    console.print(t)
+    if not aligned:
+        err.print("[red]no joint was against a stop on both arms — nothing saved[/]")
         raise typer.Exit(1)
     lspec.joint_offsets = [round(float(x), 4) for x in offsets]
     cfg.save()
-    console.print(f"[green]{pair.leader}: joint_offsets saved to {cfg.path}[/]" + (f" (was {previous})" if previous else ""))
-    console.print("check with:  yamkit teleop")
+    console.print(f"[green]{pair.leader}: joint_offsets saved to {cfg.path}[/] ({len(aligned)} of 6 joints measured)")
+    if skipped:
+        console.print(f"[yellow]{', '.join(JOINT_LABELS[j] for j in skipped)}: push these against a stop on both arms and run again to align them too[/]")
+    console.print("check during teleop (not on parked arms):  yamkit teleop")
 
 
 # ------------------------------------------------------------------------------- LeRobot wrappers --

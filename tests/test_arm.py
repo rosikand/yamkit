@@ -83,6 +83,7 @@ def test_go_home_default_pose_rest_pose_and_gripper(follower, monkeypatch):
     from yamkit import arm as arm_mod
 
     monkeypatch.setattr(arm_mod, "HOME_MIN_S", 0.01)
+    monkeypatch.setattr(arm_mod, "HOME_SETTLE_S", 0.0)
     arm, robot = follower
     robot.pos = np.array([0.5, -0.5, 0.5, 0.0, 0.0, 0.0, 0.3])
     assert arm.go_home(speed=50.0) == pytest.approx(0.5)
@@ -97,6 +98,7 @@ def test_go_home_compliant_and_interrupt(monkeypatch):
     from yamkit import arm as arm_mod
 
     monkeypatch.setattr(arm_mod, "HOME_MIN_S", 0.01)
+    monkeypatch.setattr(arm_mod, "HOME_SETTLE_S", 0.0)
     spec = ArmSpec(name="l", role="leader", gripper="yam_teaching_handle", can_serial="x")
     robot = FakeRobot(6, gripper=False, handle=True)
     arm = YamArm(spec, "can1", robot)
@@ -116,3 +118,31 @@ def test_go_home_compliant_and_interrupt(monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         arm.go_home(speed=50.0, compliant=True)
     assert robot.idle_calls == 2 and np.all(robot.kp == 80.0)  # released, gains restored, then re-raised
+
+
+def test_go_home_all_runs_arms_together_and_ctrl_c_releases_all(monkeypatch):
+    import _thread
+    import threading
+    import time
+
+    from yamkit import arm as arm_mod
+
+    monkeypatch.setattr(arm_mod, "HOME_MIN_S", 0.01)
+    monkeypatch.setattr(arm_mod, "HOME_SETTLE_S", 0.0)
+    arms = []
+    for i in range(4):
+        spec = ArmSpec(name=f"a{i}", role="follower", gripper="linear_4310", can_serial=str(i))
+        robot = FakeRobot(7, gripper=True)
+        robot.pos[:6] = 0.3
+        arms.append((YamArm(spec, f"can{i}", robot), robot))
+    t0 = time.monotonic()
+    arm_mod.go_home_all([(a, {"speed": 1.0, "release": True}) for a, _ in arms])  # 0.3 s each
+    assert time.monotonic() - t0 < 0.9
+    assert all(np.allclose(r.pos[:6], 0) and r.idle_calls == 1 for _, r in arms)
+
+    for _, r in arms:
+        r.pos[:6] = 0.3
+    threading.Timer(0.15, _thread.interrupt_main).start()
+    with pytest.raises(KeyboardInterrupt):
+        arm_mod.go_home_all([(a, {"speed": 0.01}) for a, _ in arms])  # would take 30 s
+    assert all(r.pos[0] > 0.25 and r.idle_calls == 2 for _, r in arms)  # all stopped early and released

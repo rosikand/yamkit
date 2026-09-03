@@ -89,6 +89,7 @@ def fake_connect(monkeypatch):
 
     monkeypatch.setattr(arm_mod.YamArm, "connect", staticmethod(connect))
     monkeypatch.setattr(arm_mod, "HOME_MIN_S", 0.01)  # keep the fake arms' home moves short
+    monkeypatch.setattr(arm_mod, "HOME_SETTLE_S", 0.0)
     monkeypatch.setattr(arm_mod, "resolve_channel", lambda spec: f"can_{spec.name}")
     for mod in ("lerobot_robot_yamkit.yam_follower", "lerobot_teleoperator_yamkit.yam_leader", "yamkit.teleop"):
         try:

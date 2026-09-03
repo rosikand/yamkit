@@ -13,7 +13,7 @@ from lerobot.lerobot_types import RobotAction
 from lerobot.teleoperators.teleoperator import Teleoperator
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
 
-from yamkit.arm import YamArm, resolve_channel
+from yamkit.arm import YamArm, go_home_all, resolve_channel
 from yamkit.config import N_JOINTS, RigConfig
 
 from .config_yam_leader import BiYamLeaderConfig, YamLeaderConfig
@@ -35,9 +35,13 @@ class _LeaderHandle:
     def features(self) -> dict[str, type]:
         return {f"{n}.pos": float for n in self.names}
 
-    def connect(self) -> None:
+    @property
+    def home_job(self) -> tuple[YamArm, dict] | None:
+        return (self.arm, {"speed": self.home_speed, "compliant": True, "release": True}) if self.arm is not None and self.home_speed > 0 else None
+
+    def connect(self, home: bool = True) -> None:
         self.arm = YamArm.connect(self.spec, resolve_channel(self.spec))
-        if self.home_speed > 0:
+        if home and self.home_job:
             self.arm.go_home(self.home_speed, compliant=True, release=True)
 
     def action(self) -> dict[str, float]:
@@ -47,17 +51,27 @@ class _LeaderHandle:
             act["gripper.pos"] = float(st.gripper if st.gripper is not None else 1.0)
         return act
 
-    def disconnect(self) -> None:
+    def disconnect(self, home: bool = True) -> None:
         if self.arm is None:
             return
         try:
-            if self.home_speed > 0:
+            if home and self.home_job:
                 self.arm.go_home(self.home_speed, compliant=True, release=True)
         except KeyboardInterrupt:
             logger.warning("%s: home move aborted — releasing here", self.spec.name)
         finally:
             self.arm.close()
             self.arm = None
+
+
+def _home_together(handles) -> None:
+    """Park several leaders at the same time (bimanual teleoperator)."""
+    jobs = [h.home_job for h in handles if h.home_job]
+    if jobs:
+        try:
+            go_home_all(jobs)
+        except KeyboardInterrupt:
+            logger.warning("home move aborted — releasing the arms where they are")
 
 
 class YamLeader(Teleoperator):
@@ -137,11 +151,12 @@ class BiYamLeader(Teleoperator):
         connected = []
         try:
             for h in self._sides.values():
-                h.connect()
+                h.connect(home=False)
                 connected.append(h)
+            _home_together(connected)  # both leaders park at the same time
         except Exception:
             for h in connected:
-                h.disconnect()
+                h.disconnect(home=False)
             raise
         logger.info("%s connected", self)
 
@@ -164,6 +179,7 @@ class BiYamLeader(Teleoperator):
 
     @check_if_not_connected
     def disconnect(self) -> None:
+        _home_together(self._sides.values())  # both leaders park at the same time
         for h in self._sides.values():
-            h.disconnect()
+            h.disconnect(home=False)
         logger.info("%s disconnected", self)

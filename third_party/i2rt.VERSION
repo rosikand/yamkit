@@ -2,3 +2,4 @@
 
 Local patches (re-apply if the SDK is updated):
   - i2rt/motor_drivers/dm_driver.py PassiveEncoderReader._parse_encoder_message: wrap encoder counts >2048 to negative (trigger rest position just past zero read as fully squeezed).
+  - i2rt/robots/get_robot.py wrap_correction() + its use in get_yam_robot: decide the ±2π wrap-around fix from the joint's own limits, not just |pos| > π, so an arm parked past its encoder wrap (base at +183° reading -177°) can still be powered up.

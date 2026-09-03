@@ -2,6 +2,7 @@
 #  EXAMPLE rig file (a bimanual YAM: two leaders, two followers, one overhead + two wrist cameras).
 #  Your real file is configs/rig.yaml — it is created for your hardware by ./setup.sh or
 #  `yamkit discover --write` and is not stored in git. This example only shows the format.
+# =============================================================================================
 version: 1
 
 # ---- Arms -----------------------------------------------------------------------------------
@@ -102,7 +103,7 @@ cameras:
 #   max_joint_speed    safety clamp in rad/s on every commanded follower move (teleop and rollout)
 #   max_gripper_speed  safety clamp on the gripper, in fraction of its range per second
 #   home_speed         rad/s of the followers' automatic move to home at Start / Stop (0 turns it off)
-#   leader_home_speed  rad/s of the leaders' move to home (they are light — keep this gentle)
+#   leader_home_speed  rad/s of the leaders' move to home (all arms move at the same time)
 control:
   teleop_hz: 100.0
   sync_seconds: 3.0
@@ -110,5 +111,5 @@ control:
   engage_button: 0
   max_joint_speed: 3.0
   max_gripper_speed: 3.0
-  home_speed: 0.5
+  home_speed: 0.25
   leader_home_speed: 0.25

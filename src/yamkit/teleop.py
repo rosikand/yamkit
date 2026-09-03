@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .arm import ArmState, YamArm, resolve_channel
+from .arm import ArmState, YamArm, go_home_all, resolve_channel
 from .config import RigConfig
 
 log = logging.getLogger(__name__)
@@ -116,14 +116,16 @@ class TeleopSession:
 
     # ----- home -----------------------------------------------------------------------------
     def home_all(self, why: str) -> None:
-        """Move every arm to its home pose, follower then leader per pair (no-op if home_speed <= 0)."""
+        """Move every arm to its home pose, all at the same time (no-op if home_speed <= 0)."""
         if self.home_speed <= 0:
             return
-        log.info("%s: arms moving home (followers %.2f rad/s, leaders %.2f rad/s) — let go of the handles (Ctrl-C / Stop again releases immediately)", why, self.home_speed, self.leader_home_speed)
+        log.info("%s: all arms moving home (followers %.2f rad/s, leaders %.2f rad/s) — let go of the handles (Ctrl-C / Stop again releases immediately)", why, self.home_speed, self.leader_home_speed)
+        jobs: list[tuple[YamArm, dict]] = []
+        for pair in self.pairs:
+            jobs.append((pair.follower, {"speed": self.home_speed}))
+            jobs.append((pair.leader, {"speed": self.leader_home_speed, "compliant": True, "release": True}))
         try:
-            for pair in self.pairs:
-                pair.follower.go_home(self.home_speed)
-                pair.leader.go_home(self.leader_home_speed, compliant=True, release=True)
+            go_home_all(jobs)
         except KeyboardInterrupt:
             self._home_aborted = True
             raise

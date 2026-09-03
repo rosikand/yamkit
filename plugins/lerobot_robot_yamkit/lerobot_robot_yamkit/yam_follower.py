@@ -17,7 +17,7 @@ from lerobot.lerobot_types import RobotAction, RobotObservation
 from lerobot.robots.robot import Robot
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
 
-from yamkit.arm import YamArm, resolve_channel
+from yamkit.arm import YamArm, go_home_all, resolve_channel
 from yamkit.cameras import camera_configs_from_dicts
 from yamkit.config import N_JOINTS, RigConfig
 
@@ -44,9 +44,13 @@ class _FollowerHandle:
     def features(self) -> dict[str, type]:
         return {f"{n}.pos": float for n in self.names}
 
-    def connect(self) -> None:
+    @property
+    def home_job(self) -> tuple[YamArm, dict] | None:
+        return (self.arm, {"speed": self.home_speed}) if self.arm is not None and self.home_speed > 0 else None
+
+    def connect(self, home: bool = True) -> None:
         self.arm = YamArm.connect(self.spec, resolve_channel(self.spec), max_joint_speed=self.max_joint_speed, max_gripper_speed=self.max_gripper_speed)
-        if self.home_speed > 0:
+        if home and self.home_job:
             self.arm.go_home(self.home_speed)
 
     def observation(self) -> dict[str, float]:
@@ -62,17 +66,27 @@ class _FollowerHandle:
         sent = self.arm.command(q, None if g is None else float(g))
         return {f"{n}.pos": float(v) for n, v in zip(self.names, sent)}
 
-    def disconnect(self) -> None:
+    def disconnect(self, home: bool = True) -> None:
         if self.arm is None:
             return
         try:
-            if self.home_speed > 0:
+            if home and self.home_job:
                 self.arm.go_home(self.home_speed)
         except KeyboardInterrupt:
             logger.warning("%s: home move aborted — releasing here", self.spec.name)
         finally:
             self.arm.close()
             self.arm = None
+
+
+def _home_together(handles) -> None:
+    """Park several arms at the same time (used by the bimanual robot/teleoperator)."""
+    jobs = [h.home_job for h in handles if h.home_job]
+    if jobs:
+        try:
+            go_home_all(jobs)
+        except KeyboardInterrupt:
+            logger.warning("home move aborted — releasing the arms where they are")
 
 
 def _rig_cameras(rig: RigConfig, config) -> dict:
@@ -195,13 +209,14 @@ class BiYamFollower(Robot):
         connected = []
         try:
             for h in self._sides.values():
-                h.connect()
+                h.connect(home=False)
                 connected.append(h)
+            _home_together(connected)  # both arms park at the same time
             for cam in self.cameras.values():
                 cam.connect()
         except Exception:
             for h in connected:
-                h.disconnect()
+                h.disconnect(home=False)
             raise
         logger.info("%s connected (%s)", self, ", ".join(f"{s}={h.arm.channel}" for s, h in self._sides.items()))
 
@@ -236,6 +251,7 @@ class BiYamFollower(Robot):
     def disconnect(self) -> None:
         for cam in self.cameras.values():
             cam.disconnect()
+        _home_together(self._sides.values())  # both arms park at the same time
         for h in self._sides.values():
-            h.disconnect()
+            h.disconnect(home=False)
         logger.info("%s disconnected", self)

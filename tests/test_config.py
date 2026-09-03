@@ -84,10 +84,10 @@ def test_home_pose_offsets_and_home_speed(rig):
     a.rest_pose = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
     assert a.home_pose == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
     rig.arm("left_leader").joint_offsets = [0.05, 0, 0, 0, 0, 0]
-    assert rig.control.home_speed == 0.5
+    assert rig.control.home_speed == 0.25 and rig.control.leader_home_speed == 0.25
     rig.save()
     text = rig.path.read_text()
-    assert "joint_offsets: [0.05, 0, 0, 0, 0, 0]" in text and "home_speed: 0.5" in text
+    assert "joint_offsets: [0.05, 0, 0, 0, 0, 0]" in text and "home_speed: 0.25" in text and "leader_home_speed: 0.25" in text
     assert "yamkit align" in text and "home" in text
     loaded = RigConfig.load(rig.path)
     assert loaded.arm("left_leader").joint_offsets == [0.05, 0, 0, 0, 0, 0]

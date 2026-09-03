@@ -89,8 +89,8 @@ class ControlSpec:
     engage_button: int = 0  # teaching-handle button index that toggles engage
     max_joint_speed: float = 3.0  # rad/s clamp on follower position targets
     max_gripper_speed: float = 3.0  # (normalized units)/s clamp on the gripper target
-    home_speed: float = 0.5  # rad/s of the automatic move to home at session start/stop (0 = off)
-    leader_home_speed: float = 0.25  # rad/s for the leaders' (compliant) move to home; they are light, so slower feels right
+    home_speed: float = 0.25  # rad/s of the followers' automatic move to home at session start/stop (0 = off)
+    leader_home_speed: float = 0.25  # rad/s of the leaders' (compliant) move to home
 
 
 @dataclass
@@ -238,7 +238,7 @@ _SECTIONS: dict[str, str] = {
 #   max_joint_speed    safety clamp in rad/s on every commanded follower move (teleop and rollout)
 #   max_gripper_speed  safety clamp on the gripper, in fraction of its range per second
 #   home_speed         rad/s of the followers' automatic move to home at Start / Stop (0 turns it off)
-#   leader_home_speed  rad/s of the leaders' move to home (they are light — keep this gentle)
+#   leader_home_speed  rad/s of the leaders' move to home (all arms move at the same time)
 """,
 }
 
