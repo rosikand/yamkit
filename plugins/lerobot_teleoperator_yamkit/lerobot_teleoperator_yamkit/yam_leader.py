@@ -28,6 +28,7 @@ class _LeaderHandle:
         if self.spec.role != "leader":
             raise ValueError(f"{arm_name!r} is a {self.spec.role}, expected a leader")
         self.names = JOINT_NAMES + (["gripper"] if self.spec.has_handle else [])
+        self.home_speed = rig.control.leader_home_speed if rig.control.home_speed > 0 else 0.0  # leaders park (compliantly, gently) on connect/disconnect
         self.arm: YamArm | None = None
 
     @property
@@ -36,6 +37,8 @@ class _LeaderHandle:
 
     def connect(self) -> None:
         self.arm = YamArm.connect(self.spec, resolve_channel(self.spec))
+        if self.home_speed > 0:
+            self.arm.go_home(self.home_speed, compliant=True, release=True)
 
     def action(self) -> dict[str, float]:
         st = self.arm.read()
@@ -45,7 +48,14 @@ class _LeaderHandle:
         return act
 
     def disconnect(self) -> None:
-        if self.arm is not None:
+        if self.arm is None:
+            return
+        try:
+            if self.home_speed > 0:
+                self.arm.go_home(self.home_speed, compliant=True, release=True)
+        except KeyboardInterrupt:
+            logger.warning("%s: home move aborted — releasing here", self.spec.name)
+        finally:
             self.arm.close()
             self.arm = None
 

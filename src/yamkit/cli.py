@@ -27,11 +27,21 @@ RigOpt = Annotated[Path, typer.Option("--rig", help="rig yaml", show_default=Tru
 PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 
 
+class _QuietVendor(logging.Filter):
+    """Drop the vendor SDK's INFO chatter (it logs on the *root* logger: control-loop rates every
+    10 s, 30 s reports, motor bring-up dumps) so prompts and yamkit's own lines stay readable."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno >= logging.WARNING or "/i2rt/" not in (record.pathname or "").replace("\\", "/")
+
+
 def _setup_logging(verbose: bool) -> None:
     logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%H:%M:%S")
-    if not verbose:  # the vendor SDK is chatty at INFO
+    if not verbose:  # the vendor SDK is chatty at INFO (use -v to see it)
         for name in ("i2rt", "can", "urllib3"):
             logging.getLogger(name).setLevel(logging.WARNING)
+        for h in logging.getLogger().handlers:
+            h.addFilter(_QuietVendor())
 
 
 @app.callback()
@@ -204,13 +214,19 @@ def teleop(
     hz: Annotated[float | None, typer.Option(help="loop rate; default from rig")] = None,
     duration: Annotated[float | None, typer.Option(help="seconds; default until Ctrl-C")] = None,
     print_state: Annotated[bool, typer.Option("--print-state", help="also print per-arm joint state lines (same format as `yamkit read`; used by the web UI)")] = False,
+    no_home: Annotated[bool, typer.Option("--no-home", help="skip the automatic move to home at start and stop")] = False,
 ) -> None:
-    """Leader→follower teleoperation (press the teaching-handle button to engage/disengage)."""
+    """Leader→follower teleoperation (press the teaching-handle button to engage/disengage).
+
+    On start every arm moves slowly to its home pose; on Ctrl-C every arm returns there before being
+    released (a second Ctrl-C releases them immediately). `control.home_speed` sets the pace."""
     from .config import RigConfig
     from .teleop import TeleopSession
 
     cfg = RigConfig.load(rig)
     kw = {"auto_engage": auto_engage}
+    if no_home:
+        kw["home_speed"] = 0.0
     if bilateral_kp is not None:
         kw["bilateral_kp"] = bilateral_kp
     if hz is not None:
@@ -343,7 +359,7 @@ def zero_handle(arm: str, rig: RigOpt = DEFAULT_RIG, yes: Annotated[bool, typer.
 
 @app.command("set-rest")
 def set_rest(arm: str, rig: RigOpt = DEFAULT_RIG) -> None:
-    """Store the arm's current pose as its rest pose (used by `yamkit rest`)."""
+    """Store the arm's current pose as its home pose (where it parks at Start/Stop and with `yamkit rest`; default: all joints 0)."""
     cfg, a = _connect(rig, arm)
     try:
         q = a.read().q
@@ -355,24 +371,87 @@ def set_rest(arm: str, rig: RigOpt = DEFAULT_RIG) -> None:
 
 
 @app.command()
-def rest(arms: Annotated[list[str] | None, typer.Argument(help="arm names (default: all with a rest_pose)")] = None, rig: RigOpt = DEFAULT_RIG, duration: float = 4.0) -> None:
-    """Move arm(s) slowly to their stored rest pose, then release."""
+def rest(
+    arms: Annotated[list[str] | None, typer.Argument(help="arm names (default: every arm in the rig)")] = None,
+    rig: RigOpt = DEFAULT_RIG,
+    speed: Annotated[float | None, typer.Option(help="rad/s; default control.home_speed from the rig")] = None,
+) -> None:
+    """Park: move arm(s) slowly to their home pose, then release them there.
+
+    Home is `rest_pose` if stored (`yamkit set-rest`), otherwise all joints at 0 — the folded pose.
+    Leaders move compliantly (a hand on the handle wins). Ctrl-C releases the arms where they are."""
     from .config import RigConfig
 
     cfg = RigConfig.load(rig)
-    names = arms or [a.name for a in cfg.arms.values() if a.rest_pose]
-    for n in names:
-        spec = cfg.arm(n)
-        if not spec.rest_pose:
-            err.print(f"[yellow]{n}: no rest_pose stored (use `yamkit set-rest {n}`)[/]")
-            continue
+    if speed is None and cfg.control.home_speed <= 0:
+        err.print("[red]home_speed is 0 in the rig — pass --speed (rad/s)[/]")
+        raise typer.Exit(1)
+    for n in arms or list(cfg.arms):
         _, a = _connect(rig, n)
+        leader = a.spec.role == "leader"
+        spd = speed if speed is not None else (cfg.control.leader_home_speed if leader else cfg.control.home_speed)
         try:
-            console.print(f"{n}: moving to rest over {duration}s")
-            a.move_to(spec.rest_pose, 1.0 if spec.has_motor_gripper else None, duration=duration)
-            time.sleep(0.5)
+            console.print(f"{n}: moving home at {spd:g} rad/s" + (" (compliant)" if leader else ""))
+            a.go_home(spd, compliant=leader, release=True)
+        except KeyboardInterrupt:
+            console.print("[yellow]aborted — arms released where they are[/]")
+            raise typer.Exit(130) from None
         finally:
             a.close()
+
+
+@app.command()
+def align(
+    arm: str,
+    rig: RigOpt = DEFAULT_RIG,
+    yes: Annotated[bool, typer.Option("--yes", help="skip the confirmations")] = False,
+) -> None:
+    """Line up a leader with its follower (once per pair; give either arm's name).
+
+    Both arms are connected free to move. Fold the leader AND the follower into the same pose — all the
+    way against their stops, the folded rest pose — hold them still and confirm. The per-joint
+    difference is stored on the leader (`joint_offsets`), so from then on "same angle" means "same
+    direction" in teleop, recording and rollout. Re-run after replacing an arm."""
+    import numpy as np
+
+    from .arm import YamArm, resolve_channel
+    from .config import RigConfig
+
+    cfg = RigConfig.load(rig)
+    pair = cfg.pair_for(arm)
+    if pair is None:
+        err.print(f"[red]{arm!r} is not part of a leader/follower pair in the rig[/]")
+        raise typer.Exit(1)
+    lspec, fspec = cfg.arm(pair.leader), cfg.arm(pair.follower)
+    previous = lspec.joint_offsets
+    lspec.joint_offsets = None  # measure the raw motor frame
+    leader = YamArm.connect(lspec, resolve_channel(lspec))
+    try:
+        follower = YamArm.connect(fspec, resolve_channel(fspec))
+    except Exception:
+        leader.close()
+        raise
+    try:
+        console.print(f"[cyan]{pair.leader} and {pair.follower} are free to move. Fold BOTH into the same pose — all the way against their stops — and hold them still.[/]")
+        if not yes and not typer.confirm("Both arms folded into the same pose?", default=True):
+            raise typer.Exit(0)
+        ls, fs = [], []
+        for _ in range(10):
+            ls.append(leader.read().q)
+            fs.append(follower.read().q)
+            time.sleep(0.05)
+        offsets = np.mean(fs, axis=0) - np.mean(ls, axis=0)
+    finally:
+        leader.close()
+        follower.close()
+    deg = np.degrees(offsets)
+    console.print("offset per joint (deg): " + "  ".join(f"j{i + 1}={d:+.1f}" for i, d in enumerate(deg)))
+    if np.max(np.abs(deg)) > 20 and not yes and not typer.confirm("That is a large offset — were both arms really in the same pose? Save anyway?", default=False):
+        raise typer.Exit(1)
+    lspec.joint_offsets = [round(float(x), 4) for x in offsets]
+    cfg.save()
+    console.print(f"[green]{pair.leader}: joint_offsets saved to {cfg.path}[/]" + (f" (was {previous})" if previous else ""))
+    console.print("check with:  yamkit teleop")
 
 
 # ------------------------------------------------------------------------------- LeRobot wrappers --

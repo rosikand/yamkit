@@ -267,3 +267,19 @@ def test_config_save_reloads_camera_list(client, rig):
     assert client.get("/api/overview").json()["cameras"][0]["name"] == "top"
     assert client.post("/api/config", json={"control": {"teleop_hz": 50}}).status_code == 200
     assert [c["name"] for c in client.get("/api/cameras").json()] == ["top"]  # unchanged entry kept
+
+
+def test_park_endpoint_runs_rest(client, monkeypatch):
+    seen = {}
+
+    def argv(self, *args):
+        seen["args"] = args
+        return [sys.executable, "-c", "pass"]
+
+    monkeypatch.setattr(SessionManager, "yamkit_argv", argv)
+    r = client.post("/api/session/rest", json={"arms": ["left_follower"]})
+    assert r.status_code == 200 and r.json()["mode"] == "rest"
+    assert seen["args"][:2] == ("rest", "left_follower")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and client.get("/api/session").json()["active"]:
+        time.sleep(0.05)

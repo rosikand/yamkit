@@ -181,8 +181,11 @@ class SessionManager:
             except Exception:
                 log.exception("session on_exit hook failed")
 
-    def stop(self, grace_s: float = 8.0) -> dict[str, Any]:
-        """SIGINT the child's process group (= Ctrl-C), escalate in the background if it hangs."""
+    def stop(self, grace_s: float = 30.0) -> dict[str, Any]:
+        """SIGINT the child's process group (= Ctrl-C), escalate in the background if it hangs.
+
+        The grace period covers the arms' slow return to home; calling stop() again sends a second
+        SIGINT, which makes the CLIs release the arms immediately."""
         proc = self._proc
         if proc is None or proc.poll() is not None:
             return self.status()

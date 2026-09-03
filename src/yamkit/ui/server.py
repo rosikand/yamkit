@@ -28,6 +28,10 @@ FRONTEND_DIR = ROOT / "ui"
 
 
 # --------------------------------------------------------------------------- request bodies --
+class RestBody(BaseModel):
+    arms: list[str] | None = None
+
+
 class ReadBody(BaseModel):
     arms: list[str] | None = None
     hz: float = 5.0
@@ -205,6 +209,13 @@ def create_app(
     @app.post("/api/session/stop")
     def session_stop() -> dict[str, Any]:
         return sessions.stop()
+
+    @app.post("/api/session/rest")
+    def session_rest(body: RestBody) -> dict[str, Any]:
+        """Park: every arm (or the given ones) moves slowly to its home pose and is released there."""
+        require_rig()
+        args = ["rest", *(body.arms or []), "--rig", str(rig_path)]
+        return start("rest", sessions.yamkit_argv(*args))
 
     @app.post("/api/session/read")
     def session_read(body: ReadBody) -> dict[str, Any]:

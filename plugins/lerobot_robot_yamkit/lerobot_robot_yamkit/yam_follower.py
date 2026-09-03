@@ -37,6 +37,7 @@ class _FollowerHandle:
         self.names = JOINT_NAMES + (["gripper"] if self.spec.has_motor_gripper else [])
         self.max_joint_speed = rig.control.max_joint_speed if max_joint_speed is None else max_joint_speed
         self.max_gripper_speed = rig.control.max_gripper_speed if max_gripper_speed is None else max_gripper_speed
+        self.home_speed = rig.control.home_speed  # arms park at home on connect/disconnect (0 = off)
         self.arm: YamArm | None = None
 
     @property
@@ -45,6 +46,8 @@ class _FollowerHandle:
 
     def connect(self) -> None:
         self.arm = YamArm.connect(self.spec, resolve_channel(self.spec), max_joint_speed=self.max_joint_speed, max_gripper_speed=self.max_gripper_speed)
+        if self.home_speed > 0:
+            self.arm.go_home(self.home_speed)
 
     def observation(self) -> dict[str, float]:
         st = self.arm.read()
@@ -60,7 +63,14 @@ class _FollowerHandle:
         return {f"{n}.pos": float(v) for n, v in zip(self.names, sent)}
 
     def disconnect(self) -> None:
-        if self.arm is not None:
+        if self.arm is None:
+            return
+        try:
+            if self.home_speed > 0:
+                self.arm.go_home(self.home_speed)
+        except KeyboardInterrupt:
+            logger.warning("%s: home move aborted — releasing here", self.spec.name)
+        finally:
             self.arm.close()
             self.arm = None
 

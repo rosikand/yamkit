@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 import numpy as np
 import pytest
 
@@ -73,14 +75,20 @@ def fake_connect(monkeypatch):
     """Patch YamArm.connect + resolve_channel so plugins/teleop run without hardware."""
     from yamkit import arm as arm_mod
 
-    robots: dict[str, FakeRobot] = {}
+    class Robots(dict):
+        presets: ClassVar[dict[str, np.ndarray]] = {}  # initial joint positions per arm name, applied at connect
+
+    robots = Robots()
 
     def connect(spec, channel, **kw):
         r = FakeRobot(n_dofs=spec.n_dofs, gripper=spec.has_motor_gripper, handle=spec.has_handle)
+        if spec.name in robots.presets:
+            r.pos[: len(robots.presets[spec.name])] = robots.presets[spec.name]
         robots[spec.name] = r
         return arm_mod.YamArm(spec, channel, r, max_joint_speed=kw.get("max_joint_speed", 3.0), max_gripper_speed=kw.get("max_gripper_speed", 3.0))
 
     monkeypatch.setattr(arm_mod.YamArm, "connect", staticmethod(connect))
+    monkeypatch.setattr(arm_mod, "HOME_MIN_S", 0.01)  # keep the fake arms' home moves short
     monkeypatch.setattr(arm_mod, "resolve_channel", lambda spec: f"can_{spec.name}")
     for mod in ("lerobot_robot_yamkit.yam_follower", "lerobot_teleoperator_yamkit.yam_leader", "yamkit.teleop"):
         try:

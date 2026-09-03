@@ -2,7 +2,6 @@
 #  EXAMPLE rig file (a bimanual YAM: two leaders, two followers, one overhead + two wrist cameras).
 #  Your real file is configs/rig.yaml — it is created for your hardware by ./setup.sh or
 #  `yamkit discover --write` and is not stored in git. This example only shows the format.
-# =============================================================================================
 version: 1
 
 # ---- Arms -----------------------------------------------------------------------------------
@@ -13,7 +12,11 @@ version: 1
 #   gripper         follower: linear_4310 (stock YAM) | crank_4310 | linear_3507 | flexible_4310
 #                   leader:   yam_teaching_handle        no gripper: no_gripper
 #   can_serial      USB serial of the CAN adapter this arm is cabled to (`yamkit can` lists them)
-#   gripper_limits  written by `yamkit calibrate-gripper`   rest_pose: written by `yamkit set-rest`
+#   gripper_limits  written by `yamkit calibrate-gripper`
+#   rest_pose       home pose override, written by `yamkit set-rest`; without it home = all joints 0
+#                   (the folded pose). Arms move home at every Start and Stop, and with `yamkit rest`.
+#   joint_offsets   leaders only, written by `yamkit align`: makes "same angle" mean "same direction"
+#                   for the leader and its follower (fixes a follower that points off to the side)
 arms:
   left_leader:
     role: leader
@@ -21,6 +24,7 @@ arms:
     arm_type: yam
     gripper: yam_teaching_handle
     can_serial: EXAMPLE0000LEFTLEADER
+    joint_offsets: [0.012, -0.004, 0.0, 0.0, 0.0, 0.0]
     notes: adapter seen as can0
   left_follower:
     role: follower
@@ -97,6 +101,8 @@ cameras:
 #   engage_button      which teaching-handle button toggles engage (0 = top button)
 #   max_joint_speed    safety clamp in rad/s on every commanded follower move (teleop and rollout)
 #   max_gripper_speed  safety clamp on the gripper, in fraction of its range per second
+#   home_speed         rad/s of the followers' automatic move to home at Start / Stop (0 turns it off)
+#   leader_home_speed  rad/s of the leaders' move to home (they are light — keep this gentle)
 control:
   teleop_hz: 100.0
   sync_seconds: 3.0
@@ -104,3 +110,5 @@ control:
   engage_button: 0
   max_joint_speed: 3.0
   max_gripper_speed: 3.0
+  home_speed: 0.5
+  leader_home_speed: 0.25

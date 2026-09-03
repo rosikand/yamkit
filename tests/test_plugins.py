@@ -62,3 +62,43 @@ def test_role_mismatch(rig):
 
     with pytest.raises(ValueError):
         YamFollower(YamFollowerConfig(rig=str(rig.path), arm="left_leader"))
+
+
+def test_plugins_park_arms_on_connect_and_disconnect(rig, fake_connect, tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_LEROBOT_HOME", str(tmp_path / "lr"))
+    from lerobot.robots.utils import make_robot_from_config
+    from lerobot.teleoperators.utils import make_teleoperator_from_config
+    from lerobot_robot_yamkit import YamFollowerConfig
+    from lerobot_teleoperator_yamkit import YamLeaderConfig
+
+    rig.control.home_speed = rig.control.leader_home_speed = 50.0
+    rig.save()
+    fake_connect.presets["left_follower"] = np.array([0.3] * 6 + [0.5])
+    fake_connect.presets["left_leader"] = np.full(6, 0.3)
+    robot = make_robot_from_config(YamFollowerConfig(rig=str(rig.path), arm="left_follower"))
+    teleop = make_teleoperator_from_config(YamLeaderConfig(rig=str(rig.path), arm="left_leader"))
+    robot.connect()
+    teleop.connect()
+    f, l = fake_connect["left_follower"], fake_connect["left_leader"]
+    assert np.allclose(f.pos[:6], 0) and f.pos[6] == pytest.approx(0.5)  # follower homed, gripper untouched
+    assert np.allclose(l.pos, 0) and l.idle_calls >= 1 and np.all(l.kp == 80.0)  # leader homed compliantly, released
+    f.pos[:6] = 0.4
+    l.pos[:] = 0.4
+    robot.disconnect()
+    teleop.disconnect()
+    assert np.allclose(f.pos[:6], 0) and np.allclose(l.pos, 0) and f.closed and l.closed
+
+
+def test_plugins_do_not_move_arms_when_home_speed_is_zero(rig, fake_connect, tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_LEROBOT_HOME", str(tmp_path / "lr"))
+    from lerobot.robots.utils import make_robot_from_config
+    from lerobot_robot_yamkit import YamFollowerConfig
+
+    rig.control.home_speed = 0.0
+    rig.save()
+    fake_connect.presets["left_follower"] = np.array([0.3] * 6 + [0.5])
+    robot = make_robot_from_config(YamFollowerConfig(rig=str(rig.path), arm="left_follower"))
+    robot.connect()
+    robot.disconnect()
+    f = fake_connect["left_follower"]
+    assert f.commands == [] and np.allclose(f.pos[:6], 0.3) and f.closed

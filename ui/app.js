@@ -143,8 +143,8 @@ function syncRunButtons(startIds, stopId) {
     if (b) b.hidden = session.active;
   }
   stop.hidden = !session.active;
-  stop.disabled = !!(session.stopping && session.active);
-  stop.textContent = session.stopping && session.active ? "Stopping…" : "Stop";
+  stop.disabled = false;  // a second click during the return-home move releases the arms immediately
+  stop.textContent = session.stopping && session.active ? "Stopping… arms returning home — click again to release now" : "Stop";
 }
 
 const logPaneHTML = (id = "log", tall = false) => `<pre class="log${tall ? " tall" : ""}" id="${id}"></pre>`;
@@ -172,16 +172,19 @@ pages.live = {
     el.innerHTML = `
       ${pageHead("Live", "read-only — opening this page never energises a motor", `
         <button id="btn-read" class="primary">Start state stream</button>
+        <button id="btn-park">Park arms</button>
         <button id="btn-stop" class="danger">Stop</button>
         <button id="btn-refresh">Refresh</button>`)}
       <div class="hint">The state stream runs <code>yamkit read</code>: arms connect in gravity-compensation
-        mode (motors energised but compliant — nothing moves).</div>
+        mode (motors energised but compliant — nothing moves). Park runs <code>yamkit rest</code>: every arm
+        moves slowly to its home pose and is released there.</div>
       <div class="sect"><div class="sect-head">Cameras</div>${camsHTML()}</div>
       <div class="sect"><div class="sect-head">Arm state</div><div class="cols cols-2" id="arm-panels"></div></div>
       <div class="sect"><div class="sect-head">Status</div><div class="st-list" id="status-list"></div>
         <div class="hint" id="bringup"></div></div>
       <div class="sect"><div class="sect-head">Session output</div>${logPaneHTML()}</div>`;
     $("#btn-read").onclick = (e) => doPost("/session/read", { hz: 5 }, e.target);
+    $("#btn-park").onclick = (e) => doPost("/session/rest", {}, e.target);
     $("#btn-stop").onclick = (e) => doPost("/session/stop", {}, e.target);
     $("#btn-refresh").onclick = () => { refreshOverview(); refreshSession(); };
     this.update();
@@ -189,7 +192,7 @@ pages.live = {
   update() {
     const panels = $("#arm-panels");
     if (!panels) return;
-    syncRunButtons(["#btn-read"], "#btn-stop");
+    syncRunButtons(["#btn-read", "#btn-park"], "#btn-stop");
     const rigArms = Object.entries(overview?.rig?.arms || {});
     const byRole = (role) => rigArms.filter(([, a]) => a.role === role).map(([n, a]) => [n, a.role]);
     const arms = rigArms.length
@@ -220,7 +223,7 @@ pages.live = {
 pages.record = {
   render(el) {
     el.innerHTML = `
-      ${pageHead("Record", "teleoperation and dataset recording", `<button id="btn-stop-top" class="danger">Stop</button>`)}
+      ${pageHead("Record", "teleoperation and dataset recording", `<button id="btn-park-rec">Park arms</button><button id="btn-stop-top" class="danger">Stop</button>`)}
       <div class="sect"><div class="sect-head">Cameras</div>${camsHTML()}</div>
       <div class="cols cols-2">
         <div class="sect"><div class="sect-head">Teleop</div><div class="panel pad">
@@ -230,8 +233,9 @@ pages.record = {
             <button id="btn-teleop" class="primary">Start Teleop</button>
           </div>
           <label class="check"><input type="checkbox" id="auto-engage" /> auto-engage (follower moves to leader pose immediately)</label>
-          <div class="hint">Runs <code>yamkit teleop</code>. Without auto-engage, press the teaching-handle
-            button to engage — the follower then moves to the leader pose.</div>
+          <div class="hint">Runs <code>yamkit teleop</code>. On Start every arm first moves slowly to its home pose.
+            Without auto-engage, press the teaching-handle button to engage — the follower then moves to the leader pose.
+            On Stop the arms return home before being released (let go of the handles; press Stop again to release immediately).</div>
         </div></div>
         <div class="sect"><div class="sect-head">Recording</div><div class="panel pad">
           <label class="field">dataset name<input type="text" id="rec-name" placeholder="pick_cube" /></label>
@@ -264,12 +268,13 @@ pages.record = {
       }, e.target);
     };
     $("#btn-stop-top").onclick = (e) => doPost("/session/stop", {}, e.target);
+    $("#btn-park-rec").onclick = (e) => doPost("/session/rest", {}, e.target);
     this.update();
   },
   update() {
     const ts = $("#teleop-status");
     if (!ts) return;
-    syncRunButtons(["#btn-teleop", "#btn-record"], "#btn-stop-top");
+    syncRunButtons(["#btn-teleop", "#btn-record", "#btn-park-rec"], "#btn-stop-top");
     // pair status is only meaningful while a teleop session is actually running
     const pairs = session.active && session.mode === "teleop" ? (session.parsed?.pairs || {}) : {};
     // readiness banner: arm connection takes a few seconds after Start — show when the
@@ -610,6 +615,7 @@ pages.settings = {
       ["teleop_hz", "teleop loop rate (Hz)"], ["sync_seconds", "engage sync move (s)"],
       ["bilateral_kp", "bilateral force-feedback gain"], ["engage_button", "engage button index"],
       ["max_joint_speed", "max joint speed (rad/s)"], ["max_gripper_speed", "max gripper speed (1/s)"],
+      ["home_speed", "return-to-home speed, followers (rad/s, 0 = off)"], ["leader_home_speed", "return-to-home speed, leaders (rad/s)"],
     ];
     $("#cfg-body").innerHTML = `
       <div class="kv panel" style="margin-top:16px">

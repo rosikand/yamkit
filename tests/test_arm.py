@@ -66,3 +66,53 @@ def test_leader_read_handle():
     st = arm.read()
     assert st.gripper == pytest.approx(0.75) and st.buttons == (True, False)
     assert arm.command(np.ones(6), limit_speed=False).shape == (6,)
+
+
+def test_joint_offsets_put_a_leader_in_its_followers_frame():
+    spec = ArmSpec(name="l", role="leader", gripper="yam_teaching_handle", can_serial="x", joint_offsets=[0.1, 0, 0, 0, 0, 0])
+    robot = FakeRobot(6, gripper=False, handle=True)
+    arm = YamArm(spec, "can1", robot)
+    assert arm.read().q[0] == pytest.approx(0.1)  # motors at raw 0 read as +0.1 (the follower's angle)
+    arm.command(np.zeros(6), limit_speed=False)  # "same angle as the follower's zero"
+    assert robot.commands[-1][0] == pytest.approx(-0.1)  # motors receive the raw target
+    assert arm.read().q[0] == pytest.approx(0.0)
+    assert np.allclose(arm.home_pose, 0)
+
+
+def test_go_home_default_pose_rest_pose_and_gripper(follower, monkeypatch):
+    from yamkit import arm as arm_mod
+
+    monkeypatch.setattr(arm_mod, "HOME_MIN_S", 0.01)
+    arm, robot = follower
+    robot.pos = np.array([0.5, -0.5, 0.5, 0.0, 0.0, 0.0, 0.3])
+    assert arm.go_home(speed=50.0) == pytest.approx(0.5)
+    assert np.allclose(robot.pos[:6], 0) and robot.pos[6] == pytest.approx(0.3)  # gripper untouched
+    assert robot.idle_calls == 0  # not released
+    arm.spec.rest_pose = [0.1] * 6
+    arm.go_home(speed=50.0, release=True)
+    assert np.allclose(robot.pos[:6], 0.1) and robot.idle_calls == 1
+
+
+def test_go_home_compliant_and_interrupt(monkeypatch):
+    from yamkit import arm as arm_mod
+
+    monkeypatch.setattr(arm_mod, "HOME_MIN_S", 0.01)
+    spec = ArmSpec(name="l", role="leader", gripper="yam_teaching_handle", can_serial="x")
+    robot = FakeRobot(6, gripper=False, handle=True)
+    arm = YamArm(spec, "can1", robot)
+    robot.pos = np.ones(6)
+    seen_kp = []
+    orig = robot.command_joint_pos
+    robot.command_joint_pos = lambda q: (seen_kp.append(robot.kp.copy()), orig(q))
+    arm.go_home(speed=50.0, compliant=True, release=True)
+    assert np.allclose(robot.pos, 0) and robot.idle_calls == 1
+    assert np.allclose(seen_kp[0], 80.0 * arm_mod.COMPLIANT_KP_SCALE)  # moved with low gains
+    assert np.all(robot.kp == 80.0)  # restored afterwards
+
+    def interrupted(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(arm, "move_to", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        arm.go_home(speed=50.0, compliant=True)
+    assert robot.idle_calls == 2 and np.all(robot.kp == 80.0)  # released, gains restored, then re-raised

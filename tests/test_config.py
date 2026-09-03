@@ -76,3 +76,20 @@ def test_example_rig_loads_and_matches_writer():
     assert set(cfg.cameras) == {"top", "left_wrist", "right_wrist"}
     # the example body is exactly what the writer produces (only the banner is hand-written)
     assert example.read_text().endswith(cfg.to_yaml().split("\n", 12)[-1])
+
+
+def test_home_pose_offsets_and_home_speed(rig):
+    a = rig.arm("left_follower")
+    assert a.home_pose == [0.0] * 6
+    a.rest_pose = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    assert a.home_pose == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    rig.arm("left_leader").joint_offsets = [0.05, 0, 0, 0, 0, 0]
+    assert rig.control.home_speed == 0.5
+    rig.save()
+    text = rig.path.read_text()
+    assert "joint_offsets: [0.05, 0, 0, 0, 0, 0]" in text and "home_speed: 0.5" in text
+    assert "yamkit align" in text and "home" in text
+    loaded = RigConfig.load(rig.path)
+    assert loaded.arm("left_leader").joint_offsets == [0.05, 0, 0, 0, 0, 0]
+    with pytest.raises(ValueError):
+        ArmSpec(name="x", role="leader", can_serial="1", joint_offsets=[0.1, 0.2])

@@ -41,7 +41,8 @@ class ArmSpec:
     can_serial: str | None = None  # USB serial of the CAN adapter (preferred)
     can_iface: str | None = None  # explicit interface name (overrides serial lookup)
     gripper_limits: list[float] | None = None  # [closed, open] motor rad; set → skips auto-calibration
-    rest_pose: list[float] | None = None  # 6 joint angles (rad) for `yamkit rest`
+    rest_pose: list[float] | None = None  # home pose override (rad); default home = all joints 0 (folded)
+    joint_offsets: list[float] | None = None  # leader only: added to its joint readings so it lines up with its follower (`yamkit align`)
     notes: str | None = None
 
     def __post_init__(self) -> None:
@@ -53,6 +54,13 @@ class ArmSpec:
             raise ValueError(f"{self.name}: gripper must be one of {GRIPPER_TYPES}, got {self.gripper!r}")
         if self.rest_pose is not None and len(self.rest_pose) != N_JOINTS:
             raise ValueError(f"{self.name}: rest_pose needs {N_JOINTS} values")
+        if self.joint_offsets is not None and len(self.joint_offsets) != N_JOINTS:
+            raise ValueError(f"{self.name}: joint_offsets needs {N_JOINTS} values")
+
+    @property
+    def home_pose(self) -> list[float]:
+        """Where the arm parks: `rest_pose` if stored, else the vendor zero pose (all joints 0 = folded)."""
+        return [float(x) for x in self.rest_pose] if self.rest_pose else [0.0] * N_JOINTS
 
     @property
     def has_motor_gripper(self) -> bool:
@@ -81,6 +89,8 @@ class ControlSpec:
     engage_button: int = 0  # teaching-handle button index that toggles engage
     max_joint_speed: float = 3.0  # rad/s clamp on follower position targets
     max_gripper_speed: float = 3.0  # (normalized units)/s clamp on the gripper target
+    home_speed: float = 0.5  # rad/s of the automatic move to home at session start/stop (0 = off)
+    leader_home_speed: float = 0.25  # rad/s for the leaders' (compliant) move to home; they are light, so slower feels right
 
 
 @dataclass
@@ -195,7 +205,11 @@ _SECTIONS: dict[str, str] = {
 #   gripper         follower: linear_4310 (stock YAM) | crank_4310 | linear_3507 | flexible_4310
 #                   leader:   yam_teaching_handle        no gripper: no_gripper
 #   can_serial      USB serial of the CAN adapter this arm is cabled to (`yamkit can` lists them)
-#   gripper_limits  written by `yamkit calibrate-gripper`   rest_pose: written by `yamkit set-rest`
+#   gripper_limits  written by `yamkit calibrate-gripper`
+#   rest_pose       home pose override, written by `yamkit set-rest`; without it home = all joints 0
+#                   (the folded pose). Arms move home at every Start and Stop, and with `yamkit rest`.
+#   joint_offsets   leaders only, written by `yamkit align`: makes "same angle" mean "same direction"
+#                   for the leader and its follower (fixes a follower that points off to the side)
 """,
     "pairs": """\
 
@@ -223,6 +237,8 @@ _SECTIONS: dict[str, str] = {
 #   engage_button      which teaching-handle button toggles engage (0 = top button)
 #   max_joint_speed    safety clamp in rad/s on every commanded follower move (teleop and rollout)
 #   max_gripper_speed  safety clamp on the gripper, in fraction of its range per second
+#   home_speed         rad/s of the followers' automatic move to home at Start / Stop (0 turns it off)
+#   leader_home_speed  rad/s of the leaders' move to home (they are light — keep this gentle)
 """,
 }
 

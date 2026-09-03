@@ -88,13 +88,23 @@ removes it. `system/yamkit-can.service` is an alternative for machines without n
 ```bash
 yamkit read left_leader left_follower      # gravity-comp mode, streams q / gripper / buttons
 yamkit calibrate-gripper left_follower     # SDK gripper auto-calibration → limits stored in the rig
-yamkit set-rest left_follower              # store current pose as rest pose
-yamkit rest                                # move every arm with a rest pose there, slowly
+yamkit align left_follower                 # once per pair: fold both arms to their stops → leader offsets stored
+yamkit rest                                # park: every arm moves slowly to its home pose and is released
+yamkit set-rest left_follower              # optional: store the current pose as that arm's home pose
 yamkit zero-handle right_leader            # re-zero a trigger encoder (only if trigger reads wrong)
 ```
 
 Connecting an arm enables its motors in the vendor's gravity-compensation mode (it stays free to
 move). On exit the arm is left compliant; the motors fall back to firmware damping after 400 ms.
+
+**Home** is the folded pose the vendor zeroed every joint at (all joints 0), unless `yamkit set-rest`
+stored another one. Teleop, recording and rollout move every arm home slowly at Start and back home at
+Stop (`control.home_speed`, 0.5 rad/s by default; 0 turns it off; leaders use the gentler
+`control.leader_home_speed`, 0.25 rad/s). Leaders move with low gains so a hand on the handle simply wins. A second Stop / Ctrl-C during the return releases the arms immediately.
+
+**Align** fixes a follower that points slightly off its leader: the two arms' motor zeros never agree
+exactly. `yamkit align` reads both arms folded against their stops and stores the per-joint difference
+on the leader (`joint_offsets`); teleop, recording and rollout then all work in the follower's frame.
 
 ## 3. Teleop
 
@@ -104,9 +114,11 @@ yamkit teleop --pair left_follower --auto-engage --duration 20
 yamkit teleop --bilateral-kp 0.15   # force feedback on the leader (0.1–0.2 recommended)
 ```
 
-On engage the follower moves to the leader pose over `control.sync_seconds`, then tracks at
-`control.teleop_hz`. Follower targets are always clamped to `control.max_joint_speed` (rad/s) and
-`control.max_gripper_speed`, so a jump in the target becomes a bounded-speed move.
+On start every arm moves to home; on engage the follower moves to the leader pose over
+`control.sync_seconds`, then tracks at `control.teleop_hz`; on Ctrl-C every arm returns home before
+being released (`--no-home` skips both moves). Follower targets are always clamped to
+`control.max_joint_speed` (rad/s) and `control.max_gripper_speed`, so a jump in the target becomes a
+bounded-speed move.
 
 ## 4. Cameras
 
@@ -218,8 +230,9 @@ motor. See `docs/UI.md` and `docs/ui-screenshots/`.
 | `yamkit calibrate-gripper` | Run the SDK gripper limit auto-calibration once and store the limits in the rig (skipped afterwards). |
 | `yamkit swap` | Swap the physical devices behind two rig names — arms or cameras (e.g. "left_leader" is really the right one). |
 | `yamkit zero-handle` | Re-zero a leader's teaching-handle trigger encoder at its current (released) position. |
-| `yamkit set-rest` | Store the arm's current pose as its rest pose (used by `yamkit rest`). |
-| `yamkit rest` | Move arm(s) slowly to their stored rest pose, then release. |
+| `yamkit align` | Once per pair: fold leader and follower to their stops, store the per-joint offset on the leader so both point the same way. |
+| `yamkit set-rest` | Store the arm's current pose as its home pose (default home: all joints 0). |
+| `yamkit rest` | Park: move arm(s) slowly to their home pose, then release them there. |
 | `yamkit teleoperate` | Teleop through LeRobot's `lerobot-teleoperate` (same plugins used for recording). |
 | `yamkit record` | Record teleop episodes into a LeRobot dataset (`lerobot-record`). |
 | `yamkit rollout` | Run a policy/VLA on the follower arm(s) (`lerobot-rollout`). |
@@ -261,6 +274,8 @@ checkpoint ─► lerobot-rollout ─► policy.select_action() ─► YamFollow
 | wrong arm responds to a name | `yamkit swap <a> <b>` |
 | trigger reads ~0 while released | `yamkit zero-handle <leader>` |
 | follower moves too fast | lower `control.max_joint_speed` in `configs/rig.yaml` |
+| follower points slightly off its leader | `yamkit align <arm>` (both arms folded to their stops) |
+| arms should not move by themselves at Start/Stop | `control.home_speed: 0` in `configs/rig.yaml`, or `yamkit teleop --no-home` |
 | torchcodec / libavutil errors in logs | harmless: LeRobot falls back to PyAV for video |
 | policy too slow on CPU | `yamkit rollout --rtc`, or serve the policy from a GPU box |
 

@@ -4,6 +4,8 @@
 * leader arms expose the teaching-handle trigger as `gripper` and its two buttons
 * `command()` rate-limits position targets (max joint / gripper speed) so a far-away target
   (teleop engage, policy glitch) turns into a bounded-speed move instead of a jump
+* leaders with `joint_offsets` (from `yamkit align`) read and are commanded in their follower's frame
+* `go_home()` is the slow, interruptible move to the parked pose used at session start/stop
 """
 
 from __future__ import annotations
@@ -20,6 +22,9 @@ from .config import N_JOINTS, ArmSpec
 log = logging.getLogger(__name__)
 
 STALE_COMMAND_S = 0.5  # after this long without commands, ramp restarts from the measured pose
+COMPLIANT_KP_SCALE = 0.15  # gains for moving a leader home: gentle enough that a hand on the handle wins
+COMPLIANT_KD_SCALE = 0.3
+HOME_MIN_S = 0.5  # shortest go_home move, so a tiny correction is still a visible glide
 
 
 @dataclass
@@ -55,6 +60,7 @@ class YamArm:
         self.default_kp = np.array(info["kp"], dtype=float)
         self.default_kd = np.array(info["kd"], dtype=float)
         self.gripper_limits = info.get("gripper_limits")
+        self._offsets = np.asarray(spec.joint_offsets, dtype=float) if spec.joint_offsets else None
         self._last_cmd: np.ndarray | None = None
         self._last_cmd_t: float | None = None
         self._gains_zeroed = False
@@ -112,10 +118,16 @@ class YamArm:
     def robot(self) -> Any:
         return self._robot
 
+    @property
+    def home_pose(self) -> np.ndarray:
+        return np.asarray(self.spec.home_pose, dtype=float)
+
     # ----- reading --------------------------------------------------------------------------
     def read(self) -> ArmState:
         obs = self._robot.get_observations()
         q = np.asarray(obs["joint_pos"], dtype=float)[:N_JOINTS]
+        if self._offsets is not None:
+            q = q + self._offsets
         qd = np.asarray(obs["joint_vel"], dtype=float)[:N_JOINTS]
         tau = np.asarray(obs["joint_eff"], dtype=float)[:N_JOINTS]
         gripper: float | None = None
@@ -141,6 +153,14 @@ class YamArm:
             gripper = 1.0 if cur is None else cur
         return np.concatenate([q, [float(np.clip(gripper, 0.0, 1.0))]])
 
+    def _to_raw(self, target: np.ndarray) -> np.ndarray:
+        """Aligned frame → the motors' own frame (undo `joint_offsets`)."""
+        if self._offsets is None:
+            return target
+        raw = target.copy()
+        raw[:N_JOINTS] -= self._offsets
+        return raw
+
     def command(self, q: np.ndarray, gripper: float | None = None, *, limit_speed: bool = True) -> np.ndarray:
         """Command joint targets (rad) and gripper (0..1). Returns the target actually sent."""
         if self._gains_zeroed:
@@ -159,7 +179,7 @@ class YamArm:
             if self.spec.has_motor_gripper:
                 step[-1] = self.max_gripper_speed * dt
             target = prev + np.clip(target - prev, -step, step)
-        self._robot.command_joint_pos(target)
+        self._robot.command_joint_pos(self._to_raw(target))
         self._last_cmd, self._last_cmd_t = target.copy(), now
         return target
 
@@ -181,6 +201,33 @@ class YamArm:
         """Hold the current measured pose under PD control."""
         st = self.read()
         self.command(st.q, st.gripper, limit_speed=False)
+
+    def go_home(self, speed: float = 0.5, *, compliant: bool = False, release: bool = False) -> float:
+        """Move slowly to the home pose (`rest_pose`, default all joints 0 = folded). Blocking.
+
+        The move takes max|Δq| / `speed` (rad/s), at least 0.5 s; the gripper is left where it is.
+        `compliant` uses low gains so a hand holding the arm wins (leaders); `release` leaves the arm
+        in gravity-compensation idle afterwards. A KeyboardInterrupt (second Ctrl-C / Stop) releases
+        the arm where it is and propagates, so the caller can skip every remaining move.
+        Returns how far (rad) the arm had to move."""
+        target = self.home_pose
+        dist = float(np.max(np.abs(self.read().q - target)))
+        duration = max(dist / max(float(speed), 1e-6), HOME_MIN_S)
+        log.info("%s: moving home, %.2f rad away over %.1f s%s", self.name, dist, duration, " (compliant)" if compliant else "")
+        if compliant:
+            self.scale_gains(COMPLIANT_KP_SCALE, COMPLIANT_KD_SCALE)
+        try:
+            self.move_to(target, None, duration=duration)
+        except KeyboardInterrupt:
+            log.warning("%s: home move interrupted — releasing here", self.name)
+            self.gravity_idle()
+            raise
+        finally:
+            if compliant:
+                self.restore_gains()
+        if release:
+            self.gravity_idle()
+        return dist
 
     # ----- gains / modes --------------------------------------------------------------------
     def set_gains(self, kp: np.ndarray, kd: np.ndarray) -> None:

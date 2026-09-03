@@ -1,12 +1,14 @@
 """Leader → follower teleoperation with engage/disengage on the teaching-handle button.
 
 Protocol (mirrors the vendor's `minimum_gello.py`, in-process and multi-pair):
-  * both arms start compliant in gravity-compensation mode
+  * on start every arm moves slowly to its home pose (`home_speed` > 0): followers under normal
+    gains, leaders compliantly so a hand on the handle wins; leaders are then left free
   * press the handle button (or `auto_engage`) → the follower moves to the leader pose over
     `sync_seconds`, then tracks the leader at `hz`; with `bilateral_kp > 0` the leader is pulled
     toward the follower pose with scaled gains (force feedback)
   * press again → the follower holds its pose, the leader goes compliant
-  * Ctrl-C / `stop` → leaders compliant, followers hold, everything closed cleanly
+  * Ctrl-C / `stop` → every arm returns home the same slow way, then everything is released and
+    closed; a second Ctrl-C / stop during that move releases the arms where they are
 """
 
 from __future__ import annotations
@@ -64,6 +66,8 @@ class TeleopSession:
         bilateral_kp: float = 0.0,
         engage_button: int = 0,
         auto_engage: bool = False,
+        home_speed: float = 0.5,
+        leader_home_speed: float | None = None,
         on_tick: Callable[[TeleopSession], None] | None = None,
     ) -> None:
         self.pairs = pairs
@@ -72,9 +76,12 @@ class TeleopSession:
         self.bilateral_kp = bilateral_kp
         self.engage_button = engage_button
         self.auto_engage = auto_engage
+        self.home_speed = home_speed
+        self.leader_home_speed = home_speed / 2 if leader_home_speed is None else leader_home_speed
         self.on_tick = on_tick
         self.stats = TeleopStats()
         self.stop_event = threading.Event()
+        self._home_aborted = False
 
     # ----- construction helpers ---------------------------------------------------------------
     @classmethod
@@ -103,7 +110,23 @@ class TeleopSession:
         kw.setdefault("sync_seconds", ctrl.sync_seconds)
         kw.setdefault("bilateral_kp", ctrl.bilateral_kp)
         kw.setdefault("engage_button", ctrl.engage_button)
+        kw.setdefault("home_speed", ctrl.home_speed)
+        kw.setdefault("leader_home_speed", ctrl.leader_home_speed)
         return cls(pairs, **kw)
+
+    # ----- home -----------------------------------------------------------------------------
+    def home_all(self, why: str) -> None:
+        """Move every arm to its home pose, follower then leader per pair (no-op if home_speed <= 0)."""
+        if self.home_speed <= 0:
+            return
+        log.info("%s: arms moving home (followers %.2f rad/s, leaders %.2f rad/s) — let go of the handles (Ctrl-C / Stop again releases immediately)", why, self.home_speed, self.leader_home_speed)
+        try:
+            for pair in self.pairs:
+                pair.follower.go_home(self.home_speed)
+                pair.leader.go_home(self.leader_home_speed, compliant=True, release=True)
+        except KeyboardInterrupt:
+            self._home_aborted = True
+            raise
 
     # ----- engage / disengage ---------------------------------------------------------------
     def engage(self, pair: TeleopPair) -> None:
@@ -139,12 +162,13 @@ class TeleopSession:
 
     def run(self, duration: float | None = None) -> TeleopStats:
         period = 1.0 / self.hz
-        if self.auto_engage:
-            for pair in self.pairs:
-                self.engage(pair)
         t_end = None if duration is None else time.monotonic() + duration
         self.stats = TeleopStats()
         try:
+            self.home_all("start")
+            if self.auto_engage:
+                for pair in self.pairs:
+                    self.engage(pair)
             next_t = time.monotonic()
             while not self.stop_event.is_set():
                 self.step()
@@ -167,11 +191,16 @@ class TeleopSession:
         return self.stats
 
     def shutdown(self) -> None:
-        for pair in self.pairs:
-            try:
+        try:
+            for pair in self.pairs:
                 if pair.engaged:
                     self.disengage(pair)
-            finally:
+            if not self._home_aborted:
+                self.home_all("stop")
+        except KeyboardInterrupt:
+            log.warning("home move aborted — releasing the arms where they are")
+        finally:
+            for pair in self.pairs:
                 pair.leader.close()
                 pair.follower.close()
         log.info("teleop session closed (%d ticks, %.1f Hz, %d overruns)", self.stats.ticks, self.stats.rate_hz, self.stats.overruns)
