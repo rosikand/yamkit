@@ -14,6 +14,8 @@ from pathlib import Path
 ARPHRD_CAN = "280"
 DEFAULT_BITRATE = 1_000_000
 SYS_NET = Path("/sys/class/net")
+NETWORKD_UNIT = Path("/etc/systemd/network/80-yam-can.network")  # installed by scripts/install_system.sh
+INSTALL_HINT = "scripts/install_system.sh   (one-time, asks for sudo; adapters then come up at boot and on hot-plug)"
 
 
 @dataclass
@@ -123,3 +125,14 @@ def udev_rules_text(serial_to_name: dict[str, str]) -> str:
             raise ValueError(f"CAN interface name {name!r} exceeds 13 characters")
         lines.append(f'SUBSYSTEM=="net", ACTION=="add", ATTRS{{serial}}=="{serial}", NAME="{name}"')
     return "\n".join(lines) + "\n"
+
+
+def boot_bringup_installed(unit: Path = NETWORKD_UNIT) -> tuple[bool, str]:
+    """Is the boot-time CAN bring-up (systemd-networkd unit from `system/`) installed and active?"""
+    if not unit.is_file():
+        return False, f"not installed — run {INSTALL_HINT}"
+    if shutil.which("systemctl"):
+        active = subprocess.run(["systemctl", "is-active", "--quiet", "systemd-networkd"], check=False).returncode == 0
+        if not active:
+            return False, f"{unit} present but systemd-networkd is not running — re-run {INSTALL_HINT}"
+    return True, f"{unit} (systemd-networkd)"

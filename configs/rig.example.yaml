@@ -1,0 +1,106 @@
+# =============================================================================================
+#  EXAMPLE rig file (a bimanual YAM: two leaders, two followers, one overhead + two wrist cameras).
+#  Your real file is configs/rig.yaml — it is created for your hardware by ./setup.sh or
+#  `yamkit discover --write` and is not stored in git. This example only shows the format.
+# =============================================================================================
+version: 1
+
+# ---- Arms -----------------------------------------------------------------------------------
+# One entry per arm. The entry name (left_leader, right_follower, ...) is what every command uses.
+#   role            leader = the arm you hold, follower = the arm that moves
+#   side            left / right (labels only)
+#   arm_type        yam | yam_pro | yam_ultra | yam_ultra_2 | big_yam
+#   gripper         follower: linear_4310 (stock YAM) | crank_4310 | linear_3507 | flexible_4310
+#                   leader:   yam_teaching_handle        no gripper: no_gripper
+#   can_serial      USB serial of the CAN adapter this arm is cabled to (`yamkit can` lists them)
+#   gripper_limits  written by `yamkit calibrate-gripper`   rest_pose: written by `yamkit set-rest`
+arms:
+  left_leader:
+    role: leader
+    side: left
+    arm_type: yam
+    gripper: yam_teaching_handle
+    can_serial: EXAMPLE0000LEFTLEADER
+    notes: adapter seen as can0
+  left_follower:
+    role: follower
+    side: left
+    arm_type: yam
+    gripper: linear_4310
+    can_serial: EXAMPLE0000LEFTFOLLOW
+    gripper_limits: [6.47, 1.16]
+    notes: adapter seen as can1
+  right_leader:
+    role: leader
+    side: right
+    arm_type: yam
+    gripper: yam_teaching_handle
+    can_serial: EXAMPLE000RIGHTLEADER
+    notes: adapter seen as can2
+  right_follower:
+    role: follower
+    side: right
+    arm_type: yam
+    gripper: linear_4310
+    can_serial: EXAMPLE000RIGHTFOLLOW
+    gripper_limits: [6.45, 1.23]
+    notes: adapter seen as can3
+
+# ---- Pairs ----------------------------------------------------------------------------------
+# Which leader drives which follower during teleop and recording.
+pairs:
+- leader: left_leader
+  follower: left_follower
+- leader: right_leader
+  follower: right_follower
+
+# ---- Cameras --------------------------------------------------------------------------------
+# Camera names become the image keys of recorded datasets (observation.images.<name>), so settle
+# them before recording. Conventional names: top, left_wrist, right_wrist.
+#   index_or_path   the video device. `/dev/v4l/by-path/...` links follow the USB port, so a camera
+#                   keeps working after reboots; if you move a camera to another port, run
+#                   `yamkit discover --write` again (it re-finds cameras by serial / model).
+#   width height fps  capture settings; 640x480 @ 30 works on every RealSense and most webcams
+#   serial model notes  informational, written by discovery (safe to delete)
+# Left and right wrist swapped?  ->  `yamkit swap left_wrist right_wrist`
+cameras:
+  top:
+    type: opencv
+    index_or_path: /dev/v4l/by-path/pci-0000:05:00.4-usb-0:1.1:1.3-video-index0
+    width: 640
+    height: 480
+    fps: 30
+    serial: '939323022361'
+    model: RealSense D435
+    notes: RealSense D435, serial 939323022361, USB port 1.1
+  left_wrist:
+    type: opencv
+    index_or_path: /dev/v4l/by-path/pci-0000:05:00.4-usb-0:1.2:1.0-video-index4
+    width: 640
+    height: 480
+    fps: 30
+    model: RealSense D405
+    notes: RealSense D405, USB port 1.2
+  right_wrist:
+    type: opencv
+    index_or_path: /dev/v4l/by-path/pci-0000:05:00.4-usb-0:1.3:1.0-video-index4
+    width: 640
+    height: 480
+    fps: 30
+    model: RealSense D405
+    notes: RealSense D405, USB port 1.3
+
+# ---- Control --------------------------------------------------------------------------------
+#   teleop_hz          loop rate of `yamkit teleop`
+#   sync_seconds       how long the follower takes to catch up with the leader when engaging
+#   bilateral_kp       force feedback on the leader: 0 = off, 0.1-0.2 = gentle
+#   engage_button      which teaching-handle button toggles engage (0 = top button)
+#   max_joint_speed    safety clamp in rad/s on every commanded follower move (teleop and rollout)
+#   max_gripper_speed  safety clamp on the gripper, in fraction of its range per second
+control:
+  teleop_hz: 100.0
+  sync_seconds: 3.0
+  bilateral_kp: 0.0
+  engage_button: 0
+  max_joint_speed: 3.0
+  max_gripper_speed: 3.0

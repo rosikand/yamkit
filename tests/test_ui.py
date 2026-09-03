@@ -256,3 +256,14 @@ def test_model_detail_endpoint(client, tmp_path):
     assert {f["name"] for f in d["files"]} == {"config.json", "model.safetensors"}
     assert client.get("/api/models/nope").status_code == 404
     assert client.get("/api/models/../secrets").status_code == 404
+
+
+def test_config_save_reloads_camera_list(client, rig):
+    assert client.get("/api/cameras").json() == []
+    text = rig.path.read_text().replace("cameras: {}", "cameras:\n  top: {type: opencv, index_or_path: /dev/video99, width: 640, height: 480, fps: 30}\n")
+    assert client.post("/api/config", json={"yaml_text": text}).status_code == 200
+    cams = client.get("/api/cameras").json()
+    assert [c["name"] for c in cams] == ["top"] and cams[0]["device"] == "/dev/video99"
+    assert client.get("/api/overview").json()["cameras"][0]["name"] == "top"
+    assert client.post("/api/config", json={"control": {"teleop_hz": 50}}).status_code == 200
+    assert [c["name"] for c in client.get("/api/cameras").json()] == ["top"]  # unchanged entry kept

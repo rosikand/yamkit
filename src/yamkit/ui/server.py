@@ -338,6 +338,8 @@ def create_app(
             rig.save(rig_path)
         else:
             raise HTTPException(422, "provide yaml_text or control")
+        rig = load_rig()
+        cameras.reload(rig.cameras if rig else {})
         return config_payload()
 
     # ---------------------------------------------------------------------------- datasets --

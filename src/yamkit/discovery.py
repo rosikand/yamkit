@@ -151,43 +151,80 @@ def probe_all(ifaces: list[CanIface] | None = None) -> list[ChannelProbe]:
     return out
 
 
-def suggest_rig(probes: list[ChannelProbe], ifaces: list[CanIface], existing: RigConfig | None = None) -> RigConfig:
-    """Draft a rig from probe results. Names are provisional (`left_*`/`right_*` in discovery order):
-    the user should verify which physical arm is which and edit names/sides."""
+def suggest_rig(probes: list[ChannelProbe], ifaces: list[CanIface], existing: RigConfig | None = None, cameras: dict | None = None) -> RigConfig:
+    """Draft a rig from probe results.
+
+    An adapter whose serial is already in `existing` keeps that arm's name, side, gripper,
+    calibration and rest pose (so re-running discovery after a reboot or a cable change never
+    flips a verified left/right). New adapters get provisional names (`left_*`, `right_*`, ... in
+    discovery order) — the user must verify which physical arm is which. Arms in `existing`
+    whose adapter is not attached right now are kept as they are (the CLI warns about them)."""
     by_name = {i.name: i for i in ifaces}
-    leaders = [p for p in probes if p.classification == "leader"]
-    followers = [p for p in probes if p.classification in ("follower", "arm_no_gripper")]
+    old_arms = list(existing.arms.values()) if existing else []
+    old_by_serial = {a.can_serial: a for a in old_arms if a.can_serial}
     sides = ["left", "right", "third", "fourth"]
     arms: dict[str, ArmSpec] = {}
+    seen_serials: set[str] = set()
+
+    def place(role: str, plist: list[ChannelProbe]) -> None:
+        pending = []
+        for p in plist:
+            iface = by_name[p.iface]
+            old = old_by_serial.get(iface.serial or "")
+            if iface.serial:
+                seen_serials.add(iface.serial)
+            if old is not None and old.role == role and old.name not in arms:
+                arms[old.name] = ArmSpec(
+                    name=old.name, role=role, side=old.side, arm_type=old.arm_type, gripper=old.gripper,
+                    can_serial=iface.serial, gripper_limits=old.gripper_limits, rest_pose=old.rest_pose,
+                    notes=f"adapter seen as {p.iface}",
+                )
+            else:
+                pending.append(p)
+        used = {a.side for a in arms.values() if a.role == role} | {a.side for a in old_arms if a.role == role and a.name not in arms and a.can_serial not in seen_serials}
+        free_sides = [s for s in sides if s not in used]
+        for idx, p in enumerate(pending):
+            side = free_sides[idx] if idx < len(free_sides) else f"arm{idx}"
+            name = f"{side}_{role}"
+            iface = by_name[p.iface]
+            arms[name] = ArmSpec(
+                name=name, role=role, side=side, gripper=p.suggested_gripper,
+                can_serial=iface.serial, can_iface=None if iface.serial else p.iface,
+                notes=f"discovered on {p.iface} — verify left/right",
+            )
+
+    place("leader", [p for p in probes if p.classification == "leader"])
+    place("follower", [p for p in probes if p.classification in ("follower", "arm_no_gripper")])
+    for a in old_arms:  # adapters not attached right now: keep, the user decides
+        if a.name not in arms and (a.can_serial not in seen_serials or not a.can_serial):
+            arms[a.name] = a
+    order = {s: i for i, s in enumerate(sides)}
+    arms = dict(sorted(arms.items(), key=lambda kv: (order.get(kv[1].side or "", 99), 0 if kv[1].role == "leader" else 1, kv[0])))
+
     pairs: list[PairSpec] = []
-    for idx in range(max(len(leaders), len(followers))):
-        side = sides[idx] if idx < len(sides) else f"arm{idx}"
-        lname = fname = None
-        if idx < len(leaders):
-            p = leaders[idx]
-            lname = f"{side}_leader"
-            arms[lname] = ArmSpec(
-                name=lname, role="leader", side=side, gripper=p.suggested_gripper,
-                can_serial=by_name[p.iface].serial, can_iface=None if by_name[p.iface].serial else p.iface,
-                notes=f"discovered on {p.iface}",
-            )
-        if idx < len(followers):
-            p = followers[idx]
-            fname = f"{side}_follower"
-            arms[fname] = ArmSpec(
-                name=fname, role="follower", side=side, gripper=p.suggested_gripper,
-                can_serial=by_name[p.iface].serial, can_iface=None if by_name[p.iface].serial else p.iface,
-                notes=f"discovered on {p.iface}",
-            )
-        if lname and fname:
-            pairs.append(PairSpec(leader=lname, follower=fname))
-    rig = RigConfig(arms=arms, pairs=pairs, control=ControlSpec())
-    if existing is not None:
-        # keep hand-edited fields (rest poses, gripper limits, cameras, control) when serials match
-        by_serial = {a.can_serial: a for a in existing.arms.values() if a.can_serial}
-        for a in rig.arms.values():
-            old = by_serial.get(a.can_serial or "")
-            if old:
-                a.rest_pose, a.gripper_limits, a.gripper, a.arm_type = old.rest_pose, old.gripper_limits, old.gripper, old.arm_type
-        rig.cameras, rig.control = existing.cameras, existing.control
+    paired: set[str] = set()
+    for p in existing.pairs if existing else []:
+        if p.leader in arms and p.follower in arms and arms[p.leader].role == "leader" and arms[p.follower].role == "follower":
+            pairs.append(PairSpec(p.leader, p.follower))
+            paired |= {p.leader, p.follower}
+    leaders = [a for a in arms.values() if a.role == "leader" and a.name not in paired]
+    followers = [a for a in arms.values() if a.role == "follower" and a.name not in paired]
+    for lead in list(leaders):  # same side first
+        mate = next((f for f in followers if f.side and f.side == lead.side), None)
+        if mate:
+            pairs.append(PairSpec(lead.name, mate.name))
+            leaders.remove(lead)
+            followers.remove(mate)
+    for lead, mate in zip(leaders, followers):  # then whatever is left, in order
+        pairs.append(PairSpec(lead.name, mate.name))
+    pairs.sort(key=lambda p: order.get(arms[p.leader].side or "", 99))
+
+    rig = RigConfig(arms=arms, pairs=pairs, control=existing.control if existing else ControlSpec())
+    rig.cameras = cameras if cameras is not None else (existing.cameras if existing else {})
     return rig
+
+
+def absent_arms(rig: RigConfig, ifaces: list[CanIface]) -> list[ArmSpec]:
+    """Arms in the rig whose CAN adapter is not plugged in right now."""
+    present = {i.serial for i in ifaces if i.serial} | {i.name for i in ifaces}
+    return [a for a in rig.arms.values() if (a.can_serial or a.can_iface) not in present]

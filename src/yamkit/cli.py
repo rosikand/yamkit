@@ -48,7 +48,7 @@ def version() -> None:
 @app.command()
 def can(udev: Annotated[bool, typer.Option(help="print udev rules for persistent names")] = False) -> None:
     """List CAN adapters (state, bitrate, USB serial) and how to bring them up."""
-    from .can import bringup_commands, list_can_interfaces, udev_rules_text
+    from .can import INSTALL_HINT, bringup_commands, list_can_interfaces, udev_rules_text
 
     ifaces = list_can_interfaces()
     t = Table(title="SocketCAN interfaces")
@@ -62,16 +62,40 @@ def can(udev: Annotated[bool, typer.Option(help="print udev rules for persistent
         console.print("[yellow]Interfaces down — run (needs sudo):[/]")
         for c in bringup_commands(down):
             console.print("  " + c)
+        console.print(f"or once and for all:  {INSTALL_HINT}")
     if udev:
         console.print(udev_rules_text({i.serial: i.name for i in ifaces if i.serial}))
 
 
+def _camera_table(devices, cams: dict) -> Table:
+    """Attached cameras (one row per colour stream) and which rig name uses each."""
+    from .cameras import color_cameras
+
+    used = {str(c.get("index_or_path")): n for n, c in cams.items()}
+    t = Table(title="Cameras")
+    for c in ("device", "model", "serial", "USB port", "link", "stream", "rig name"):
+        t.add_column(c)
+    for d in color_cameras(devices):
+        speed = f"USB {d.usb_speed_mbps / 1000:g} Gb/s" if d.usb_speed_mbps and d.usb_speed_mbps >= 1000 else (f"USB {d.usb_speed_mbps} Mb/s" if d.usb_speed_mbps else "-")
+        name = used.get(d.by_path or "") or used.get(d.node) or "[dim]-[/]"
+        t.add_row(d.node, d.short_model, d.serial or "-", d.usb_port or "-", speed, " ".join(d.formats), name)
+    return t
+
+
 @app.command()
-def discover(rig: RigOpt = DEFAULT_RIG, write: Annotated[bool, typer.Option(help="write/refresh the rig file")] = False) -> None:
-    """Passively probe each CAN interface (no motor is enabled) and classify leader/follower arms."""
+def discover(
+    rig: RigOpt = DEFAULT_RIG,
+    write: Annotated[bool, typer.Option(help="write/refresh the rig file")] = False,
+    cameras: Annotated[bool, typer.Option(help="also (re)detect cameras")] = True,
+) -> None:
+    """Passively probe the CAN buses (no motor is enabled) and detect cameras; --write saves the rig file.
+
+    Arms already in the rig keep their names, calibration and left/right (matched by adapter serial);
+    so do cameras (matched by serial, device path, then model). Re-run after changing cables."""
+    from .cameras import list_video_devices, suggest_cameras
     from .can import list_can_interfaces
     from .config import RigConfig
-    from .discovery import probe_all, suggest_rig
+    from .discovery import absent_arms, probe_all, suggest_rig
 
     ifaces = list_can_interfaces()
     probes = probe_all(ifaces)
@@ -85,17 +109,46 @@ def discover(rig: RigOpt = DEFAULT_RIG, write: Annotated[bool, typer.Option(help
             console.print(f"  [yellow]{p.iface}: {m}[/]")
     console.print(t)
     existing = RigConfig.load(rig) if rig.exists() else None
-    draft = suggest_rig(probes, ifaces, existing)
-    if not draft.arms:
-        err.print("[red]no arms found[/]")
+    cams = None
+    if cameras:
+        devices = list_video_devices()
+        cams, warnings = suggest_cameras(devices, existing.cameras if existing else {})
+        console.print(_camera_table(devices, cams))
+        for w in warnings:
+            console.print(f"  [yellow]{w}[/]")
+    draft = suggest_rig(probes, ifaces, existing, cameras=cams)
+    if not draft.arms and not draft.cameras:
+        err.print("[red]no arms and no cameras found[/]")
         raise typer.Exit(1)
-    console.print(f"Proposed arms: {', '.join(f'{a.name} ({a.gripper}, serial {a.can_serial})' for a in draft.arms.values())}")
-    console.print(f"Proposed pairs: {', '.join(f'{p.leader}->{p.follower}' for p in draft.pairs) or 'none'}")
+    for a in absent_arms(draft, ifaces):
+        console.print(f"  [yellow]{a.name}: its CAN adapter ({a.can_serial or a.can_iface}) is not plugged in — kept; delete it from the rig if the arm is gone[/]")
+    new = [a for a in draft.arms.values() if "verify" in (a.notes or "")]
+    console.print(f"Arms: {', '.join(f'{a.name} ({a.gripper}, serial {a.can_serial})' for a in draft.arms.values()) or 'none'}")
+    console.print(f"Pairs: {', '.join(f'{p.leader}->{p.follower}' for p in draft.pairs) or 'none'}")
+    console.print("Cameras: " + (", ".join(f"{n} ({c.get('model') or c.get('type')})" for n, c in draft.cameras.items()) or "none"))
     if write:
         path = draft.save(rig)
-        console.print(f"[green]wrote {path}[/] — verify which physical arm is left/right and edit names/sides if needed.")
+        console.print(f"[green]wrote {path}[/]")
+        if new:
+            console.print(f"[yellow]left/right of {', '.join(a.name for a in new)} is a guess — check with `yamkit read <arm>`, fix with `yamkit swap`[/]")
     else:
         console.print("Re-run with --write to save this as the rig file.")
+
+
+@app.command()
+def cameras(rig: RigOpt = DEFAULT_RIG) -> None:
+    """List attached cameras (model, serial, USB port) and which rig name uses each. Never streams."""
+    from .cameras import list_video_devices, rig_camera_status
+    from .config import RigConfig
+
+    devices = list_video_devices()
+    cams = RigConfig.load(rig).cameras if rig.exists() else {}
+    console.print(_camera_table(devices, cams))
+    status = rig_camera_status(cams, devices)
+    for name, found, detail in status:
+        console.print(f"  {'[green]ok[/]  ' if found else '[red]MISSING[/]'} {name}: {detail}")
+    if not all(found for _, found, _ in status):
+        console.print("fix with:  yamkit discover --write")
 
 
 # ------------------------------------------------------------------------------------- arms --
@@ -219,13 +272,30 @@ def calibrate_gripper(arm: str, rig: RigOpt = DEFAULT_RIG) -> None:
 
 @app.command()
 def swap(a: str, b: str, rig: RigOpt = DEFAULT_RIG) -> None:
-    """Swap the physical arms behind two rig names (e.g. after finding "left_leader" is really the right one).
+    """Swap the physical devices behind two rig names — two arms, or two cameras.
 
-    Exchanges the CAN adapter (serial/iface) and per-arm calibration between the two entries; names,
-    sides and pairs stay as they are."""
+    Arms: exchanges the CAN adapter (serial/iface) and per-arm calibration; names, sides and pairs
+    stay. Cameras: exchanges the video device; names and capture settings stay. Use it after finding
+    that "left_leader" is really the right one, or that the wrist cameras are crossed."""
     from .config import RigConfig
 
     cfg = RigConfig.load(rig)
+    if a in cfg.cameras or b in cfg.cameras:
+        if a not in cfg.cameras or b not in cfg.cameras:
+            err.print(f"[red]{a!r} and {b!r} must both be cameras (have: {sorted(cfg.cameras)})[/]")
+            raise typer.Exit(1)
+        x, y = dict(cfg.cameras[a]), dict(cfg.cameras[b])
+        for f in ("index_or_path", "serial_number_or_name", "serial", "model", "notes"):
+            xv, yv = x.pop(f, None), y.pop(f, None)
+            if yv is not None:
+                x[f] = yv
+            if xv is not None:
+                y[f] = xv
+        cfg.cameras[a], cfg.cameras[b] = x, y
+        cfg.save()
+        console.print(f"[green]swapped cameras: {a} is now {x.get('notes') or x.get('index_or_path')}; {b} is now {y.get('notes') or y.get('index_or_path')}[/]")
+        console.print("check in the UI (yamkit ui) — wave a hand in front of each camera")
+        return
     x, y = cfg.arm(a), cfg.arm(b)
     if x.role != y.role:
         err.print(f"[red]{a} is a {x.role} and {b} is a {y.role}; only arms with the same role can be swapped[/]")
@@ -522,23 +592,40 @@ def doctor(rig: RigOpt = DEFAULT_RIG) -> None:
         rows.append(("lerobot plugins", ok if want_r <= rc and want_t <= tc else bad, f"robots={sorted(want_r & rc)} teleops={sorted(want_t & tc)}"))
     except Exception as e:  # noqa: BLE001
         rows.append(("lerobot plugins", bad, str(e)))
-    from .can import list_can_interfaces
+    from .cameras import color_cameras, list_video_devices, rig_camera_status
+    from .can import INSTALL_HINT, boot_bringup_installed, list_can_interfaces
 
     ifaces = list_can_interfaces()
-    rows.append(("CAN", ok if ifaces and all(i.up for i in ifaces) else (warn if ifaces else bad), ", ".join(f"{i.name}:{i.state}@{i.bitrate}" for i in ifaces) or "none"))
-    vids = sorted(Path("/dev").glob("video*"))
-    rows.append(("cameras", ok if vids else warn, ", ".join(v.name for v in vids) or "no /dev/video* (VLA inference needs cameras)"))
+    can_detail = ", ".join(f"{i.name}:{i.state}@{i.bitrate}" for i in ifaces) or "none"
+    if ifaces and not all(i.up for i in ifaces):
+        can_detail += " — scripts/can_up.sh now, or once: " + INSTALL_HINT.split("   ")[0]
+    rows.append(("CAN", ok if ifaces and all(i.up for i in ifaces) else (warn if ifaces else bad), can_detail))
+    installed, detail = boot_bringup_installed()
+    rows.append(("CAN at boot", ok if installed else warn, detail))
+    devices = list_video_devices()
+    cams = color_cameras(devices)
+    rows.append(("cameras", ok if cams else warn, "; ".join(f"{d.node} {d.label}" for d in cams) or "no colour camera found (VLA inference needs cameras)"))
     if rig.exists():
         from .config import RigConfig
+        from .discovery import absent_arms
 
         try:
             cfg = RigConfig.load(rig)
             probs = cfg.validate()
             rows.append(("rig", ok if not probs else bad, f"{rig}: {len(cfg.arms)} arms, {len(cfg.pairs)} pairs, {len(cfg.cameras)} cameras" + ("; " + "; ".join(probs) if probs else "")))
+            gone = absent_arms(cfg, ifaces)
+            rows.append(("rig arms", ok if not gone else warn, "all adapters plugged in" if not gone else "adapter missing for " + ", ".join(f"{a.name} ({a.can_serial or a.can_iface})" for a in gone) + " — re-plug it, or `yamkit discover --write`"))
+            status = rig_camera_status(cfg.cameras, devices)
+            missing = [f"{n}: {d}" for n, okc, d in status if not okc]
+            unassigned = [d for d in cams if d.device_path not in {str(c.get("index_or_path")) for c in cfg.cameras.values()}]
+            cam_detail = "; ".join(missing) + (" — `yamkit discover --write`" if missing else "")
+            if unassigned:
+                cam_detail += ("; " if cam_detail else "") + "not in rig: " + ", ".join(f"{d.node} ({d.label})" for d in unassigned)
+            rows.append(("rig cameras", ok if not missing else warn, cam_detail or ("all " + str(len(status)) + " found" if status else "none configured")))
         except Exception as e:  # noqa: BLE001
             rows.append(("rig", bad, str(e)))
     else:
-        rows.append(("rig", warn, f"{rig} missing — run `yamkit discover --write`"))
+        rows.append(("rig", warn, f"{rig} missing — run `yamkit discover --write` (or ./setup.sh)"))
     t = Table(title="yamkit doctor")
     t.add_column("check")
     t.add_column("status")

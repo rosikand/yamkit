@@ -144,6 +144,19 @@ class CameraHub:
     def get(self, name: str) -> _Camera | None:
         return self.cams.get(name)
 
+    def reload(self, cameras: dict[str, dict[str, Any]]) -> None:
+        """Apply a new `cameras:` section (after the rig file was saved): unchanged entries keep
+        streaming, changed/removed ones are stopped, new ones are added."""
+        cameras = cameras or {}
+        for name, cam in list(self.cams.items()):
+            if cameras.get(name) != cam.cfg:
+                cam.stop(join=True)
+                del self.cams[name]
+        for name, cfg in cameras.items():
+            if name not in self.cams:
+                self.cams[name] = _Camera(name, dict(cfg))
+        log.info("camera list reloaded: %s", ", ".join(self.cams) or "none")
+
     def suspend(self, reason: str) -> None:
         self.suspended_by = reason
         for c in self.cams.values():

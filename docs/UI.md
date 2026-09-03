@@ -40,7 +40,7 @@ Navigation is a fixed left sidebar; the theme switcher (Light / Dark / System) l
 | **Datasets** | LeRobot v3 datasets under `data/datasets/` (episodes, frames, fps, tasks, cameras); per-episode detail page with synchronized videos and state/action small-multiple charts |
 | **Inference** | policy runs launched from the UI (rollout + policy-check) with model, task, latency, status, termination reason; per-run detail page with log and replay videos (`outputs/ui/deployments/`) |
 | **Models** | checkpoint directories under `outputs/`; per-checkpoint detail page with file sizes and `config.json` / `train_config.json` contents |
-| **Settings** | view/edit `configs/rig.yaml`: structured fields for the control knobs, read-only arm/camera tables, and a raw-YAML editor. Every save is validated server-side first (parse → `RigConfig` → `validate()`), raw YAML is written verbatim (comments kept), and saving is refused while a hardware session runs. The rig file holds hardware identifiers only — no credentials pass through the UI. |
+| **Settings** | view/edit `configs/rig.yaml`: structured fields for the control knobs, read-only arm/camera tables (with the discovery notes: model, serial, USB port), and a raw-YAML editor. Every save is validated server-side first (parse → `RigConfig` → `validate()`), raw YAML is written verbatim (comments kept), saving is refused while a hardware session runs, and the camera feeds are reloaded from the saved file (no restart). The rig file holds hardware identifiers only — no credentials pass through the UI. |
 
 ## Code layout
 

@@ -40,3 +40,39 @@ def test_swap_command(rig, tmp_path):
     assert [(p.leader, p.follower) for p in loaded.pairs] == [("left_leader", "left_follower"), ("right_leader", "right_follower")]
     bad = CliRunner().invoke(app, ["swap", "left_leader", "left_follower", "--rig", str(tmp_path / "rig.yaml")])
     assert bad.exit_code == 1
+
+
+def test_saved_rig_is_commented_and_readable(rig, tmp_path):
+    rig.arm("left_follower").gripper_limits = [6.47, 1.16]
+    rig.arm("left_leader").rest_pose = [0.0, -0.5, 0.3, 0.0, 0.1, 0.0]
+    rig.cameras = {"top": {"type": "opencv", "index_or_path": "/dev/video10", "width": 640, "height": 480, "fps": 30, "notes": "RealSense D435"}}
+    rig.save()
+    text = rig.path.read_text()
+    for section in ("# ---- Arms", "# ---- Pairs", "# ---- Cameras", "# ---- Control", "yamkit swap", "yamkit discover --write"):
+        assert section in text
+    assert "gripper_limits: [6.47, 1.16]" in text  # short numeric lists inline
+    assert "rest_pose: [0.0, -0.5, 0.3, 0.0, 0.1, 0.0]" in text
+    assert text.index("arms:") < text.index("pairs:") < text.index("cameras:") < text.index("control:")
+    loaded = RigConfig.load(rig.path)
+    assert loaded.to_dict() == rig.to_dict()
+    assert rig.to_yaml() == text
+
+
+def test_empty_sections_render_and_load(tmp_path):
+    r = RigConfig()
+    r.save(tmp_path / "empty.yaml")
+    text = (tmp_path / "empty.yaml").read_text()
+    assert "arms: {}" in text and "pairs: []" in text and "cameras: {}" in text
+    assert RigConfig.load(tmp_path / "empty.yaml").arms == {}
+
+
+def test_example_rig_loads_and_matches_writer():
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parents[1] / "configs" / "rig.example.yaml"
+    cfg = RigConfig.load(example)
+    assert cfg.validate() == []
+    assert set(cfg.arms) == {"left_leader", "left_follower", "right_leader", "right_follower"}
+    assert set(cfg.cameras) == {"top", "left_wrist", "right_wrist"}
+    # the example body is exactly what the writer produces (only the banner is hand-written)
+    assert example.read_text().endswith(cfg.to_yaml().split("\n", 12)[-1])

@@ -1,4 +1,4 @@
-from yamkit.can import bringup_commands, list_can_interfaces, udev_rules_text
+from yamkit.can import boot_bringup_installed, bringup_commands, list_can_interfaces, udev_rules_text
 
 
 def test_bringup_commands():
@@ -28,3 +28,12 @@ def test_list_fake_sysfs(tmp_path):
     i = ifaces[0]
     assert i.serial == "SER123" and i.product == "CANable" and i.usb_path == "3-1.2" and i.rx_packets == 42
     assert i.up is False  # `ip` knows nothing about can9
+
+
+def test_boot_bringup_status(tmp_path, monkeypatch):
+    ok, detail = boot_bringup_installed(tmp_path / "80-yam-can.network")
+    assert ok is False and "install_system.sh" in detail
+    (tmp_path / "80-yam-can.network").write_text("[Match]\nName=can*\n")
+    monkeypatch.setattr("yamkit.can.shutil.which", lambda name: None)  # no systemctl → trust the file
+    ok, detail = boot_bringup_installed(tmp_path / "80-yam-can.network")
+    assert ok is True and "networkd" in detail

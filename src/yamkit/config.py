@@ -157,8 +157,99 @@ class RigConfig:
     def save(self, path: str | Path | None = None) -> Path:
         p = resolve(path) if path else (self.path or DEFAULT_RIG)
         p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "w") as f:
-            f.write("# yamkit rig configuration — see README.md\n")
-            yaml.safe_dump(self.to_dict(), f, sort_keys=False)
+        p.write_text(self.to_yaml())
         self.path = p
         return p
+
+    def to_yaml(self) -> str:
+        """The rig as commented, human-editable YAML (what `save` writes)."""
+        return render_rig_yaml(self.to_dict())
+
+
+# ----- human-readable YAML --------------------------------------------------------------------
+# The rig file is meant to be read and edited by people who are not programmers, so every save
+# writes the same commented layout: a header explaining the file, then one explained section
+# per key. `yaml.safe_load` reads it back unchanged (comments are only for humans).
+
+_HEADER = """\
+# =============================================================================================
+#  yamkit rig file — describes YOUR hardware: which arm is on which CAN adapter, which leader
+#  drives which follower, which cameras to record, and the safety/speed settings.
+#
+#  * `yamkit discover --write` (re)creates this file from what is plugged in (arms + cameras).
+#    It keeps your names, calibration and settings, so re-run it whenever cables change.
+#  * Left vs right is a physical fact yamkit cannot see. Check with `yamkit read <arm>` (the
+#    arm stays free to move) and fix with `yamkit swap <a> <b>` — works for arms and cameras.
+#  * After editing by hand, run `yamkit doctor` to validate.
+# =============================================================================================
+"""
+
+_SECTIONS: dict[str, str] = {
+    "arms": """\
+
+# ---- Arms -----------------------------------------------------------------------------------
+# One entry per arm. The entry name (left_leader, right_follower, ...) is what every command uses.
+#   role            leader = the arm you hold, follower = the arm that moves
+#   side            left / right (labels only)
+#   arm_type        yam | yam_pro | yam_ultra | yam_ultra_2 | big_yam
+#   gripper         follower: linear_4310 (stock YAM) | crank_4310 | linear_3507 | flexible_4310
+#                   leader:   yam_teaching_handle        no gripper: no_gripper
+#   can_serial      USB serial of the CAN adapter this arm is cabled to (`yamkit can` lists them)
+#   gripper_limits  written by `yamkit calibrate-gripper`   rest_pose: written by `yamkit set-rest`
+""",
+    "pairs": """\
+
+# ---- Pairs ----------------------------------------------------------------------------------
+# Which leader drives which follower during teleop and recording.
+""",
+    "cameras": """\
+
+# ---- Cameras --------------------------------------------------------------------------------
+# Camera names become the image keys of recorded datasets (observation.images.<name>), so settle
+# them before recording. Conventional names: top, left_wrist, right_wrist.
+#   index_or_path   the video device. `/dev/v4l/by-path/...` links follow the USB port, so a camera
+#                   keeps working after reboots; if you move a camera to another port, run
+#                   `yamkit discover --write` again (it re-finds cameras by serial / model).
+#   width height fps  capture settings; 640x480 @ 30 works on every RealSense and most webcams
+#   serial model notes  informational, written by discovery (safe to delete)
+# Left and right wrist swapped?  ->  `yamkit swap left_wrist right_wrist`
+""",
+    "control": """\
+
+# ---- Control --------------------------------------------------------------------------------
+#   teleop_hz          loop rate of `yamkit teleop`
+#   sync_seconds       how long the follower takes to catch up with the leader when engaging
+#   bilateral_kp       force feedback on the leader: 0 = off, 0.1-0.2 = gentle
+#   engage_button      which teaching-handle button toggles engage (0 = top button)
+#   max_joint_speed    safety clamp in rad/s on every commanded follower move (teleop and rollout)
+#   max_gripper_speed  safety clamp on the gripper, in fraction of its range per second
+""",
+}
+
+
+class _RigDumper(yaml.SafeDumper):
+    """Block style everywhere except short lists of numbers/strings, which read better inline."""
+
+
+def _represent_list(dumper: yaml.SafeDumper, data: list) -> yaml.Node:
+    inline = all(isinstance(x, (int, float, str, bool)) or x is None for x in data)
+    return dumper.represent_sequence("tag:yaml.org,2002:seq", data, flow_style=inline)
+
+
+_RigDumper.add_representer(list, _represent_list)
+
+
+def render_rig_yaml(d: dict[str, Any]) -> str:
+    """Render a rig dict (see `RigConfig.to_dict`) as commented YAML."""
+    d = dict(d)
+    out = [_HEADER, f"version: {d.pop('version', 1)}\n"]
+    for key in ("arms", "pairs", "cameras", "control"):
+        out.append(_SECTIONS[key])
+        value = d.pop(key, None)
+        if not value:
+            out.append(f"{key}: {{}}\n" if key in ("arms", "cameras") else f"{key}: []\n")
+            continue
+        out.append(yaml.dump({key: value}, Dumper=_RigDumper, sort_keys=False, allow_unicode=True, width=120))
+    for key, value in d.items():  # anything else, verbatim
+        out.append("\n" + yaml.dump({key: value}, Dumper=_RigDumper, sort_keys=False, allow_unicode=True, width=120))
+    return "".join(out)

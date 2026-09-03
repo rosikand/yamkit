@@ -9,6 +9,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# machine-specific (created by `yamkit discover --write` / setup.sh; see configs/rig.example.yaml)
+configs/rig.yaml
+
 # data & artifacts
 data/hf
 outputs/

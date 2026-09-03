@@ -15,49 +15,73 @@ src/yamkit/                 core package + `yamkit` CLI
   cli.py                    all commands
 plugins/lerobot_robot_yamkit/         LeRobot Robot plugin: yam_follower, bi_yam_follower
 plugins/lerobot_teleoperator_yamkit/  LeRobot Teleoperator plugin: yam_leader, bi_yam_leader
-configs/rig.yaml            which adapter (by USB serial) is which arm, pairs, cameras, control knobs
-scripts/env.sh              `source` it to activate the env;  scripts/can_up.sh brings CAN up (sudo)
-system/                     optional templates for boot-time CAN bring-up (NOT installed)
+configs/rig.yaml            YOUR rig: which adapter (by USB serial) is which arm, pairs, cameras, control knobs
+                            (machine-specific, not in git; configs/rig.example.yaml shows the format)
+scripts/env.sh              `source` it to activate the env
+scripts/install_system.sh   one-time: CAN adapters come up at boot/hot-plug (sudo; offered by setup.sh)
+scripts/can_up.sh           bring CAN up by hand (sudo) if you skipped the above
+system/                     the systemd-networkd unit that install_system.sh installs (+ alternatives)
 third_party/i2rt            vendored I2RT SDK (+ one documented local patch)
 tests/                      hardware-free unit tests (fake robot)
 ```
 
 ## Setup on a fresh machine
 
+Plug in the CAN adapters and cameras, power the arms, then:
+
 ```bash
 git clone <this repo> yamkit && cd yamkit
-./setup.sh             # installs uv (if missing), Python 3.12 and all deps — all inside this directory
-source scripts/env.sh  # activate; also exports HF_HOME/HF_LEROBOT_HOME/... into ./data
-scripts/can_up.sh      # bring the CAN adapters up at 1 Mbit/s (needs sudo, once per boot)
-yamkit doctor          # sanity check: venv, torch, lerobot, plugins, CAN, cameras, rig
+./setup.sh             # 1. installs uv, Python 3.12 and all deps — all inside this directory
+                       # 2. asks once for sudo: CAN adapters come up at boot / hot-plug from now on
+                       # 3. writes configs/rig.yaml from the attached arms + cameras (no motor is enabled)
+source scripts/env.sh  # activate (per terminal); also keeps HF/LeRobot/torch caches in ./data
+yamkit ui              # http://127.0.0.1:8400 — camera feeds, arm status; never energises a motor
 ```
 
 Prerequisites on the box: Linux with SocketCAN (any Ubuntu), `build-essential` + `curl`, internet.
-Optional: `can-utils` (`candump`), `sudo` for bringing CAN up.
-`configs/rig.yaml` identifies the arms by CAN-adapter USB serial, so the same arms + adapters work
-unchanged on a new computer; with different adapters run `yamkit discover --write` (then check
-left/right with `yamkit read`/`yamkit teleop` and fix with `yamkit swap` if needed).
-The lockfile (`uv.lock`) pins every package, so installs are reproducible.
+Optional: `can-utils` (`candump`). `./setup.sh --no-system` skips the sudo step (then run
+`scripts/can_up.sh` after every boot, or `scripts/install_system.sh` later).
+
+The one thing setup cannot know is which physical arm is *left*: two followers look the same on
+the bus. Check once with `yamkit read left_follower` (the arm stays free to move — wiggle it) and
+`yamkit swap left_follower right_follower` if it was the other one; same for the wrist cameras
+(`yamkit swap left_wrist right_wrist`). The rig file remembers it from then on.
+
+**Changed cables?** Run `yamkit discover --write` again. Arms keep their names, calibration and
+left/right (matched by adapter serial) and cameras keep theirs (matched by serial, then USB port,
+then model). `yamkit doctor` tells you when the rig no longer matches what is plugged in.
+Moving a CAN adapter to another USB port needs nothing at all. Re-running `./setup.sh` is safe
+(it never overwrites an existing rig file); `make sync` only refreshes Python packages.
+
+`configs/rig.yaml` is machine-specific and not in git — see `configs/rig.example.yaml` for the
+format; it is written with comments so it can be edited by hand. The lockfile (`uv.lock`) pins
+every package, so installs are reproducible.
 
 You can also skip activation and use `uv run yamkit ...` or `.venv/bin/yamkit ...`.
 Any Python started from `.venv` automatically redirects HuggingFace/LeRobot/torch caches into
 `./data` (via `yamkit_env.pth` → `yamkit._env`), so plain `lerobot-*` commands are self-contained too.
 
-## 1. CAN and arm discovery
+## 1. CAN and discovery
 
 ```bash
-yamkit can                 # adapters, state, bitrate, USB serial. Prints sudo commands if any are down
-scripts/can_up.sh          # bring all adapters up at 1 Mbit/s (needs sudo); --reset to recover a wedged one
-yamkit discover --write    # passive probe (no motor is enabled) → writes configs/rig.yaml
+yamkit can                 # adapters, state, bitrate, USB serial
+yamkit cameras             # attached cameras (model, serial, USB port) and which rig name uses each
+yamkit discover --write    # passive probe (no motor is enabled) + camera detection → configs/rig.yaml
+scripts/install_system.sh  # one-time (sudo): adapters come up at boot / hot-plug / after bus-off
+scripts/can_up.sh          # by hand instead (sudo, every boot); --reset recovers a wedged adapter
 ```
 
 Discovery classifies a bus as **leader** (motors 1–6 + teaching-handle encoder) or **follower**
-(motors 1–7). Left/right names are assigned in discovery order — **verify physically** and edit
-`configs/rig.yaml` (`side`, names, pairs) if needed. Arms are matched to adapters by USB serial, so
-the mapping survives reboots and re-plugging without udev rules.
+(motors 1–7). New arms get provisional `left_*` / `right_*` names in discovery order — **verify
+physically** (`yamkit read`, then `yamkit swap`). Arms are matched to adapters by USB serial, so
+the mapping survives reboots, re-plugging and the kernel renumbering `can0…can3`.
+Cameras: a RealSense D405 is taken to be a wrist camera (`left_wrist`, `right_wrist` in USB-port
+order), any other camera becomes `top` (then `cam2`, …); only the colour stream of a RealSense is
+used. Devices are stored as `/dev/v4l/by-path/…` links, which follow the USB port.
 
-For boot-time bring-up, see `system/80-yam-can.network` (systemd-networkd) or
-`system/yamkit-can.service`; installing either is a system change and is left to you.
+The boot-time bring-up is `system/80-yam-can.network` for systemd-networkd, which only touches
+interfaces named `can*` (NetworkManager keeps wifi/ethernet). `scripts/install_system.sh --uninstall`
+removes it. `system/yamkit-can.service` is an alternative for machines without networkd.
 
 ## 2. Reading, calibration, rest poses
 
@@ -86,17 +110,22 @@ On engage the follower moves to the leader pose over `control.sync_seconds`, the
 
 ## 4. Cameras
 
-Add cameras to `configs/rig.yaml`; they are used by the LeRobot plugins automatically:
+`yamkit discover --write` fills in the `cameras:` section; `yamkit cameras` shows what is attached
+and `yamkit doctor` flags a rig camera that is no longer there. Entries are plain LeRobot camera
+configs plus informational `serial` / `model` / `notes` written by discovery:
 
 ```yaml
 cameras:
-  top:   {type: opencv, index_or_path: /dev/video0, width: 640, height: 480, fps: 30}
-  wrist: {type: opencv, index_or_path: /dev/video2, width: 640, height: 480, fps: 30}
+  top:        {type: opencv, index_or_path: /dev/v4l/by-path/pci-…-usb-0:1.1:1.3-video-index0, width: 640, height: 480, fps: 30}
+  left_wrist: {type: opencv, index_or_path: /dev/v4l/by-path/pci-…-usb-0:1.2:1.0-video-index4, width: 640, height: 480, fps: 30}
   # depth: {type: intelrealsense, serial_number_or_name: "1234", width: 640, height: 480, fps: 30}  # needs `uv sync --extra realsense`
 ```
 
-`lerobot-find-cameras opencv` lists what is attached. There were **no cameras** on this machine
-when the repo was set up; recording for VLAs and VLA inference need at least one.
+Camera names become dataset keys (`observation.images.<name>`), so settle them before recording.
+Wrist cameras crossed? `yamkit swap left_wrist right_wrist`. RealSense cameras are used as plain
+colour webcams (no depth) unless `pyrealsense2` is installed. Recording for VLAs and VLA inference
+need at least one camera. Note: a RealSense on a USB 2 port (`yamkit cameras` shows "USB 480 Mb/s")
+can drop frames at 640x480@30 when it shares the hub with another camera.
 
 ## 5. Record datasets (LeRobot)
 
@@ -182,11 +211,12 @@ motor. See `docs/UI.md` and `docs/ui-screenshots/`.
 | command | what it does |
 |---|---|
 | `yamkit can` | List CAN adapters (state, bitrate, USB serial) and how to bring them up. |
-| `yamkit discover` | Passively probe each CAN interface (no motor is enabled) and classify leader/follower arms. |
+| `yamkit cameras` | List attached cameras (model, serial, USB port) and which rig name uses each. Never streams. |
+| `yamkit discover` | Passively probe each CAN interface (no motor is enabled), classify leader/follower arms, detect cameras; `--write` saves the rig (keeps names/calibration). |
 | `yamkit read` | Connect (gravity-compensation mode, arm stays free to move) and stream joint state. |
 | `yamkit teleop` | Leader→follower teleoperation (press the teaching-handle button to engage/disengage). |
 | `yamkit calibrate-gripper` | Run the SDK gripper limit auto-calibration once and store the limits in the rig (skipped afterwards). |
-| `yamkit swap` | Swap the physical arms behind two rig names (e.g. after finding "left_leader" is really the right one). |
+| `yamkit swap` | Swap the physical devices behind two rig names — arms or cameras (e.g. "left_leader" is really the right one). |
 | `yamkit zero-handle` | Re-zero a leader's teaching-handle trigger encoder at its current (released) position. |
 | `yamkit set-rest` | Store the arm's current pose as its rest pose (used by `yamkit rest`). |
 | `yamkit rest` | Move arm(s) slowly to their stored rest pose, then release. |
@@ -196,7 +226,7 @@ motor. See `docs/UI.md` and `docs/ui-screenshots/`.
 | `yamkit train` | Fine-tune a policy with `lerobot-train` (needs a GPU box; see README for the remote workflow). |
 | `yamkit policy-check` | Load a policy/VLA for this rig and run it on a synthetic frame (no arm is energised). |
 | `yamkit ui` | Serve the local web UI (viewer + launcher for the commands above; pages never energise a motor). |
-| `yamkit doctor` | Check the environment: venv, torch, CAN, plugins, cameras, rig file, data dirs. |
+| `yamkit doctor` | Check the environment: venv, torch, CAN (and boot-time bring-up), plugins, cameras, rig file vs attached hardware. |
 | `yamkit env` | Print the environment variables that keep everything inside this repo (for `eval`). |
 
 Every command accepts `--help`; `record`/`teleoperate`/`rollout`/`train` pass unknown `--flags` straight to the underlying `lerobot-*` script and `--dry-run` prints the exact command instead of running it.
@@ -215,14 +245,18 @@ checkpoint ─► lerobot-rollout ─► policy.select_action() ─► YamFollow
 * The LeRobot plugins (`plugins/`) adapt `YamArm` to LeRobot's `Robot` / `Teleoperator` interfaces;
   everything LeRobot offers (datasets, viz, training, rollout strategies, async inference) works
   through them.
-* The rig file is the single source of truth for hardware identity and control limits.
+* The rig file is the single source of truth for hardware identity and control limits. It is
+  machine-specific (git-ignored), written with comments for hand editing, and regenerated by
+  `yamkit discover --write` without losing names, calibration or settings.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `CAN interface … is DOWN` | `scripts/can_up.sh` |
+| `CAN interface … is DOWN` | `scripts/install_system.sh` once (adapters then come up by themselves), or `scripts/can_up.sh` now |
 | `no CAN adapter with serial …` | adapter unplugged / different adapters → `yamkit can`, `yamkit discover --write` |
+| camera black in the UI / `could not open …` | camera moved or unplugged → `yamkit cameras`, then `yamkit discover --write` |
+| wrist cameras crossed | `yamkit swap left_wrist right_wrist` |
 | bus errors, arm unresponsive | `scripts/can_up.sh --reset`, power-cycle the arm |
 | wrong arm responds to a name | `yamkit swap <a> <b>` |
 | trigger reads ~0 while released | `yamkit zero-handle <leader>` |

@@ -1,7 +1,8 @@
-# Optional: persistent CAN bring-up on boot / hot-plug via systemd-networkd.
-# Install (system change — do it deliberately):
+# Persistent CAN bring-up on boot / hot-plug / bus-off via systemd-networkd.
+# Installed by scripts/install_system.sh (offered once by ./setup.sh; the only system change
+# yamkit makes). By hand:
 #   sudo cp system/80-yam-can.network /etc/systemd/network/
-#   sudo systemctl enable --now systemd-networkd
+#   sudo systemctl enable --now systemd-networkd && sudo networkctl reload
 # NetworkManager keeps managing wifi/ethernet; networkd only matches can* here.
 [Match]
 Name=can*

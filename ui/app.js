@@ -634,13 +634,18 @@ pages.settings = {
             <td>${esc(a.arm_type)}</td><td>${esc(a.gripper)}</td><td class="mono">${esc(a.can_serial ?? a.can_iface ?? "–")}</td>
             <td>${a.gripper_limits ? "gripper" : "–"}</td><td>${a.rest_pose ? "stored" : "–"}</td></tr>`).join("")}</table>`
         : `<div class="empty">no arms — run <code>yamkit discover --write</code></div>`}
+        <div class="hint">Left/right is a physical check: <code>yamkit read left_follower</code> (the arm stays free to move) and
+          <code>yamkit swap left_follower right_follower</code> if it was the other one.</div>
       </div></div>
       <div class="sect"><div class="sect-head">Cameras</div><div class="panel">
-        ${Object.keys(c.cameras || {}).length ? `<table><tr><th>name</th><th>type</th><th>device</th><th class="num">resolution</th><th class="num">fps</th></tr>
-          ${Object.entries(c.cameras).map(([n, cam]) => `<tr><td class="mono">${esc(n)}</td><td>${esc(cam.type ?? "opencv")}</td>
+        ${Object.keys(c.cameras || {}).length ? `<table><tr><th>name</th><th>camera</th><th>device</th><th class="num">resolution</th><th class="num">fps</th></tr>
+          ${Object.entries(c.cameras).map(([n, cam]) => `<tr><td class="mono">${esc(n)}</td><td>${esc(cam.notes ?? cam.model ?? cam.type ?? "opencv")}</td>
             <td class="mono">${esc(String(cam.index_or_path ?? cam.serial_number_or_name ?? "–"))}</td>
-            <td class="num">${cam.width && cam.height ? cam.width + "×" + cam.height : "–"}</td><td class="num">${cam.fps ?? "–"}</td></tr>`).join("")}</table>`
-        : `<div class="empty">no cameras configured — add them under <code>cameras:</code> in the YAML below</div>`}
+            <td class="num">${cam.width && cam.height ? cam.width + "×" + cam.height : "–"}</td><td class="num">${cam.fps ?? "–"}</td></tr>`).join("")}</table>
+          <div class="hint">Cameras are found by <code>yamkit discover --write</code> (re-run it after moving a camera to another USB port).
+            Left and right wrist crossed? Run <code>yamkit swap left_wrist right_wrist</code>, or exchange the two
+            <code>index_or_path</code> lines in the YAML below. Saving reloads the camera feeds.</div>`
+        : `<div class="empty">no cameras configured — run <code>yamkit discover --write</code>, or add them under <code>cameras:</code> in the YAML below</div>`}
       </div></div>
       <div class="sect"><div class="sect-head">Raw YAML</div>
         <textarea class="yaml" id="cfg-yaml" spellcheck="false">${esc(c.yaml)}</textarea>
