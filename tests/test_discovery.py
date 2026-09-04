@@ -82,6 +82,7 @@ def test_rediscovery_keeps_names_by_serial_when_bus_order_changes():
     first.arm("left_follower").can_serial, first.arm("right_follower").can_serial = "S2", "S0"
     first.arm("left_follower").gripper_limits = [6.4, 1.2]
     first.arm("left_leader").rest_pose = [0.0] * 6
+    first.arm("left_leader").joint_offsets = [0.129, 0, 0, 0, 0, 0]
     # next boot: interfaces renumbered, probes come back in a different order
     shuffled = [pr["L3"], pr["F2"], pr["L1"], pr["F0"]]
     ifaces2 = [_iface(p.iface, {"can0": "S0", "can1": "S1", "can2": "S2", "can3": "S3"}[p.iface]) for p in shuffled]
@@ -89,6 +90,7 @@ def test_rediscovery_keeps_names_by_serial_when_bus_order_changes():
     assert again.arm("left_follower").can_serial == "S2" and again.arm("right_follower").can_serial == "S0"
     assert again.arm("left_follower").gripper_limits == [6.4, 1.2]
     assert again.arm("left_leader").rest_pose == [0.0] * 6
+    assert again.arm("left_leader").joint_offsets == [0.129, 0, 0, 0, 0, 0]  # alignment survives rediscovery
     assert list(again.arms) == ["left_leader", "left_follower", "right_leader", "right_follower"]
     assert [(p.leader, p.follower) for p in again.pairs] == [("left_leader", "left_follower"), ("right_leader", "right_follower")]
     assert again.validate() == []

@@ -113,18 +113,12 @@ def create_app(
             return None
 
     rig0 = load_rig()
-    frames_dir = outputs_dir / "ui" / "frames"
-    cameras = CameraHub(rig0.cameras if rig0 else {}, frames_dir=frames_dir)
+    cameras = CameraHub(rig0.cameras if rig0 else {})
     run_dir_box: dict[str, Path | None] = {"dir": None}
 
     def on_start(mode: str) -> None:
         if mode in CAMERA_MODES:
-            cameras.suspend(mode)
-            for old in frames_dir.glob("*.jpg"):  # previews from the previous session must not linger
-                try:
-                    old.unlink()
-                except OSError:
-                    pass
+            cameras.suspend(mode)  # the LeRobot child owns the V4L2 devices while it runs
 
     def on_phase(mode: str, phase: str) -> None:
         if mode == "record" and phase == "upload":
@@ -138,7 +132,7 @@ def create_app(
             deployments.finalize(run_dir_box["dir"], status)
             run_dir_box["dir"] = None
 
-    sessions = session_manager or SessionManager(on_start=on_start, on_exit=on_exit, on_phase=on_phase, frames_dir=frames_dir)
+    sessions = session_manager or SessionManager(on_start=on_start, on_exit=on_exit, on_phase=on_phase)
     if session_manager is not None:  # injected (tests): still wire the camera/deployment hooks
         sessions.on_start = on_start
         sessions.on_exit = on_exit
@@ -210,47 +204,20 @@ def create_app(
     def camera_list() -> list[dict[str, Any]]:
         return cameras.statuses()
 
-    @app.get("/api/cameras/{name}/frame")
-    def camera_frame(name: str) -> Response:
-        """The newest JPEG of one camera — the UI tiles poll this a few times a second (no long-lived
-        connection to freeze or exhaust). While a session owns the cameras it serves that session's
-        published preview instead."""
-        cam = cameras.get(name)
-        if cam is None:
-            raise HTTPException(404, f"no camera {name!r} in the rig")
-        headers = {"Cache-Control": "no-store"}
-        if cameras.suspended_by:
-            path = cameras.frames_dir / f"{name}.jpg" if cameras.frames_dir else None
-            if path is None or not path.is_file():
-                raise HTTPException(404, f"no preview from the {cameras.suspended_by} session yet")
-            data = path.read_bytes()
-            if not data.startswith(b"\xff\xd8"):
-                raise HTTPException(404, "preview not ready")
-            return Response(data, media_type="image/jpeg", headers={**headers, "X-Source": cameras.suspended_by})
-        data = cam.snapshot()
-        if data is None:
-            raise HTTPException(503, cam.error or "camera starting")
-        return Response(data, media_type="image/jpeg", headers={**headers, "X-Source": "live"})
-
     @app.get("/api/cameras/{name}/stream")
     def camera_stream(name: str) -> StreamingResponse:
+        """MJPEG preview of one camera. 409 while a record / teleoperate / rollout session owns the
+        devices (V4L2 is exclusive); the tiles show a placeholder and reconnect when it is over."""
         cam = cameras.get(name)
         if cam is None:
             raise HTTPException(404, f"no camera {name!r} in the rig")
+        if cameras.suspended_by:
+            raise HTTPException(409, f"cameras are in use by the {cameras.suspended_by} session")
         from starlette.background import BackgroundTask
 
-        from .camstream import file_frames
-
         stop = threading.Event()
-        if cameras.suspended_by:
-            # the session's child process owns the device; it publishes previews for us (yamkit.frames)
-            if cameras.frames_dir is None:
-                raise HTTPException(409, f"cameras are in use by the {cameras.suspended_by} session")
-            source = file_frames(cameras.frames_dir / f"{name}.jpg", stop, alive=lambda: cameras.suspended_by is not None)
-        else:
-            source = cam.frames(stop)
         return StreamingResponse(
-            source,
+            cam.frames(stop),
             media_type="multipart/x-mixed-replace; boundary=yamkitframe",
             background=BackgroundTask(stop.set),
         )
@@ -559,6 +526,30 @@ def create_app(
         return JSONResponse({"ok": True})
 
     if frontend_dir.is_dir():
+
+        @app.middleware("http")
+        async def _no_stale_page_code(request: Request, call_next):
+            # The page is a few local files; a browser that keeps yesterday's app.js talks to today's
+            # server and shows blank tiles. Always revalidate them (the API responses are untouched).
+            response = await call_next(request)
+            if not request.url.path.startswith("/api/"):
+                response.headers["Cache-Control"] = "no-cache"
+            return response
+
+        @app.get("/", include_in_schema=False)
+        @app.get("/index.html", include_in_schema=False)
+        def index() -> Response:
+            # app.js / style.css are referenced with their modification time as a version, so a
+            # browser can never keep running an older app.js against a newer server.
+            html = (frontend_dir / "index.html").read_text()
+            for asset in ("app.js", "style.css"):
+                try:
+                    v = int((frontend_dir / asset).stat().st_mtime)
+                except OSError:
+                    continue
+                html = html.replace(f'"{asset}"', f'"{asset}?v={v}"')
+            return Response(html, media_type="text/html", headers={"Cache-Control": "no-cache"})
+
         app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="ui")
     return app
 

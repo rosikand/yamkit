@@ -160,3 +160,44 @@ def test_record_and_train_hub_flags(rig, monkeypatch):
     assert "--policy.push_to_hub=true" in res.output and "--policy.repo_id=tester/act_cube" in res.output and "--policy.private=true" in res.output
     res = CliRunner().invoke(app, ["train", "--dataset", "cube", "--dry-run"])
     assert "--policy.push_to_hub=false" in res.output and "--dataset.root=" in res.output
+
+
+def test_find_root_prefers_the_checkout_the_code_runs_from(monkeypatch, tmp_path):
+    """A stale YAMKIT_ROOT from another clone's env.sh must not redirect this clone's rig and data."""
+    from yamkit import _env
+
+    here = _env.find_root()
+    assert here is not None and (here / "pyproject.toml").is_file()
+    other = tmp_path / "other-clone"
+    (other / "configs").mkdir(parents=True)
+    (other / "pyproject.toml").write_text("")
+    monkeypatch.setenv("YAMKIT_ROOT", str(other))
+    monkeypatch.setenv("HF_HOME", str(other / "data" / "hf"))  # exported by the other clone's env.sh
+    monkeypatch.setenv("TORCH_HOME", "/somewhere/shared/torch")  # the user's own choice: untouched
+    assert _env.find_root() == here
+    _env.apply()
+    import os
+
+    assert os.environ["YAMKIT_ROOT"] == str(here)
+    assert os.environ["HF_HOME"] == str(here / "data" / "hf")
+    assert os.environ["TORCH_HOME"] == "/somewhere/shared/torch"
+
+
+def test_discover_write_keeps_a_backup_of_the_previous_rig(rig, monkeypatch):
+    from typer.testing import CliRunner
+
+    from yamkit import cli
+    from yamkit.can import CanIface
+    from yamkit.discovery import ChannelProbe, MotorProbe
+
+    arm = [MotorProbe(i, 40.0 if i <= 3 else 10.0) for i in range(1, 7)]
+    ifaces = [CanIface(f"can{i}", True, 1000000, s, "CANable", "x", "3-1", 0, 0, 0) for i, s in enumerate(["AAA", "BBB", "CCC", "DDD"])]
+    probes = [ChannelProbe("can0", arm, ["dev1:v2.4.0"]), ChannelProbe("can1", arm + [MotorProbe(7, 10.0)]),
+              ChannelProbe("can2", arm, ["dev1:v2.4.0"]), ChannelProbe("can3", arm + [MotorProbe(7, 10.0)])]
+    monkeypatch.setattr("yamkit.can.list_can_interfaces", lambda: ifaces)
+    monkeypatch.setattr("yamkit.discovery.probe_all", lambda ifs: probes)
+    before = rig.path.read_text()
+    res = CliRunner().invoke(cli.app, ["discover", "--write", "--no-cameras", "--rig", str(rig.path)])
+    assert res.exit_code == 0, res.output
+    assert rig.path.with_suffix(".yaml.bak").read_text() == before
+    assert RigConfig.load(rig.path).arm("left_leader").can_serial == "AAA"  # names kept by serial

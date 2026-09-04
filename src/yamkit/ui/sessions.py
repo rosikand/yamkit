@@ -118,7 +118,6 @@ class SessionManager:
         on_start: Callable[[str], None] | None = None,
         on_exit: Callable[[dict[str, Any]], None] | None = None,
         on_phase: Callable[[str, str], None] | None = None,
-        frames_dir: Path | None = None,
     ) -> None:
         self._python = python
         self._lock = threading.Lock()
@@ -127,7 +126,6 @@ class SessionManager:
         self.on_start = on_start
         self.on_exit = on_exit
         self.on_phase = on_phase
-        self.frames_dir = frames_dir
         self.log: deque[str] = deque(maxlen=log_lines)
         self.parsed: dict[str, Any] = {}
         self.mode: str | None = None
@@ -156,8 +154,6 @@ class SessionManager:
             # are controlled by the UI's buttons only.
             env.pop("DISPLAY", None)
             env.pop("WAYLAND_DISPLAY", None)
-            if self.frames_dir is not None and mode in CAMERA_MODES:
-                env["YAMKIT_FRAMES_DIR"] = str(self.frames_dir)  # the child publishes camera previews for the UI
             if self.on_start:
                 self.on_start(mode)
             self.log.clear()

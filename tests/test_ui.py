@@ -402,17 +402,15 @@ def test_cameras_come_back_when_the_upload_phase_starts(rig, tmp_path, monkeypat
             time.sleep(0.05)
 
 
-def test_ui_children_get_no_display_and_a_frames_dir(tmp_path, monkeypatch):
+def test_ui_children_get_no_display(tmp_path, monkeypatch):
     monkeypatch.setenv("DISPLAY", ":1")
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
-    mgr = SessionManager(frames_dir=tmp_path / "frames")
-    probe = "import os, json; print(json.dumps({'d': os.environ.get('DISPLAY'), 'w': os.environ.get('WAYLAND_DISPLAY'), 'f': os.environ.get('YAMKIT_FRAMES_DIR')}))"
-    for mode, expect_frames in (("record", True), ("teleop", False)):
-        mgr.start(mode, [sys.executable, "-c", probe])
-        assert mgr.wait(timeout=10) == 0
-        out = json.loads(next(ln for ln in mgr.log if ln.startswith("{")))
-        assert out["d"] is None and out["w"] is None, mode  # no system-wide keyboard hook in the recorder
-        assert (out["f"] == str(tmp_path / "frames")) is expect_frames, mode
+    mgr = SessionManager()
+    probe = "import os, json; print(json.dumps({'d': os.environ.get('DISPLAY'), 'w': os.environ.get('WAYLAND_DISPLAY')}))"
+    mgr.start("record", [sys.executable, "-c", probe])
+    assert mgr.wait(timeout=10) == 0
+    out = json.loads(next(ln for ln in mgr.log if ln.startswith("{")))
+    assert out["d"] is None and out["w"] is None  # no system-wide keyboard hook in the recorder
 
 
 def test_phase_timer_is_reported(rig, tmp_path, monkeypatch):
@@ -436,72 +434,40 @@ def test_phase_timer_is_reported(rig, tmp_path, monkeypatch):
             time.sleep(0.05)
 
 
-def test_camera_stream_serves_recorder_previews_while_suspended(rig, tmp_path, monkeypatch):
+def test_camera_stream_is_refused_while_a_session_owns_the_cameras(rig, tmp_path, monkeypatch):
+    """LeRobot has exclusive V4L2 ownership during record/teleoperate/rollout: the UI stops its streams
+    and /stream answers 409 until the session is over (the tiles then reconnect by themselves)."""
     from yamkit import arm as arm_mod
 
     monkeypatch.setattr(arm_mod.YamArm, "connect", staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError("no arms"))))
     rig.cameras = {"top": {"type": "opencv", "index_or_path": "/dev/video99", "width": 640, "height": 480, "fps": 30}}
     rig.save()
     app = create_app(rig.path, datasets_dir=ROOT / "data" / "datasets", outputs_dir=tmp_path, frontend_dir=ROOT / "ui")
-    frames = tmp_path / "ui" / "frames"
-    child = f"import pathlib, time; p = pathlib.Path({str(frames)!r}); p.mkdir(parents=True, exist_ok=True); (p / 'top.jpg').write_bytes(b'\\xff\\xd8preview'); time.sleep(30)"
-    monkeypatch.setattr(SessionManager, "yamkit_argv", lambda self, *args: [sys.executable, "-u", "-c", child])
+    monkeypatch.setattr(SessionManager, "yamkit_argv", lambda self, *args: [sys.executable, "-u", "-c", "import time; time.sleep(30)"])
     with TestClient(app) as client:
-        assert client.post("/api/session/record", json={"name": "x", "task": "y"}).status_code == 200
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not (frames / "top.jpg").exists():
-            time.sleep(0.05)
-        assert client.get("/api/cameras").json()[0]["suspended_by"] == "record"
-        with client.stream("GET", "/api/cameras/top/stream") as r:
-            assert r.status_code == 200
-            chunks = r.iter_bytes()
-            chunk = b""
-            while b"preview" not in chunk:
-                chunk += next(chunks)
-            assert b"Content-Type: image/jpeg" in chunk
-            # the session ends → the cameras are handed back → the preview stream ends by itself
-            # (a second client: the first one is busy with the open stream)
-            with TestClient(app) as other:
-                other.post("/api/session/stop")
-                deadline = time.monotonic() + 5
-                while time.monotonic() < deadline and other.get("/api/session").json()["active"]:
-                    time.sleep(0.05)
-            t0 = time.monotonic()
-            for _ in chunks:  # drains until the server-side generator returns
-                pass
-            assert time.monotonic() - t0 < 5
-        assert client.get("/api/cameras").json()[0]["suspended_by"] is None
         assert client.get("/api/cameras/nope/stream").status_code == 404
-
-
-def test_camera_frame_endpoint(rig, tmp_path, monkeypatch):
-    """Tiles poll /frame: 503 while a live camera has no frame yet, the recorder's preview while a session owns the cameras."""
-    from yamkit import arm as arm_mod
-    from yamkit import hub
-
-    monkeypatch.setattr(arm_mod.YamArm, "connect", staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError("no arms"))))
-    cleared = []
-    monkeypatch.setattr(hub, "clear_cache", lambda: cleared.append(1))
-    rig.cameras = {"top": {"type": "opencv", "index_or_path": "/dev/video99", "width": 640, "height": 480, "fps": 30}}
-    rig.save()
-    app = create_app(rig.path, datasets_dir=ROOT / "data" / "datasets", outputs_dir=tmp_path, frontend_dir=ROOT / "ui")
-    frames = tmp_path / "ui" / "frames"
-    child = f"import pathlib, time; p = pathlib.Path({str(frames)!r}); p.mkdir(parents=True, exist_ok=True); (p / 'top.jpg').write_bytes(b'\\xff\\xd8preview'); time.sleep(30)"
-    monkeypatch.setattr(SessionManager, "yamkit_argv", lambda self, *args: [sys.executable, "-u", "-c", child])
-    with TestClient(app) as client:
-        r = client.get("/api/cameras/top/frame")
-        assert r.status_code == 503  # no such device: no frame, and the tile keeps trying
-        assert client.get("/api/cameras/nope/frame").status_code == 404
         assert client.post("/api/session/record", json={"name": "x", "task": "y"}).status_code == 200
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not (frames / "top.jpg").exists():
-            time.sleep(0.05)
-        r = client.get("/api/cameras/top/frame")
-        assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg" and r.content == b"\xff\xd8preview"
-        assert r.headers["x-source"] == "record" and r.headers["cache-control"] == "no-store"
+        assert client.get("/api/cameras").json()[0]["suspended_by"] == "record"
+        r = client.get("/api/cameras/top/stream")
+        assert r.status_code == 409 and "record" in r.json()["detail"]
+        assert not [r for r in app.routes if getattr(r, "path", "").endswith("/frame")]  # no snapshot-polling endpoint
         client.post("/api/session/stop")
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and client.get("/api/session").json()["active"]:
             time.sleep(0.05)
         time.sleep(0.2)
-    assert cleared  # a record session may have changed what is on the Hub → listing cache dropped
+        assert client.get("/api/cameras").json()[0]["suspended_by"] is None  # ownership released → streams allowed again
+
+
+def test_page_files_are_never_cached_stale(client):
+    for path in ("/", "/app.js", "/style.css"):
+        r = client.get(path)
+        assert r.status_code == 200 and r.headers.get("cache-control") == "no-cache", path
+    assert "cache-control" not in {k.lower() for k in client.get("/api/session").headers}  # API untouched
+
+
+def test_index_references_versioned_page_files(client):
+    html = client.get("/").text
+    assert 'src="app.js?v=' in html and 'href="style.css?v=' in html
+    v = html.split('src="app.js?v=')[1].split('"')[0]
+    assert v.isdigit() and client.get(f"/app.js?v={v}").status_code == 200

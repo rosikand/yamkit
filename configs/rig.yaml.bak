@@ -1,0 +1,136 @@
+# =============================================================================================
+#  yamkit rig file — describes YOUR hardware: which arm is on which CAN adapter, which leader
+#  drives which follower, which cameras to record, and the safety/speed settings.
+#
+#  * `yamkit discover --write` (re)creates this file from what is plugged in (arms + cameras).
+#    It keeps your names, calibration and settings, so re-run it whenever cables change.
+#  * Left vs right is a physical fact yamkit cannot see. Check with `yamkit read <arm>` (the
+#    arm stays free to move) and fix with `yamkit swap <a> <b>` — works for arms and cameras.
+#  * After editing by hand, run `yamkit doctor` to validate.
+# =============================================================================================
+version: 1
+
+# ---- Arms -----------------------------------------------------------------------------------
+# One entry per arm. The entry name (left_leader, right_follower, ...) is what every command uses.
+#   role            leader = the arm you hold, follower = the arm that moves
+#   side            left / right (labels only)
+#   arm_type        yam | yam_pro | yam_ultra | yam_ultra_2 | big_yam
+#   gripper         follower: linear_4310 (stock YAM) | crank_4310 | linear_3507 | flexible_4310
+#                   leader:   yam_teaching_handle        no gripper: no_gripper
+#   can_serial      USB serial of the CAN adapter this arm is cabled to (`yamkit can` lists them)
+#   gripper_limits  written by `yamkit calibrate-gripper`
+#   rest_pose       home pose override, written by `yamkit set-rest`; without it home = all joints 0
+#                   (the folded pose). Arms move home at every Start and Stop, and with `yamkit rest`.
+#   joint_offsets   leaders only, written by `yamkit align`: makes "same angle" mean "same direction"
+#                   for the leader and its follower (fixes a follower that points off to the side)
+arms:
+  left_leader:
+    role: leader
+    side: left
+    arm_type: yam
+    gripper: yam_teaching_handle
+    can_serial: 2080377E45465008
+    joint_offsets: [0.129, -0.0012, 0.0038, 0.0, 0.0, 0.0]
+    notes: adapter seen as can3
+  left_follower:
+    role: follower
+    side: left
+    arm_type: yam
+    gripper: linear_4310
+    can_serial: 2058377F45465008
+    gripper_limits: [6.44979782, 1.23235676]
+    notes: adapter seen as can1
+  right_leader:
+    role: leader
+    side: right
+    arm_type: yam
+    gripper: yam_teaching_handle
+    can_serial: 004A001633354B0432333837
+    joint_offsets: [-0.0831, -0.0009, -0.0003, 0.0, 0.0, 0.0]
+    notes: adapter seen as can0
+  right_follower:
+    role: follower
+    side: right
+    arm_type: yam
+    gripper: linear_4310
+    can_serial: 208B336E594E5018
+    gripper_limits: [6.4719234, 1.16178378]
+    notes: adapter seen as can2
+
+# ---- Pairs ----------------------------------------------------------------------------------
+# Which leader drives which follower during teleop and recording.
+pairs:
+- leader: left_leader
+  follower: left_follower
+- leader: right_leader
+  follower: right_follower
+
+# ---- Cameras --------------------------------------------------------------------------------
+# Camera names become the image keys of recorded datasets (observation.images.<name>), so settle
+# them before recording. Conventional names: top, left_wrist, right_wrist.
+#   index_or_path   the video device. `/dev/v4l/by-path/...` links follow the USB port, so a camera
+#                   keeps working after reboots; if you move a camera to another port, run
+#                   `yamkit discover --write` again (it re-finds cameras by serial / model).
+#   width height fps  capture settings; 640x480 @ 30 works on every RealSense and most webcams
+#   serial model notes  informational, written by discovery (safe to delete)
+# Left and right wrist swapped?  ->  `yamkit swap left_wrist right_wrist`
+cameras:
+  top:
+    type: opencv
+    index_or_path: /dev/v4l/by-path/pci-0000:05:00.4-usb-0:1.2:1.3-video-index0
+    width: 640
+    height: 480
+    fps: 30
+    serial: '939323022361'
+    model: RealSense D435
+    notes: RealSense D435, serial 939323022361, USB port 1.2, USB 5000 Mb/s
+  left_wrist:
+    type: opencv
+    index_or_path: /dev/v4l/by-path/pci-0000:05:00.4-usb-0:1.1:1.0-video-index4
+    width: 640
+    height: 480
+    fps: 30
+    serial: '235123073955'
+    model: RealSense D405
+    notes: RealSense D405, serial 235123073955, USB port 1.1, USB 5000 Mb/s
+  right_wrist:
+    type: opencv
+    index_or_path: /dev/v4l/by-path/pci-0000:05:00.4-usb-0:1.3:1.0-video-index4
+    width: 640
+    height: 480
+    fps: 30
+    serial: '255323073691'
+    model: RealSense D405
+    notes: RealSense D405, serial 255323073691, USB port 1.3, USB 5000 Mb/s
+
+# ---- Control --------------------------------------------------------------------------------
+#   teleop_hz          loop rate of `yamkit teleop`
+#   sync_seconds       how long the follower takes to catch up with the leader when engaging
+#   bilateral_kp       force feedback on the leader: 0 = off, 0.1-0.2 = gentle
+#   engage_button      which teaching-handle button toggles engage (0 = top button)
+#   max_joint_speed    safety clamp in rad/s on every commanded follower move (teleop and rollout)
+#   max_gripper_speed  safety clamp on the gripper, in fraction of its range per second
+#   home_speed         rad/s of the followers' automatic move to home at Start / Stop (0 turns it off)
+#   leader_home_speed  rad/s of the leaders' move to home (all arms move at the same time)
+control:
+  teleop_hz: 100.0
+  sync_seconds: 3.0
+  bilateral_kp: 0.0
+  engage_button: 0
+  max_joint_speed: 3.0
+  max_gripper_speed: 3.0
+  home_speed: 0.25
+  leader_home_speed: 0.25
+
+# ---- Hugging Face Hub (optional) ------------------------------------------------------------
+# Sign in once with `yamkit hub login` (or on the Settings page); the token is kept in ./data/hf,
+# never in this file. Recordings can then be uploaded as <username>/<dataset name>, and models
+# trained elsewhere can be pulled straight from the Hub for rollout.
+#   username   account to push under (leave empty to use the signed-in account)
+#   private    keep pushed datasets and models private (recommended: your rig, your room)
+#   datasets   where a recording goes by default: local | hub | both. "local" = exactly the old
+#              behaviour; with hub/both the upload happens only AFTER the recording session ends.
+hub:
+  username: null
+  private: true
+  datasets: local

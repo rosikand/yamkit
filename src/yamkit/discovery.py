@@ -177,7 +177,7 @@ def suggest_rig(probes: list[ChannelProbe], ifaces: list[CanIface], existing: Ri
                 arms[old.name] = ArmSpec(
                     name=old.name, role=role, side=old.side, arm_type=old.arm_type, gripper=old.gripper,
                     can_serial=iface.serial, gripper_limits=old.gripper_limits, rest_pose=old.rest_pose,
-                    notes=f"adapter seen as {p.iface}",
+                    joint_offsets=old.joint_offsets, notes=f"adapter seen as {p.iface}",
                 )
             else:
                 pending.append(p)

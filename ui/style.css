@@ -132,9 +132,6 @@ main { margin-left: 212px; padding: 26px 32px 48px; max-width: 1280px; }
 .hint { color: var(--muted); font-size: 12.5px; margin: 8px 0 0; }
 .spin { display: inline-block; width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -1px; margin-right: 4px; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.cam img.snap { display: none; }
-.cam img.snap.live { display: block; }
-.cam .placeholder[hidden] { display: none !important; }
 .checks { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 .checks .check { margin: 0; }
 td.actions { white-space: nowrap; }

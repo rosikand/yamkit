@@ -101,7 +101,9 @@ function cameraNames() {
 
 const camsBusy = () => overview?.cameras?.[0]?.suspended_by || "";
 let camsRendered = null;
-// re-render the tiles only when the camera list or its owner changes
+// The tiles are plain MJPEG <img> streams (/api/cameras/<name>/stream). They are re-rendered only when
+// the camera list or its owner changes: a session that owns the devices replaces them with a
+// placeholder, and they reconnect by themselves when it hands the cameras back.
 function syncCams() {
   const slot = $("#cams-slot");
   if (!slot) return;
@@ -114,51 +116,12 @@ function camsHTML() {
   camsRendered = busy + "|" + (overview?.cameras || []).map((c) => c.name).join(",");
   return `<div class="cams">` + cams.map((c) => `
     <div class="cam" data-cam="${esc(c.name)}">
-      <span class="label">${esc(c.name)}${busy ? ` · via ${esc(busy)}` : ""}</span>
-      ${c.configured
-        ? `<img class="snap" data-cam="${esc(c.name)}" alt="${esc(c.name)}" /><div class="placeholder snap-wait" data-cam="${esc(c.name)}">${busy ? "waiting for the recorder…" : "connecting…"}</div>`
-        : `<div class="placeholder">no camera configured in rig.yaml</div>`}
+      <span class="label">${esc(c.name)}</span>
+      ${c.configured && !busy
+        ? `<img src="/api/cameras/${encodeURIComponent(c.name)}/stream" alt="${esc(c.name)}"
+             onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'placeholder',textContent:'no signal'}))" />`
+        : `<div class="placeholder">${busy ? `in use by ${esc(busy)} session` : "no camera configured in rig.yaml"}</div>`}
     </div>`).join("") + `</div>`;
-}
-
-// Tiles poll /api/cameras/<name>/frame ~10×/s: a fresh JPEG every time, so a dropped connection or a
-// browser connection limit can never freeze a tile, and the recorder's previews come through the same
-// path while it owns the cameras.
-const camPoll = { timer: null, busy: new Set(), lastOk: {}, urls: {} };
-function startCamPolling() {
-  stopCamPolling();
-  camPoll.timer = setInterval(pollCams, 100);
-}
-function stopCamPolling() {
-  if (camPoll.timer) clearInterval(camPoll.timer);
-  camPoll.timer = null;
-  camPoll.busy.clear();
-}
-async function pollCams() {
-  document.querySelectorAll("img.snap").forEach(async (img) => {
-    const name = img.dataset.cam;
-    if (camPoll.busy.has(name)) return;
-    camPoll.busy.add(name);
-    try {
-      const r = await fetch(`/api/cameras/${encodeURIComponent(name)}/frame`, { cache: "no-store" });
-      if (r.ok) {
-        const url = URL.createObjectURL(await r.blob());
-        const old = camPoll.urls[name];
-        img.onload = () => { if (old) URL.revokeObjectURL(old); };
-        img.src = url;
-        camPoll.urls[name] = url;
-        camPoll.lastOk[name] = Date.now();
-        img.classList.add("live");
-        const w = document.querySelector(`.snap-wait[data-cam="${name}"]`);
-        if (w) w.hidden = true;
-      } else if (Date.now() - (camPoll.lastOk[name] || 0) > 3000) {
-        const w = document.querySelector(`.snap-wait[data-cam="${name}"]`);
-        if (w) { w.hidden = false; w.textContent = camsBusy() ? "waiting for the recorder…" : (r.status === 503 ? "connecting…" : "no signal"); }
-        img.classList.remove("live");
-      }
-    } catch { /* server away for a moment: keep the last frame */ }
-    finally { camPoll.busy.delete(name); }
-  });
 }
 
 function armPanelHTML(armName, stt, role) {
@@ -246,7 +209,6 @@ pages.live = {
       <div class="sect"><div class="sect-head">Status</div><div class="st-list" id="status-list"></div>
         <div class="hint" id="bringup"></div></div>
       <div class="sect"><div class="sect-head">Session output</div>${logPaneHTML()}</div>`;
-    startCamPolling();
     $("#btn-read").onclick = (e) => doPost("/session/read", { hz: 5 }, e.target);
     $("#btn-park").onclick = (e) => doPost("/session/rest", {}, e.target);
     $("#btn-stop").onclick = (e) => doPost("/session/stop", {}, e.target);
@@ -341,7 +303,6 @@ pages.record = {
       </div>
       <div class="sect"><div class="sect-head">Progress</div><div class="st-list" id="rec-progress"></div></div>
       <div class="sect"><div class="sect-head">Output</div>${logPaneHTML()}</div>`;
-    startCamPolling();
     $("#btn-teleop").onclick = (e) => doPost("/session/teleop", { auto_engage: $("#auto-engage").checked }, e.target);
     $("#btn-record").onclick = (e) => {
       const name = $("#rec-name").value.trim(), task = $("#rec-task").value.trim();
@@ -904,7 +865,6 @@ pages.settings = {
 // -------------------------------------------------------------------------------- router ----
 let current = null;
 function route() {
-  stopCamPolling();
   let [page, ...args] = (location.hash.replace(/^#\//, "") || "live").split("/");
   if (page === "deployments") page = "inference"; // old links keep working
   const p = pages[page] || pages.live;

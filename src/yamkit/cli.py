@@ -137,6 +137,10 @@ def discover(
     console.print(f"Pairs: {', '.join(f'{p.leader}->{p.follower}' for p in draft.pairs) or 'none'}")
     console.print("Cameras: " + (", ".join(f"{n} ({c.get('model') or c.get('type')})" for n, c in draft.cameras.items()) or "none"))
     if write:
+        if rig.is_file():  # keep the previous rig: `yamkit swap`/`align`/calibration data is precious
+            backup = rig.with_suffix(".yaml.bak")
+            backup.write_text(rig.read_text())
+            console.print(f"[dim]previous rig kept at {backup}[/]")
         path = draft.save(rig)
         console.print(f"[green]wrote {path}[/]")
         if new:
