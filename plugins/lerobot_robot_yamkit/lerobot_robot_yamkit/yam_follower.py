@@ -79,12 +79,12 @@ class _FollowerHandle:
             self.arm = None
 
 
-def _home_together(handles) -> None:
+def _home_together(handles, stop=None) -> None:
     """Park several arms at the same time (used by the bimanual robot/teleoperator)."""
     jobs = [h.home_job for h in handles if h.home_job]
     if jobs:
         try:
-            go_home_all(jobs)
+            go_home_all(jobs, stop=stop)
         except KeyboardInterrupt:
             logger.warning("home move aborted — releasing the arms where they are")
 
@@ -93,6 +93,13 @@ def _rig_cameras(rig: RigConfig, config) -> dict:
     if config.cameras:
         return dict(config.cameras)
     return camera_configs_from_dicts(rig.cameras) if config.use_rig_cameras else {}
+
+
+def _check_session_stop(config) -> None:
+    # A transient in-process hook for remote rollout's upstream context builder.
+    stop = getattr(config, "_session_shutdown_event", None)
+    if stop is not None and stop.is_set():
+        raise RuntimeError("Rollout stopped before hardware activation completed")
 
 
 class YamFollower(Robot):
@@ -106,6 +113,9 @@ class YamFollower(Robot):
         self._h = _FollowerHandle(self.rig, config.arm, config.max_joint_speed, config.max_gripper_speed)
         self.camera_configs = _rig_cameras(self.rig, config)
         self.cameras = make_cameras_from_configs(self.camera_configs)
+        # In-process lifecycle handle: lets a caller release partially built upstream
+        # rollout contexts. This is deliberately not a serialized config field.
+        config._runtime_robot = self
 
     @property
     def _motors_ft(self) -> dict[str, type]:
@@ -129,12 +139,18 @@ class YamFollower(Robot):
 
     @check_if_already_connected
     def connect(self, calibrate: bool = True) -> None:
-        self._h.connect()
+        _check_session_stop(self.config)
         try:
+            self._h.connect(home=False)
+            _check_session_stop(self.config)
+            if self._h.home_job:
+                self._h.arm.go_home(self._h.home_speed, stop=getattr(self.config, "_session_shutdown_event", None))
+            _check_session_stop(self.config)
             for cam in self.cameras.values():
                 cam.connect()
+                _check_session_stop(self.config)
         except Exception:
-            self._h.disconnect()
+            self.disconnect_no_home()
             raise
         logger.info("%s connected on %s", self, self._h.arm.channel)
 
@@ -166,6 +182,18 @@ class YamFollower(Robot):
         self._h.disconnect()
         logger.info("%s disconnected", self)
 
+    def disconnect_no_home(self) -> None:
+        """Release after a remote stop/fault, including partially connected cameras."""
+        try:
+            for cam in self.cameras.values():
+                if cam.is_connected:
+                    try:
+                        cam.disconnect()
+                    except Exception:  # noqa: BLE001 — continue releasing every arm despite camera failure
+                        logger.warning("Camera cleanup failed during release")
+        finally:
+            self._h.disconnect(home=False)
+
 
 class BiYamFollower(Robot):
     """Two YAM followers; keys prefixed ``left_`` / ``right_``; cameras unprefixed."""
@@ -183,6 +211,7 @@ class BiYamFollower(Robot):
         }
         self.camera_configs = _rig_cameras(self.rig, config)
         self.cameras = make_cameras_from_configs(self.camera_configs)
+        config._runtime_robot = self
 
     @property
     def _motors_ft(self) -> dict[str, type]:
@@ -209,14 +238,17 @@ class BiYamFollower(Robot):
         connected = []
         try:
             for h in self._sides.values():
+                _check_session_stop(self.config)
                 h.connect(home=False)
                 connected.append(h)
-            _home_together(connected)  # both arms park at the same time
+            _check_session_stop(self.config)
+            _home_together(connected, stop=getattr(self.config, "_session_shutdown_event", None))
+            _check_session_stop(self.config)
             for cam in self.cameras.values():
                 cam.connect()
+                _check_session_stop(self.config)
         except Exception:
-            for h in connected:
-                h.disconnect(home=False)
+            self.disconnect_no_home()
             raise
         logger.info("%s connected (%s)", self, ", ".join(f"{s}={h.arm.channel}" for s, h in self._sides.items()))
 
@@ -255,3 +287,22 @@ class BiYamFollower(Robot):
         for h in self._sides.values():
             h.disconnect(home=False)
         logger.info("%s disconnected", self)
+
+    def disconnect_no_home(self) -> None:
+        """Release all followers without a return-to-start or home move."""
+        try:
+            for cam in self.cameras.values():
+                if cam.is_connected:
+                    try:
+                        cam.disconnect()
+                    except Exception:  # noqa: BLE001 — continue releasing every arm despite camera failure
+                        logger.warning("Camera cleanup failed during release")
+        finally:
+            errors = []
+            for handle in self._sides.values():
+                try:
+                    handle.disconnect(home=False)
+                except Exception as exc:  # noqa: BLE001 — release remaining arms before surfacing the error
+                    errors.append(exc)
+            if errors:
+                raise errors[0]

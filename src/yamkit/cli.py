@@ -20,6 +20,7 @@ from . import __version__
 from .paths import DATASETS_DIR, DEFAULT_RIG, OUTPUT_DIR, ROOT
 
 app = typer.Typer(help="I2RT YAM arms: CAN setup, teleop, LeRobot recording, VLA rollout.", no_args_is_help=True, add_completion=False)
+app.pretty_exceptions_show_locals = False
 console = Console()
 err = Console(stderr=True)
 
@@ -663,9 +664,70 @@ def rollout(
     device: str | None = None,
     display: bool = False,
     dry_run: bool = False,
+    backend: str = "local",
+    gpu: str = "L40S",
+    modal_app: str | None = None,
+    center_crop: bool = False,
+    async_chunks: Annotated[bool, typer.Option("--async/--no-async", help="unguided background chunks (Modal)")] = True,
 ) -> None:
     """Run a policy/VLA on the follower arm(s) (`lerobot-rollout`)."""
-    _, pairs = _rig_arms(rig, arms)
+    from .deployment import InferenceOptions
+
+    options = InferenceOptions(policy=policy, task=task, backend=backend, device=device or "cpu", gpu=gpu,
+                               modal_app=modal_app, center_crop=center_crop, rtc=rtc,
+                               async_chunks=async_chunks, duration=duration, fps=fps, arms=tuple(arms or ()))
+    try:
+        options.validate(motion=True)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    rig_config, pairs = _rig_arms(rig, arms)
+    if backend == "modal":
+        if ctx.args or strategy != "base" or display:
+            raise typer.BadParameter("Modal supports base strategy without display or extra LeRobot flags")
+        from .modal_ops import owned_service
+
+        receipt = owned_service()
+        app_name = modal_app or (receipt or {}).get("app_name")
+        if not app_name:
+            raise typer.BadParameter("run yamkit modal-prepare first, or specify --modal-app")
+        if dry_run:
+            console.print(f"Modal unguided async via LeRobot context: {policy}, {app_name}, {fps:g} Hz")
+            return
+        from lerobot.rollout.configs import RolloutConfig
+        from lerobot_robot_yamkit import BiYamFollowerConfig
+
+        from .inference.profiles import get_profile
+        from .remote_policy import YamkitRemoteConfig
+        from .remote_rollout import run_remote_rollout
+
+        by_side = {rig_config.arm(p.follower).side: p.follower for p in pairs}
+        if set(by_side) != {"left", "right"}:
+            raise typer.BadParameter("Modal YAM mapping requires distinct left and right follower arms")
+        config = RolloutConfig(
+            robot=BiYamFollowerConfig(rig=str(rig), left=by_side["left"], right=by_side["right"], id="yam"),
+            policy=YamkitRemoteConfig(profile=get_profile(policy).id, modal_app=app_name,
+                                     center_crop=center_crop),
+            task=task, duration=duration, fps=fps, device="cpu", play_sounds=False,
+            use_torch_compile=False, return_to_initial_position=False,
+        )
+        from .inference.client import RemoteFault
+
+        try:
+            result = run_remote_rollout(config)
+        except RemoteFault as exc:
+            if getattr(exc, "metrics", None):
+                _print_inference_result(exc.metrics)
+            raise
+        _print_inference_result(result)
+        return
+    from .inference.profiles import get_profile
+
+    try:
+        local_profile = get_profile(policy)
+    except ValueError:
+        local_profile = None
+    if local_profile:
+        policy = local_profile.repo_id
     args = [
         f"--strategy.type={strategy}",
         f"--policy.path={policy}",
@@ -680,6 +742,14 @@ def rollout(
         args.append("--inference.type=rtc")
     if device:
         args.append(f"--device={device}")
+    if local_profile:
+        args.append(f"--policy.pretrained_revision={local_profile.revision}")
+        if local_profile.id == "molmoact2":
+            import json
+
+            from .inference.mapping import CAMERA_RENAME_MAP
+
+            args.append("--rename_map=" + json.dumps(CAMERA_RENAME_MAP))
     _exec_lerobot("lerobot_rollout", [*args, *ctx.args], dry_run)
 
 
@@ -759,8 +829,31 @@ def policy_check(
     device: str = "cpu",
     steps: int = 3,
     keep_policy_features: Annotated[bool, typer.Option(help="use the checkpoint's own input features instead of this rig's")] = False,
+    backend: str = "local",
+    gpu: str = "L40S",
+    modal_app: str | None = None,
+    center_crop: bool = False,
 ) -> None:
     """Load a policy/VLA for this rig and run it on a synthetic frame (no arm is energised)."""
+    from .deployment import InferenceOptions
+    from .inference.profiles import get_profile
+
+    try:
+        InferenceOptions(policy=policy, task=task, backend=backend, device=device, gpu=gpu,
+                         modal_app=modal_app, center_crop=center_crop).validate()
+        try:
+            profile = get_profile(policy)
+        except ValueError:
+            profile = None
+        if profile is not None:
+            from .inference_check import run_check
+
+            result = run_check(profile.id, backend=backend, device=device, task=task, steps=steps,
+                               modal_app=modal_app, center_crop=center_crop)
+            _print_inference_result(result)
+            return
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
     from .policy_check import run_policy_check
 
     r = run_policy_check(policy, rig_path=str(rig), arms=arms, task=task, device=device, n_steps=steps, use_robot_features=not keep_policy_features)
@@ -775,6 +868,53 @@ def policy_check(
     t.add_row("next calls", ", ".join(f"{x * 1e3:.0f} ms" for x in r.step_call_s))
     t.add_row("sample action", ", ".join(f"{k}={v:+.3f}" for k, v in list(r.action.items())[:7]) + (" …" if len(r.action) > 7 else ""))
     console.print(t)
+
+
+@app.command("modal-prepare")
+def modal_prepare(policy: str = "molmoact2", gpu: str = "L40S", development: bool = False) -> None:
+    """Explicitly deploy and warm this workspace's dedicated cloud pool; never activate hardware."""
+    from .modal_ops import prepare
+
+    _print_inference_result(prepare(policy, gpu=gpu, development=development))
+
+
+@app.command("modal-shutdown")
+def modal_shutdown() -> None:
+    """Shut down only the owned cloud app. Stop local robot execution separately first."""
+    from .modal_ops import shutdown
+
+    _print_inference_result(shutdown())
+
+
+@app.command("policy-probe")
+def policy_probe(
+    policy: str = "molmoact2", task: str = "pick up the object", backend: str = "local",
+    device: str = "cpu", gpu: str = "L40S", modal_app: str | None = None,
+    center_crop: bool = False, saved: Path | None = None, live: bool = False,
+    approve_active_read: bool = False, rig: RigOpt = DEFAULT_RIG,
+    arms: Annotated[list[str] | None, typer.Option("--arms")] = None,
+) -> None:
+    """Inspect fresh targets without executing them; live mode needs explicit active-read approval."""
+    from .deployment import InferenceOptions
+    from .probe_runner import run_profile_probe
+    from .probes import format_probe_report
+
+    try:
+        InferenceOptions(policy=policy, task=task, backend=backend, device=device, gpu=gpu,
+                         modal_app=modal_app, center_crop=center_crop).validate()
+        result = run_profile_probe(policy, rig_path=rig, saved=saved, live=live, approved=approve_active_read,
+                                   backend=backend, device=device, modal_app=modal_app, task=task,
+                                   arms=arms, center_crop=center_crop)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    console.print(format_probe_report(result), markup=False)
+    _print_inference_result(result)
+
+
+def _print_inference_result(result: dict) -> None:
+    import json
+
+    print("[yamkit-result] " + json.dumps(result, allow_nan=False), flush=True)
 
 
 # ------------------------------------------------------------------------------------ doctor --
