@@ -6,6 +6,20 @@ import pytest
 from yamkit.config import ArmSpec, ControlSpec, PairSpec, RigConfig
 
 
+@pytest.fixture(autouse=True)
+def isolated_service_credentials(monkeypatch):
+    """Normal tests never use the developer's Hub or cloud credentials."""
+    from yamkit import hub
+
+    for name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET",
+                 "YAMKIT_OPENAI_API_KEY", "DATABASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(hub, "get_token", lambda: None)
+    hub.clear_cache()
+    yield
+    hub.clear_cache()
+
+
 class FakeRobot:
     """Stand-in for i2rt.MotorChainRobot: enough surface for YamArm + plugins."""
 
