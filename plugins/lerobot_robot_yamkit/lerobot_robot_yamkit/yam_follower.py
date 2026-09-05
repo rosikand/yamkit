@@ -21,7 +21,7 @@ from lerobot.utils.decorators import check_if_already_connected, check_if_not_co
 from lerobot.utils.errors import DeviceNotConnectedError
 
 from yamkit.arm import YamArm, go_home_all, resolve_channel
-from yamkit.camera_ownership import claim_from_env
+from yamkit.camera_ownership import claim_from_env, retain_camera_readers
 from yamkit.cameras import camera_configs_from_dicts
 from yamkit.config import N_JOINTS, RigConfig
 from yamkit.preview import NullPreview, start_from_env
@@ -170,6 +170,7 @@ class _CameraPreview:
         self._preview = NullPreview()
         self._camera_lease = None
         self._opened_cameras = []
+        self._camera_readers = {}
 
     def _connect_cameras(self) -> None:
         # A UI child waits here until every direct capture has released its device.
@@ -181,7 +182,8 @@ class _CameraPreview:
         for cam in self.cameras.values():
             _check_session_stop(self.config)
             self._opened_cameras.append(cam)  # include a partially failed connect in cleanup
-            cam.connect()
+            with retain_camera_readers(cam, self._camera_readers.setdefault(id(cam), [])):
+                cam.connect()
             _check_session_stop(self.config)
         try:
             modes = {key: getattr(cfg, "color_mode", "rgb") for key, cfg in self.camera_configs.items()}
@@ -213,14 +215,16 @@ class _CameraPreview:
         failure = None
         failed_cameras = []
         for cam in self._opened_cameras:
-            reader = getattr(cam, "thread", None)
+            readers = self._camera_readers.setdefault(id(cam), [])
             try:
-                try:
-                    cam.disconnect()
-                except DeviceNotConnectedError:
-                    pass  # LeRobot may have cleaned up a partially failed connect.
-                if cam.is_connected or (reader is not None and reader.is_alive()):
+                with retain_camera_readers(cam, readers):
+                    try:
+                        cam.disconnect()
+                    except DeviceNotConnectedError:
+                        pass  # LeRobot may have cleaned up a partially failed connect.
+                if cam.is_connected or any(reader.is_alive() for reader in readers):
                     raise RuntimeError("camera release could not be confirmed")
+                self._camera_readers.pop(id(cam), None)
             except BaseException as exc:  # noqa: BLE001 — disconnect all cameras, then re-raise
                 failure = failure or exc
                 failed_cameras.append(cam)

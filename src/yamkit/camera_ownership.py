@@ -8,6 +8,7 @@ import secrets
 import select
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TextIO
 
@@ -16,6 +17,56 @@ ENV_SESSION = "YAMKIT_PREVIEW_SESSION"
 ENV_TOKEN = "YAMKIT_PREVIEW_TOKEN"
 CLAIM_TIMEOUT_S = 15.0
 MAX_MESSAGE = 8192
+
+
+@contextmanager
+def retain_camera_readers(camera, readers: list):
+    """Remember pinned camera readers before internal cleanup can detach them.
+
+    OpenCV and RealSense clear ``thread`` even after a failed bounded join, including
+    during connect/warmup. RealSense can retry with another reader in the same call.
+    Observe that existing instance method without changing its cleanup or retry logic.
+    """
+    def remember():
+        reader = getattr(camera, "thread", None)
+        if reader is not None and all(reader is not previous for previous in readers):
+            readers.append(reader)
+
+    def check_detached():
+        remember()
+        current = getattr(camera, "thread", None)
+        if any(reader is not current and reader.is_alive() for reader in readers):
+            raise RuntimeError("camera release could not be confirmed: detached reader is still alive")
+
+    remember()
+    stop = getattr(camera, "_stop_read_thread", None)
+    if not callable(stop):
+        try:
+            yield
+            check_detached()
+        finally:
+            remember()
+        return
+
+    missing = object()
+    original = vars(camera).get("_stop_read_thread", missing)
+
+    def tracked_stop(*args, **kwargs):
+        remember()
+        return stop(*args, **kwargs)
+
+    camera._stop_read_thread = tracked_stop
+    try:
+        yield
+        check_detached()
+    finally:
+        try:
+            remember()
+        finally:
+            if original is missing:
+                del camera._stop_read_thread
+            else:
+                camera._stop_read_thread = original
 
 
 @dataclass

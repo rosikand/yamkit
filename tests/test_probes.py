@@ -336,6 +336,71 @@ def test_camera_cleaned_during_failed_connect_releases_lease_without_hardware_ac
     assert hub.events == ["suspend", "resume"] and hub.suspended_by is None
 
 
+@pytest.mark.parametrize("retry_succeeds", [False, True])
+@pytest.mark.parametrize("reader_survives", [False, True])
+def test_probe_tracks_readers_detached_by_internal_warmup_cleanup(
+    rig, fake_connect, monkeypatch, retry_succeeds, reader_survives,
+):
+    from lerobot.utils.errors import DeviceNotConnectedError
+
+    for spec in rig.followers():
+        spec.gripper_limits = [0, 6.5]
+    events = []
+
+    class Camera:
+        def __init__(self, name):
+            self.name, self.thread, self.is_connected = name, None, False
+
+        def _stop_read_thread(self):
+            self.thread = None
+            self.is_connected = False
+
+        def connect(self):
+            self.is_connected = True
+            if self.name == "broken":
+                self.thread = SimpleNamespace(is_alive=lambda: reader_survives)
+                self._stop_read_thread()  # pinned warmup cleanup detaches the first reader
+                if not retry_succeeds:
+                    raise ConnectionError("synthetic warmup failure")
+                self.is_connected = True
+                self.thread = SimpleNamespace(is_alive=lambda: False)  # successful later retry
+
+        def async_read(self, **kwargs):
+            return np.zeros((8, 8, 3), dtype=np.uint8)
+
+        read_latest = async_read
+
+        def disconnect(self):
+            events.append("disconnect:" + self.name)
+            assert all(arm.closed for arm in fake_connect.values())
+            if not self.is_connected:
+                raise DeviceNotConnectedError("already cleaned up internally")
+            self._stop_read_thread()
+
+    cameras = {name: Camera(name) for name in ("healthy", "broken")}
+    monkeypatch.setattr(probes, "_make_cameras", lambda _: cameras)
+    monkeypatch.setattr("yamkit.camera_ownership.claim_from_env", lambda _: SimpleNamespace(
+        release=lambda: events.append("release")))
+    hub = FakeHub()
+    if reader_survives:
+        with pytest.raises(RuntimeError, match="camera release could not be confirmed"):
+            probes.capture_live_observation(rig, approved=True, camera_hub=hub)
+        assert events == ["disconnect:broken", "disconnect:healthy"]
+        assert hub.events == ["suspend"]
+    else:
+        if retry_succeeds:
+            probes.capture_live_observation(rig, approved=True, camera_hub=hub)
+        else:
+            with pytest.raises(ConnectionError, match="synthetic warmup failure"):
+                probes.capture_live_observation(rig, approved=True, camera_hub=hub)
+        assert events == ["disconnect:broken", "disconnect:healthy", "release"]
+        assert hub.events == ["suspend", "resume"]
+    assert all("_stop_read_thread" not in vars(camera) for camera in cameras.values())
+    # Probe camera setup completes before any arms activate, including retries.
+    assert len(fake_connect) == (2 if retry_succeeds and not reader_survives else 0)
+    assert all(arm.closed and not arm.commands for arm in fake_connect.values())
+
+
 def test_report_keeps_unclipped_targets_signed_deltas_and_full_chunk_extrema():
     obs = snapshot()
     actions = np.tile(obs.state, (3, 1))

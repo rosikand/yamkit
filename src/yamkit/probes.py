@@ -160,18 +160,19 @@ def _make_cameras(configs: dict[str, dict[str, Any]]) -> dict[str, Any]:
     return make_cameras_from_configs(camera_configs_from_dicts(configs))
 
 
-def _close_camera(camera: Any, cleanup_failed: list) -> None:
+def _close_camera(camera: Any, cleanup_failed: list, readers: list | None = None) -> None:
     from lerobot.utils.errors import DeviceNotConnectedError
 
-    # LeRobot can time out joining its reader, clear camera.thread and return
-    # from disconnect(). Keep that reader reference until release is confirmed.
+    from .camera_ownership import retain_camera_readers
+
+    readers = [] if readers is None else readers
     try:
-        reader = getattr(camera, "thread", None)
-        try:
-            camera.disconnect()
-        except DeviceNotConnectedError:
-            pass  # a failed connect may already have cleaned its partial resources
-        if camera.is_connected or (reader is not None and reader.is_alive()):
+        with retain_camera_readers(camera, readers):
+            try:
+                camera.disconnect()
+            except DeviceNotConnectedError:
+                pass  # a failed connect may already have cleaned its partial resources
+        if camera.is_connected or any(reader.is_alive() for reader in readers):
             raise RuntimeError("camera release could not be confirmed after active-read probe")
     except BaseException:
         cleanup_failed.append(camera)
@@ -198,7 +199,7 @@ def capture_live_observation(
         raise PermissionError(f"explicit operator approval required for {ACTIVE_READ_LABEL}")
     specs, names = preflight_live_probe(rig, arm_names, expected_state_names=expected_state_names)
     from .arm import YamArm, resolve_channel
-    from .camera_ownership import claim_from_env
+    from .camera_ownership import claim_from_env, retain_camera_readers
 
     # Resolve every bus before activation too (lookup only, no SDK construction).
     channels = [resolve_channel(spec) for spec in specs]
@@ -212,9 +213,11 @@ def capture_live_observation(
         cleanup.callback(lambda: lease.release() if not cleanup_failed else None)
         # Open cameras before arms: a busy/invalid capture device cannot trigger motor activation.
         for camera in cameras.values():
-            cleanup.callback(_close_camera, camera, cleanup_failed)
-            camera.connect()
-            camera.async_read(timeout_ms=2000)
+            readers = []
+            cleanup.callback(_close_camera, camera, cleanup_failed, readers)
+            with retain_camera_readers(camera, readers):
+                camera.connect()
+                camera.async_read(timeout_ms=2000)
         arms = []
         for spec, channel in zip(specs, channels, strict=True):
             arm = YamArm.connect(
