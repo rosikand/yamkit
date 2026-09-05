@@ -1,0 +1,10 @@
+# Separate CUDA inference environment. The local uv.lock retains CPU PyTorch.
+lerobot[smolvla,pi,molmoact2]==0.6.1
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
+transformers==5.5.4
+accelerate==1.14.0
+safetensors==0.8.0
+numpy==2.2.6
+huggingface-hub==1.16.1
+scipy==1.18.1

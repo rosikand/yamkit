@@ -131,8 +131,10 @@ def run_policy_check(
         frame = build_inference_frame(dict(raw_obs), torch.device(device), ds_features, task, robot_type)
         t = time.perf_counter()
         with torch.inference_mode():
-            out = post(policy.select_action(pre(frame)))
-        return out, time.perf_counter() - t
+            chunk = post(policy.predict_action_chunk(pre(frame)))
+        if chunk.ndim != 3 or chunk.shape[0] != 1 or not torch.isfinite(chunk).all():
+            raise ValueError("policy-check produced a malformed or nonfinite fresh action chunk")
+        return chunk[:, 0, :], time.perf_counter() - t
 
     policy.reset()
     action, first = infer()

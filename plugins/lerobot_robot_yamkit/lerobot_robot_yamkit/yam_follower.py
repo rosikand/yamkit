@@ -114,11 +114,11 @@ class _FollowerHandle:
                     self.arm = None
 
 
-def _home_together(handles) -> None:
+def _home_together(handles, stop=None) -> None:
     """Park several arms at the same time (used by the bimanual robot/teleoperator)."""
     jobs = [h.home_job for h in handles if h.home_job]
     if jobs:
-        go_home_all(jobs)
+        go_home_all(jobs, stop=stop)
 
 
 def _disconnect(handles, disconnect_cameras, *, home: bool) -> None:
@@ -150,6 +150,13 @@ def _rig_cameras(rig: RigConfig, config) -> dict:
     return camera_configs_from_dicts(rig.cameras) if config.use_rig_cameras else {}
 
 
+def _check_session_stop(config) -> None:
+    # A transient in-process hook for remote rollout's upstream context builder.
+    stop = getattr(config, "_session_shutdown_event", None)
+    if stop is not None and stop.is_set():
+        raise RuntimeError("Rollout stopped before hardware activation completed")
+
+
 class _CameraPreview:
     """The existing observation owns acquisition; previews only receive its frames."""
 
@@ -165,7 +172,9 @@ class _CameraPreview:
         try:
             for cam in self.cameras.values():
                 self._opened_cameras.append(cam)  # include a partially failed connect in cleanup
+                _check_session_stop(self.config)
                 cam.connect()
+                _check_session_stop(self.config)
         except BaseException:
             try:
                 self._disconnect_cameras()
@@ -241,6 +250,9 @@ class YamFollower(_CameraPreview, Robot):
         self.camera_configs = _rig_cameras(self.rig, config)
         self.cameras = make_cameras_from_configs(self.camera_configs)
         self._init_preview()
+        # In-process lifecycle handle: lets a caller release partially built upstream
+        # rollout contexts. This is deliberately not a serialized config field.
+        config._runtime_robot = self
 
     @property
     def _motors_ft(self) -> dict[str, type]:
@@ -267,8 +279,13 @@ class YamFollower(_CameraPreview, Robot):
         _validate_rig(self.rig)
         if self._h.arm is not None or self._opened_cameras:
             raise RuntimeError("previous resources remain open; call disconnect(home=False) before reconnecting")
+        _check_session_stop(self.config)
         try:
-            self._h.connect()
+            self._h.connect(home=False)
+            _check_session_stop(self.config)
+            if self._h.home_job:
+                self._h.arm.go_home(self._h.home_speed, stop=getattr(self.config, "_session_shutdown_event", None))
+            _check_session_stop(self.config)
             self._connect_cameras()
         except BaseException:
             try:
@@ -303,6 +320,10 @@ class YamFollower(_CameraPreview, Robot):
         _disconnect([self._h], self._disconnect_cameras, home=home)
         logger.info("%s disconnected", self)
 
+    def disconnect_no_home(self) -> None:
+        """Compatibility hook for rollout; use the common hardened teardown."""
+        self.disconnect(home=False)
+
 
 class BiYamFollower(_CameraPreview, Robot):
     """Two YAM followers; keys prefixed ``left_`` / ``right_``; cameras unprefixed."""
@@ -324,6 +345,7 @@ class BiYamFollower(_CameraPreview, Robot):
         self.camera_configs = _rig_cameras(self.rig, config)
         self.cameras = make_cameras_from_configs(self.camera_configs)
         self._init_preview()
+        config._runtime_robot = self
 
     @property
     def _motors_ft(self) -> dict[str, type]:
@@ -352,8 +374,11 @@ class BiYamFollower(_CameraPreview, Robot):
             raise RuntimeError("previous resources remain open; call disconnect(home=False) before reconnecting")
         try:
             for h in self._sides.values():
+                _check_session_stop(self.config)
                 h.connect(home=False)
-            _home_together(self._sides.values())  # both arms park at the same time
+            _check_session_stop(self.config)
+            _home_together(self._sides.values(), stop=getattr(self.config, "_session_shutdown_event", None))
+            _check_session_stop(self.config)
             self._connect_cameras()
         except BaseException:
             try:
@@ -401,3 +426,7 @@ class BiYamFollower(_CameraPreview, Robot):
         """Release all resources; ``home=False`` skips the normal return-home move."""
         _disconnect(self._sides.values(), self._disconnect_cameras, home=home)
         logger.info("%s disconnected", self)
+
+    def disconnect_no_home(self) -> None:
+        """Compatibility hook for rollout; use the common hardened teardown."""
+        self.disconnect(home=False)

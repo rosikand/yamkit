@@ -31,7 +31,7 @@ def find_root() -> Path | None:
     return Path(env).expanduser() if env else None
 
 
-_DERIVED = ("HF_HOME", "HF_LEROBOT_HOME", "TORCH_HOME", "WANDB_DIR")
+_DERIVED = ("HF_HOME", "HF_LEROBOT_HOME", "TORCH_HOME", "WANDB_DIR", "TMPDIR")
 
 
 def apply() -> None:
@@ -51,6 +51,10 @@ def apply() -> None:
     os.environ.setdefault("HF_LEROBOT_HOME", str(data / "lerobot"))  # datasets + calibration
     os.environ.setdefault("TORCH_HOME", str(data / "torch"))
     os.environ.setdefault("WANDB_DIR", str(root / "outputs" / "wandb"))
+    if "TMPDIR" not in os.environ:
+        temporary = data / "tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        os.environ["TMPDIR"] = str(temporary)  # upstream checkpoint-config temporary files
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 

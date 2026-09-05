@@ -206,11 +206,12 @@ Bring the `pretrained_model` directory back under `outputs/` (or push it to the 
 
 ## 7. Run a policy on the arms
 
-First check that a checkpoint loads for this rig and how fast it runs here (no arm is energised):
+First check a checkpoint without activating hardware. Reviewed base-model checks use
+checkpoint-native fixtures; compatible custom checkpoint checks use the rig's feature spec:
 
 ```bash
 yamkit policy-check --policy lerobot/smolvla_base --task "pick up the red cube"
-# smolvla on this CPU: ~35 s load, ~0.8 s per 50-step action chunk, 14-d state/action, 1 camera
+# smolvla base: three fresh 50-step chunks, native 6-d state/action; no physical YAM mapping implied
 ```
 
 Then deploy:
@@ -218,13 +219,18 @@ Then deploy:
 ```bash
 yamkit rollout --policy outputs/train/smolvla_pick_cube/checkpoints/last/pretrained_model \
                --task "pick up the red cube" --duration 60 --rtc
-yamkit rollout --policy lerobot/smolvla_base --task "..." --dry-run    # print the lerobot-rollout command only
+yamkit rollout --policy outputs/train/my_policy/checkpoints/last/pretrained_model --task "..." --dry-run
 ```
 
-`--rtc` enables LeRobot's real-time-chunking inference, which hides most of the latency of a slow VLA
-on CPU. The same speed clamps as in teleop bound every commanded step. For a remote GPU, run
-`lerobot-rollout` here with the policy served by LeRobot's async inference (`lerobot[async]`) over
-Tailscale, or copy the checkpoint over.
+`--rtc` enables LeRobot's real-time-chunking inference for compatible local policies.
+Measure end-to-end latency before relying on chunk buffering. The same speed clamps
+as in teleop bound every commanded step.
+
+For optional Modal GPU inference and browser deployment, see [docs/MODAL.md](docs/MODAL.md).
+Local remains the default. The reviewed MolmoAct2-YAM profile allows local synchronous
+inference or Modal unguided async. The SmolVLA and pi05 base profiles support native
+checks and are blocked from physical
+rollout because they lack a reviewed YAM mapping. Guided remote RTC is unsupported.
 
 For a small multimodal LLM controller, see [the agent guide](docs/AGENT.md). `yamkit agent` offers
 an offline fixture mode and paid OpenAI calls with fixtures; live execution is disabled pending

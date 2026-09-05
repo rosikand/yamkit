@@ -443,7 +443,7 @@ def close_all(arms) -> None:
         raise errors[0]
 
 
-def go_home_all(jobs: list[tuple[YamArm, dict[str, Any]]]) -> None:
+def go_home_all(jobs: list[tuple[YamArm, dict[str, Any]]], *, stop: threading.Event | None = None) -> None:
     """`arm.go_home(**kw)` for every (arm, kw) at the same time — one thread per arm, each arm has its
     own CAN bus. Ctrl-C (raised in the calling thread) stops every move, releases the arms where they
     are, then propagates; an error in any arm's move is re-raised after all moves have ended."""
@@ -451,7 +451,7 @@ def go_home_all(jobs: list[tuple[YamArm, dict[str, Any]]]) -> None:
     for arm, kw in jobs:
         finite_scalar(kw.get("speed", 0.5), "home speed", positive=True)
         arm.validate_command(arm.home_pose, limit_speed=False)
-    stop = threading.Event()
+    stop = stop if stop is not None else threading.Event()
     begin = threading.Event()
     errors: list[BaseException] = []
     finished = [threading.Event() for _ in jobs]

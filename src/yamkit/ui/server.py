@@ -10,13 +10,15 @@ from __future__ import annotations
 import dataclasses
 import threading
 from contextlib import asynccontextmanager
+import uuid
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from .. import hub
 from ..can import bringup_commands, list_can_interfaces
@@ -69,19 +71,34 @@ class HubTransferBody(BaseModel):
     remove_local: bool = False
 
 
-class RolloutBody(BaseModel):
+class InferenceBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     policy: str
-    task: str
+    task: str = "pick up the object"
+    backend: str = "local"
+    device: str = "cpu"
+    gpu: str = "L40S"
+    modal_app: str | None = None
+    center_crop: bool = False
+    async_chunks: bool = True
     duration: float = 60.0
     fps: float = 30.0
-    rtc: bool = True
+    rtc: bool = False
     arms: list[str] | None = None
 
 
-class PolicyCheckBody(BaseModel):
-    policy: str
-    task: str = "pick up the object"
-    device: str = "cpu"
+class RolloutBody(InferenceBody):
+    confirm_motion: bool = False
+
+
+class PolicyCheckBody(InferenceBody):
+    pass
+
+
+class ProbeBody(InferenceBody):
+    saved: str | None = None
+    live: bool = False
+    confirm_active_read: bool = False
 
 
 class ConfigBody(BaseModel):
@@ -119,6 +136,14 @@ def create_app(
 
     app = FastAPI(title="yamkit ui", docs_url=None, redoc_url=None, lifespan=lifespan)
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError):
+        # Validation errors ordinarily echo invalid input. Inference accepts no credentials,
+        # and must not reflect an accidentally submitted token back to the browser.
+        errors = [{"loc": list(error["loc"]), "msg": error["msg"], "type": error["type"]}
+                  for error in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": errors})
+
     def load_rig() -> RigConfig | None:
         try:
             return RigConfig.load(rig_path)
@@ -128,6 +153,7 @@ def create_app(
     rig0 = load_rig()
     cameras = CameraHub(rig0.cameras if rig0 else {})
     run_dir_box: dict[str, Path | None] = {"dir": None}
+    inference_launch_lock = threading.Lock()
 
     def on_exit(status: dict[str, Any]) -> None:
         if status.get("mode") in ("push", "pull", "record"):
@@ -369,29 +395,110 @@ def create_app(
             raise HTTPException(404, f"no checkpoint at outputs/{body.name}")
         return start("push", sessions.yamkit_argv("push-model", str(d), "--rig", str(rig_path)), {"name": body.name})
 
+    def inference_options(body: InferenceBody, *, motion: bool = False):
+        from ..deployment import InferenceOptions
+
+        values = {field.name: getattr(body, field.name) for field in dataclasses.fields(InferenceOptions)}
+        values["arms"] = tuple(body.arms or ())
+        try:
+            return InferenceOptions(**values).validate(motion=motion)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    def inference_start(mode: str, args: list[str], options) -> dict:
+        with inference_launch_lock:
+            operation_id = uuid.uuid4().hex
+            meta = {**dataclasses.asdict(options), "operation_id": operation_id,
+                    "profile_key": options.operation_key}
+            st = start(mode, sessions.yamkit_argv(*args), meta)
+            # The child can exit between start() and writing its history record. Finalize that
+            # snapshot here too so an immediate failure cannot stay marked as running.
+            run_dir = deployments.create(st)
+            run_dir_box["dir"] = run_dir
+            current = sessions.status()
+            if not current["active"]:
+                deployments.finalize(run_dir, current)
+                run_dir_box["dir"] = None
+            return st
+
+    @app.get("/api/inference/profiles")
+    def inference_profiles() -> dict:
+        from ..inference.profiles import list_profiles
+        from ..modal_ops import credential_status, owned_service
+
+        return {"profiles": list_profiles(), "credentials": credential_status(),
+                "owned_service": owned_service(), "default_backend": "local"}
+
     @app.post("/api/session/rollout")
     def session_rollout(body: RolloutBody) -> dict[str, Any]:
-        require_rig()
-        args = ["rollout", "--rig", str(rig_path), "--policy", body.policy, "--task", body.task,
+        rig = require_rig()
+        options = inference_options(body, motion=True)
+        if not body.confirm_motion:
+            raise HTTPException(422, "explicit motion confirmation is required")
+        if body.backend == "modal" or body.policy in ("molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot"):
+            from ..inference.profiles import get_profile
+            from ..probes import preflight_live_probe
+
+            try:
+                profile = get_profile(body.policy)
+                preflight_live_probe(rig, body.arms, expected_state_names=profile.state_names)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
+        args = ["rollout", "--rig", str(rig_path), *options.cli_args(),
                 "--duration", str(body.duration), "--fps", str(body.fps)]
         if body.rtc:
             args.append("--rtc")
         for a in body.arms or []:
             args += ["--arms", a]
-        meta = {"policy": body.policy, "task": body.task, "duration": body.duration}
-        st = start("rollout", sessions.yamkit_argv(*args), meta)
-        run_dir_box["dir"] = deployments.create(sessions.status())
-        return st
+        return inference_start("rollout", args, options)
 
     @app.post("/api/session/policy-check")
     def session_policy_check(body: PolicyCheckBody) -> dict[str, Any]:
-        require_rig()
-        args = ["policy-check", "--rig", str(rig_path), "--policy", body.policy,
-                "--task", body.task, "--device", body.device]
-        meta = {"policy": body.policy, "task": body.task}
-        st = start("policy-check", sessions.yamkit_argv(*args), meta)
-        run_dir_box["dir"] = deployments.create(sessions.status())
-        return st
+        options = inference_options(body)
+        args = ["policy-check", "--rig", str(rig_path), *options.cli_args()]
+        for arm in body.arms or []:
+            args += ["--arms", arm]
+        return inference_start("policy-check", args, options)
+
+    @app.post("/api/session/modal-prepare")
+    def session_modal_prepare(body: PolicyCheckBody) -> dict:
+        options = inference_options(body)
+        if options.backend != "modal":
+            raise HTTPException(422, "select Modal before preparing a cloud service")
+        return inference_start("modal-prepare", ["modal-prepare", "--policy", options.policy,
+                                                "--gpu", options.gpu], options)
+
+    @app.post("/api/session/modal-shutdown")
+    def session_modal_shutdown() -> dict:
+        return start("modal-shutdown", sessions.yamkit_argv("modal-shutdown"))
+
+    @app.post("/api/session/policy-probe")
+    def session_policy_probe(body: ProbeBody) -> dict:
+        options = inference_options(body)
+        if body.live == bool(body.saved):
+            raise HTTPException(422, "choose a saved snapshot or live active read")
+        args = ["policy-probe", "--rig", str(rig_path), *options.cli_args()]
+        if body.live:
+            if not body.confirm_active_read:
+                raise HTTPException(422, "explicit GRAVITY-COMPENSATION ACTIVE READ confirmation is required")
+            from ..inference.profiles import get_profile
+            from ..probes import preflight_live_probe
+
+            try:
+                profile = get_profile(body.policy)
+                profile.require_robot_mapping()
+                preflight_live_probe(require_rig(), body.arms, expected_state_names=profile.state_names)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
+            args += ["--live", "--approve-active-read"]
+        else:
+            snapshot = (ROOT / body.saved).resolve()
+            if ROOT not in snapshot.parents or snapshot.suffix != ".npz" or not snapshot.is_file():
+                raise HTTPException(422, "saved snapshot must be an existing .npz file inside this repository")
+            args += ["--saved", str(snapshot)]
+        for arm in body.arms or []:
+            args += ["--arms", arm]
+        return inference_start("policy-probe-live" if body.live else "policy-probe", args, options)
 
     # ------------------------------------------------------------------------------ config --
     def config_payload() -> dict[str, Any]:

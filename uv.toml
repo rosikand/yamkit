@@ -1,3 +1,0 @@
-# Keep uv fully inside this directory (this is a shared machine).
-cache-dir = ".uv-cache"
-python-preference = "only-managed"
