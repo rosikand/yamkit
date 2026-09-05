@@ -24,10 +24,8 @@ The UI adds **no second robot driver and no new control loop**:
   different process — the UI cannot see its output. Stop sends the
   process group a SIGINT (identical to Ctrl-C in a terminal), escalating to SIGTERM/SIGKILL only
   if the child hangs. One session at a time.
-* **Camera previews** are MJPEG streams (`/api/cameras/<name>/stream`) read with OpenCV from the cameras in `configs/rig.yaml`, shown while no session owns the devices. A record / teleoperate / rollout session gets exclusive ownership of the V4L2 devices: the UI stops its streams first, `/stream` answers 409 and the tiles show "in use by … session". The robot's observation loop does nothing for the UI — no preview encoding or files. Previews reconnect on their own when ownership ends: when the session exits, or, for a recording that uploads to the Hub afterwards, as soon as the recorder has finished and the upload phase begins.
+* **Camera previews** keep the same MJPEG browser URL (`/api/cameras/<name>/stream`). While no session owns the cameras, the UI opens direct previews lazily. While a follower plugin owns them, the UI proxies images already acquired by that plugin's observation loop. Previews target 10 fps independently of the recording rate, and continue through resets while observations are acquired. There is only one capture owner at a time; the UI confirms that its direct captures have stopped before the plugin opens its cameras. A preview failure during ownership displays an unavailable tile and never reopens a competing capture.
 * **UI-started sessions get no display**: `DISPLAY` / `WAYLAND_DISPLAY` are stripped from the child environment so LeRobot's recorder does not install its system-wide keyboard hook (Esc / arrows / n / r / q pressed in any window would otherwise end or skip an episode). Sessions are driven by the UI buttons only.
-  They are released automatically while a record/teleoperate/rollout session runs, because the
-  LeRobot child process needs exclusive access to the V4L2 devices.
 
 ## Pages
 
@@ -49,7 +47,7 @@ Navigation is a fixed left sidebar; the theme switcher (Light / Dark / System) l
 src/yamkit/ui/
   server.py     FastAPI app: /api/* endpoints + serves the frontend
   sessions.py   SessionManager (one yamkit child process, log ring buffer, output parsers)
-  camstream.py  MJPEG camera hub (lazy open, idle release, suspend while recording)
+  camstream.py  direct MJPEG camera hub (lazy open, confirmed release during session ownership)
   catalog.py    read-only scanners: datasets / models / deployment records
 ui/             standalone frontend (vanilla HTML/JS/CSS, no build step)
 tests/test_ui.py  hardware-free tests (parsers, sessions with stub children, API via TestClient)
@@ -61,3 +59,100 @@ and `/api/overview` (5 s). Chart colors are the validated categorical pair per t
 font is vendored at `ui/InterVariable.woff2`, so the UI needs no network access.
 
 Screenshots (light + dark for every page): `docs/ui-screenshots/<page>-<theme>.png`.
+
+## Camera previews during sessions
+
+The follower's existing observation path hands the acquired image to the optional preview
+publisher after assigning it to the observation. It performs no extra camera read. Demand and
+rate checks run before the publisher makes a private image copy; copying selected frames also
+protects against cameras or callers reusing an owning NumPy buffer. Observations, dataset images,
+camera settings, and control behavior are unchanged. The observation thread does no encoding,
+color conversion, socket/file I/O, or per-frame logging. Preview errors are contained.
+
+One background worker converts RGB/BGR as needed and encodes JPEG once per selected frame.
+Each camera has one replaceable pending image and one latest JPEG; there is at most one image
+being encoded by the worker. Viewers share the JPEG and skip superseded frames. Connections,
+send buffers, and socket waits are bounded, so a slow browser does not create an image queue.
+Closing the publisher is bounded too. The benchmark and its scope are documented in
+[`preview-benchmark.md`](preview-benchmark.md).
+
+The UI supplies a random per-session token and session ID through `YAMKIT_PREVIEW_TOKEN` and
+`YAMKIT_PREVIEW_SESSION`. The child binds its small MJPEG server to `127.0.0.1` on an OS-assigned
+port and registers it with one versioned `@yamkit-preview/1` JSON stdout line containing the
+session, camera owner, port, and camera names. The token is sent only in the authentication
+header, never in the registration line, browser URL, or logs. SessionManager parses this protocol explicitly.
+The parent accepts only its active session's validated loopback endpoint and known cameras;
+it does not accept arbitrary URLs or follow redirects.
+
+Camera ownership is a separate claim/release handshake from preview registration. Before
+acquisition, the plugin sends a versioned `@yamkit-cameras/1` ownership claim on stdout and waits
+up to 15 seconds for the parent's JSON stdin acknowledgement that direct captures have released
+their devices. Each claim/acknowledgement identifies both the session and the camera owner.
+Release is reported only after plugin camera disconnect completes. This follows actual camera ownership, so a
+command that does not connect cameras leaves direct previews available. Registration does not
+grant ownership, and loss of preview transport does not release it. Confirmed process-group
+death also clears ownership and registration after a crash. Rapid session changes reject
+previous registrations and stop previous streams.
+
+Tiles show **waiting** before their first published frame and **stale** when acquisition stops
+producing fresh frames (currently after one second), or **unavailable** after a preview failure.
+If the camera owner never registers a preview, waiting becomes unavailable after ten seconds.
+Source sequence and age belong to the acquired image; reconnecting or replaying an old image
+does not make it fresh. A stale last image can remain visible with its state label.
+Failed or stale streams retry at two-second intervals. Healthy streams renew every thirty
+seconds to recover silent MJPEG disconnects that a browser may not report as errors.
+
+In pinned LeRobot 0.6.1, the reset interval runs the same `record_loop` with `dataset=None`.
+That loop still calls `robot.get_observation()`, so previews keep updating during a normal
+reset. `dataset.save_episode()` and `dataset.finalize()` can pause the observation loop;
+the UI reports stale images during such pauses. It does not start a second camera reader to
+hide them. LeRobot disconnects the robot before its optional Hub upload; the explicit camera
+release restores direct previews even when the upload process is still running. A progress
+message about saving or uploading alone is insufficient to release cameras.
+
+## Supervised camera acceptance (manual only)
+
+**Do not run this checklist automatically.** Teleoperation and recording can energise and move
+the arms. A person at the rig must supervise the existing hardware controls and keep the work
+area clear. No physical acceptance is included in the automated tests or synthetic benchmark.
+
+1. **Idle:** Open Live/Record and confirm top, left_wrist, and right_wrist show the expected
+   physical views. Open a second browser window and confirm both windows update.
+2. **Teleop:** Start the existing Teleop action with supervision. Confirm previews match actual
+   ownership: direct views continue if that command does not acquire cameras; a camera-owning
+   follower session uses its acquired images. Confirm the existing engage/Stop behavior.
+3. **Record:** Stop teleop, start a short recording with at least two episodes, and confirm all
+   three tiles resume from the recording images without camera-busy errors. Confirm the saved
+   dataset's resolution, fps, image colors, and camera keys remain correct. Close/reopen a
+   viewer and use multiple windows; recording should continue.
+4. **Reset:** Between episodes, move an object in each view and confirm previews update during
+   the reset. During any long save/finalize pause, confirm age grows and the tile becomes stale;
+   fresh frames should restore the live state when acquisition resumes.
+5. **Upload:** If the operator has separately chosen a Hub upload, confirm direct previews return
+   after camera disconnect while upload progress is still visible. Do not infer release from
+   the start of saving or uploading. This step needs an explicitly authorised upload and may
+   be recorded as unverified when only local storage is used.
+6. **Idle:** Stop/end the session and confirm direct views reconnect. With the rig safely idle,
+   repeat a short start/stop and browser reconnect to check for stale ownership or registrations.
+
+Record observed behavior and any missing checks; synthetic results do not establish physical
+camera compatibility, control-loop timing, real recording throughput, or upload performance.
+
+## Hardware-free validation
+
+On 2026-09-05, `make test` passed **151 tests in 34.74 seconds** with an isolated, offline
+Hugging Face environment. One existing Starlette/httpx deprecation warning remained.
+`make lint`, benchmark-script Ruff, and `git diff --check` passed.
+
+A Chrome 152 smoke run through the actual frontend, SessionManager, and HTTP proxy passed
+**14 checks with zero JavaScript exceptions**. Direct captures and the child camera sources
+were synthetic; attempts to create a physical capture were trapped. It checked idle views,
+dynamic ownership for a camera-owning teleop command, waiting/live states, stable connections,
+browser reload, publisher failure without direct fallback, recording/reset frames, increasing
+stale age during a pause, and direct previews during simulated upload only after lease release.
+The three healthy MJPEG images retained their DOM nodes and URLs for 4.3 seconds even though
+Chrome reported `complete=true`; that property is not treated as an ended stream.
+
+The [synthetic benchmark](preview-benchmark.md) records handoff/loop percentiles, CPU, memory,
+and drops for three 640×480 RGB sources at 30 Hz. These checks did not exercise physical arms,
+USB cameras, real recording throughput, or a real Hub upload.

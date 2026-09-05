@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import signal
 import subprocess
 import sys
@@ -19,13 +20,12 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
 
-# Modes whose child process opens the rig cameras (the UI's own streams must let go first).
-CAMERA_MODES = frozenset({"record", "teleoperate", "rollout"})
 # Modes that energise motors (gravity-comp on connect; teleop/record/rollout also move them).
 HARDWARE_MODES = frozenset({"read", "teleop", "teleoperate", "record", "rollout", "rest"})
 
@@ -42,6 +42,52 @@ _UPLOAD_RE = re.compile(r"\[yamkit\] recording finished")  # recorder exited; on
 # `yamkit policy-check` table rows
 _FIRST_CALL_RE = re.compile(r"first call.*?([\d.]+)\s*ms")
 _NEXT_CALLS_RE = re.compile(r"next calls.*?│([^│]*)")
+_OWNERSHIP_PREFIX = "@yamkit-cameras/1 "
+_PREVIEW_PREFIX = "@yamkit-preview/1 "
+_MAX_CONTROL_LINE = 8192
+PREVIEW_START_TIMEOUT_S = 10.0
+
+
+@dataclass(frozen=True)
+class PreviewRegistration:
+    session: str
+    owner: str
+    port: int
+    cameras: tuple[str, ...]
+    token: str = field(repr=False)
+
+
+def _camera_names(value: Any) -> tuple[str, ...] | None:
+    if not isinstance(value, list) or not 1 <= len(value) <= 32:
+        return None
+    if any(not isinstance(n, str) or not n or len(n) > 128 or "/" in n or "\\" in n for n in value):
+        return None
+    if len(set(value)) != len(value):
+        return None
+    return tuple(value)
+
+
+def _group_alive(pid: int) -> bool:
+    """The launcher can exit before its recorder. Zombies no longer hold devices."""
+    proc_root = Path("/proc")
+    if proc_root.is_dir():
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+                if int(fields[2]) == pid and fields[0] != "Z":
+                    return True
+            except (OSError, ValueError, IndexError):
+                continue
+        return False
+    try:
+        os.killpg(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
 
 
 def parse_line(line: str, parsed: dict[str, Any]) -> None:
@@ -118,14 +164,29 @@ class SessionManager:
         on_start: Callable[[str], None] | None = None,
         on_exit: Callable[[dict[str, Any]], None] | None = None,
         on_phase: Callable[[str, str], None] | None = None,
+        on_camera_acquire: Callable[[str], bool | None] | None = None,
+        on_camera_release: Callable[[str], Any] | None = None,
     ) -> None:
         self._python = python
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._proc: subprocess.Popen | None = None
         self._reader: threading.Thread | None = None
         self.on_start = on_start
         self.on_exit = on_exit
         self.on_phase = on_phase
+        self.on_camera_acquire = on_camera_acquire
+        self.on_camera_release = on_camera_release
+        self._session = ""
+        self._token = ""
+        self._finishing = False
+        self._camera_owner: str | None = None
+        self._camera_names: tuple[str, ...] = ()
+        self._owner_confirmed = False
+        self._camera_claimed_at: float | None = None
+        self._seen_owners: set[str] = set()
+        self._preview: PreviewRegistration | None = None
+        self._preview_registered = False
+        self.preview_generation = 0
         self.log: deque[str] = deque(maxlen=log_lines)
         self.parsed: dict[str, Any] = {}
         self.mode: str | None = None
@@ -142,13 +203,35 @@ class SessionManager:
     # ----- lifecycle --------------------------------------------------------------------------
     @property
     def active(self) -> bool:
-        return self._proc is not None and self._proc.poll() is None
+        return self._proc is not None and (self._proc.poll() is None or self._finishing)
+
+    @property
+    def cameras_owned(self) -> bool:
+        return self._camera_owner is not None
+
+    @property
+    def preview_starting(self) -> bool:
+        return (self._camera_claimed_at is not None
+                and time.monotonic() - self._camera_claimed_at < PREVIEW_START_TIMEOUT_S)
+
+    def preview_registration(self, name: str | None = None) -> PreviewRegistration | None:
+        with self._lock:
+            reg = self._preview
+            if reg is None or not self.active or (name is not None and name not in reg.cameras):
+                return None
+            return reg
+
+    def preview_is_current(self, reg: PreviewRegistration) -> bool:
+        with self._lock:
+            return self.active and self._preview is reg and self._camera_owner == reg.owner
 
     def start(self, mode: str, argv: list[str], meta: dict[str, Any] | None = None) -> dict[str, Any]:
         with self._lock:
             if self.active:
                 raise RuntimeError(f"a {self.mode!r} session is already running (stop it first)")
             env = dict(os.environ, PYTHONUNBUFFERED="1", COLUMNS="300", NO_COLOR="1")
+            session, token = secrets.token_hex(16), secrets.token_urlsafe(32)
+            env.update(YAMKIT_PREVIEW_SESSION=session, YAMKIT_PREVIEW_TOKEN=token)
             # LeRobot's recorder grabs the keyboard system-wide when it sees a display (Esc / arrows /
             # n / r / q in *any* window would end or skip an episode). Sessions started from the UI
             # are controlled by the UI's buttons only.
@@ -163,43 +246,168 @@ class SessionManager:
             self.started_at = time.time()
             self.ended_at = self.returncode = None
             self.stopping = False
+            self._session, self._token = session, token
+            self._preview = None
+            self._preview_registered = False
+            self._seen_owners.clear()
+            self.preview_generation += 1
             self.log.append("$ " + " ".join(argv))
-            self._proc = subprocess.Popen(
-                argv,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                env=env,
-                start_new_session=True,  # own process group → signals reach lerobot children too
+            try:
+                self._proc = subprocess.Popen(
+                    argv,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    env=env,
+                    start_new_session=True,  # own group → signals reach LeRobot children too
+                )
+            except Exception:
+                self._proc = None
+                self.ended_at = time.time()
+                self.returncode = -1
+                self._session = self._token = ""
+                if self.on_exit:
+                    self.on_exit(self.status())
+                raise
+            self._finishing = True
+            group_gone = threading.Event()
+            threading.Thread(
+                target=self._watch_process, args=(self._proc, group_gone), daemon=True,
+            ).start()
+            self._reader = threading.Thread(
+                target=self._read_output, args=(self._proc, session, group_gone), daemon=True,
             )
-            self._reader = threading.Thread(target=self._read_output, args=(self._proc,), daemon=True)
             self._reader.start()
         return self.status()
 
-    def _read_output(self, proc: subprocess.Popen) -> None:
+    def _watch_process(self, proc: subprocess.Popen, group_gone: threading.Event) -> None:
+        proc.wait()
+        # A crashed launcher can leave a recorder holding devices and/or stdout open. Terminate
+        # that group before declaring ownership released. Never fall back to direct capture early.
+        if _group_alive(proc.pid):
+            self._signal(proc, signal.SIGTERM)
+            deadline = time.monotonic() + 2.0
+            while _group_alive(proc.pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if _group_alive(proc.pid):
+                self._signal(proc, signal.SIGKILL)
+        while _group_alive(proc.pid):
+            time.sleep(0.1)
+        group_gone.set()
+
+    def _read_output(self, proc: subprocess.Popen, session: str, group_gone: threading.Event) -> None:
         assert proc.stdout is not None
         for raw in proc.stdout:
             line = raw.rstrip("\n")
-            if line.strip():
-                self.log.append(line)
-                before = self.parsed.get("phase")
-                try:
-                    parse_line(line, self.parsed)
-                except Exception:
-                    log.debug("unparseable line: %r", line, exc_info=True)
-                if self.on_phase and self.parsed.get("phase") != before:
+            with self._lock:
+                if self._proc is not proc or self._session != session:
+                    continue
+                if self._control_line(line, proc):
+                    continue
+                if line.strip():
+                    line = line.replace(self._token, "[redacted]") if self._token else line
+                    self.log.append(line)
+                    before = self.parsed.get("phase")
                     try:
-                        self.on_phase(self.mode or "", self.parsed.get("phase") or "")
+                        parse_line(line, self.parsed)
                     except Exception:
-                        log.exception("session on_phase hook failed")
-        proc.wait()
-        self.ended_at = time.time()
-        self.returncode = proc.returncode
-        if self.on_exit:
+                        log.debug("unparseable session line", exc_info=True)
+                    if self.on_phase and self.parsed.get("phase") != before:
+                        try:
+                            self.on_phase(self.mode or "", self.parsed.get("phase") or "")
+                        except Exception:
+                            log.exception("session on_phase hook failed")
+        group_gone.wait()
+        with self._lock:
+            if self._proc is not proc or self._session != session:
+                return
+            self._release_cameras()
+            self._finishing = False
+            self.ended_at = time.time()
+            self.returncode = proc.returncode
+            self._token = ""
+            if proc.stdin:
+                proc.stdin.close()
+            proc.stdout.close()
+            if self.on_exit:
+                try:
+                    self.on_exit(self.status())
+                except Exception:
+                    log.exception("session on_exit hook failed")
+
+    def _control_line(self, line: str, proc: subprocess.Popen) -> bool:
+        """Consume the two explicit control protocols; never place protocol data in logs."""
+        if not line.startswith(("@yamkit-preview/", "@yamkit-cameras/")):
+            return False
+        prefix = next((p for p in (_OWNERSHIP_PREFIX, _PREVIEW_PREFIX) if line.startswith(p)), None)
+        if prefix is None or len(line) > _MAX_CONTROL_LINE:
+            return True
+        try:
+            msg = json.loads(line[len(prefix):])
+        except (ValueError, RecursionError):
+            return True
+        if not isinstance(msg, dict) or msg.get("v") != 1 or msg.get("session") != self._session:
+            return True
+        owner = msg.get("owner")
+        if not isinstance(owner, str) or not 1 <= len(owner) <= 128:
+            return True
+        if prefix == _PREVIEW_PREFIX:
+            names, port = _camera_names(msg.get("cameras")), msg.get("port")
+            if (
+                owner != self._camera_owner or not self._owner_confirmed or self._preview_registered
+                or names is None or set(names) != set(self._camera_names)
+                or type(port) is not int or not 1 <= port <= 65535
+            ):
+                return True
+            self._preview = PreviewRegistration(self._session, owner, port, names, self._token)
+            self._preview_registered = True
+            self.preview_generation += 1
+            return True
+        event = msg.get("event")
+        if event == "release":
+            if owner == self._camera_owner and self._owner_confirmed:
+                self._release_cameras()
+            return True
+        if event != "acquire":
+            return True
+        names = _camera_names(msg.get("cameras"))
+        ok = False
+        if names and self._camera_owner is None and owner not in self._seen_owners:
+            self._seen_owners.add(owner)
+            self._camera_owner, self._camera_names = owner, names
+            self._camera_claimed_at = time.monotonic()
+            self._preview_registered = False
+            self.preview_generation += 1
             try:
-                self.on_exit(self.status())
+                ok = self.on_camera_acquire is None or self.on_camera_acquire(owner) is not False
             except Exception:
-                log.exception("session on_exit hook failed")
+                log.warning("camera release confirmation failed", exc_info=True)
+            self._owner_confirmed = ok
+        try:
+            assert proc.stdin is not None
+            proc.stdin.write(json.dumps({"session": self._session, "owner": owner, "ok": ok}) + "\n")
+            proc.stdin.flush()
+        except (OSError, ValueError):
+            pass  # Retain ownership until the child/group is confirmed gone.
+        return True
+
+    def _release_cameras(self) -> None:
+        owner = self._camera_owner
+        self._preview = None
+        self._preview_registered = False
+        if owner is None:
+            return
+        if self.on_camera_release:
+            try:
+                self.on_camera_release(owner)
+            except Exception:
+                log.exception("camera resume hook failed")
+        self._camera_owner = None
+        self._camera_names = ()
+        self._owner_confirmed = False
+        self._camera_claimed_at = None
+        self.preview_generation += 1
 
     def stop(self, grace_s: float | None = None) -> dict[str, Any]:
         """SIGINT the child's process group (= Ctrl-C), escalate in the background if it hangs.
@@ -208,7 +416,7 @@ class SessionManager:
         Hub afterwards (10 min); calling stop() again sends a second SIGINT, which makes the CLIs
         release the arms immediately."""
         proc = self._proc
-        if proc is None or proc.poll() is not None:
+        if proc is None or not self.active:
             return self.status()
         if grace_s is None:
             grace_s = 600.0 if self.mode in ("record", "push", "pull") else 30.0
@@ -219,29 +427,39 @@ class SessionManager:
 
     def _escalate(self, proc: subprocess.Popen, grace_s: float) -> None:
         for sig, wait in ((signal.SIGTERM, grace_s), (signal.SIGKILL, 4.0)):
-            try:
-                proc.wait(timeout=wait)
+            deadline = time.monotonic() + wait
+            while _group_alive(proc.pid) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            if not _group_alive(proc.pid):
                 return
-            except subprocess.TimeoutExpired:
-                self._signal(proc, sig)
-        proc.wait()
+            self._signal(proc, sig)
 
     @staticmethod
     def _signal(proc: subprocess.Popen, sig: int) -> None:
         try:
-            os.killpg(os.getpgid(proc.pid), sig)
+            os.killpg(proc.pid, sig)
         except (ProcessLookupError, PermissionError):
             pass
 
     def wait(self, timeout: float | None = None) -> int | None:
+        started = time.monotonic()
         if self._proc is not None:
             try:
                 self._proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 pass
             if self._reader is not None:
-                self._reader.join(timeout=2.0)
+                remaining = None if timeout is None else max(0.0, timeout - (time.monotonic() - started))
+                self._reader.join(timeout=remaining)
         return self.returncode
+
+    def close(self, timeout: float = 2.0) -> bool:
+        """Request normal hardware shutdown, with bounded waiting and unchanged stop grace."""
+        self.stop()
+        reader = self._reader
+        if reader is not None and reader is not threading.current_thread():
+            reader.join(timeout=max(0.0, timeout))
+        return not self.active
 
     # ----- reporting --------------------------------------------------------------------------
     def status(self) -> dict[str, Any]:
@@ -258,6 +476,8 @@ class SessionManager:
             ),
             "returncode": self.returncode,
             "stopping": self.stopping and active,
+            "cameras_owned": self.cameras_owned,
+            "preview_generation": self.preview_generation,
             "meta": self.meta,
             "parsed": self.parsed,
             "phase_elapsed_s": round(now - self.parsed["phase_since"], 1) if active and self.parsed.get("phase_since") else None,

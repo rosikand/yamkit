@@ -21,8 +21,10 @@ from lerobot.utils.decorators import check_if_already_connected, check_if_not_co
 from lerobot.utils.errors import DeviceNotConnectedError
 
 from yamkit.arm import YamArm, go_home_all, resolve_channel
+from yamkit.camera_ownership import claim_from_env
 from yamkit.cameras import camera_configs_from_dicts
 from yamkit.config import N_JOINTS, RigConfig
+from yamkit.preview import NullPreview, start_from_env
 from yamkit.validation import finite_scalar
 
 from .config_yam_follower import BiYamFollowerConfig, YamFollowerConfig
@@ -119,20 +121,13 @@ def _home_together(handles) -> None:
         go_home_all(jobs)
 
 
-def _disconnect(handles, opened_cameras: list, *, home: bool) -> None:
+def _disconnect(handles, disconnect_cameras, *, home: bool) -> None:
     """Attempt every resource even if homing, camera cleanup or cancellation fails."""
     errors: list[BaseException] = []
-    failed_cameras = []
-    while opened_cameras:
-        cam = opened_cameras.pop()
-        try:
-            cam.disconnect()
-        except DeviceNotConnectedError:
-            pass  # LeRobot may already have cleaned up its own failed connect.
-        except BaseException as e:  # noqa: BLE001 — re-raised after every resource is attempted
-            errors.append(e)
-            failed_cameras.append(cam)
-    opened_cameras.extend(reversed(failed_cameras))  # retain failed resources so teardown can retry
+    try:
+        disconnect_cameras()
+    except BaseException as e:  # noqa: BLE001 — release every arm even if camera teardown fails
+        errors.append(e)
     if home and not errors:
         try:
             _home_together(handles)
@@ -155,7 +150,85 @@ def _rig_cameras(rig: RigConfig, config) -> dict:
     return camera_configs_from_dicts(rig.cameras) if config.use_rig_cameras else {}
 
 
-class YamFollower(Robot):
+class _CameraPreview:
+    """The existing observation owns acquisition; previews only receive its frames."""
+
+    def _init_preview(self) -> None:
+        self._preview = NullPreview()
+        self._camera_lease = None
+        self._opened_cameras = []
+
+    def _connect_cameras(self) -> None:
+        # A UI child waits here until every direct capture has released its device.
+        # Camera-free commands never claim ownership, regardless of command name.
+        self._camera_lease = claim_from_env(list(self.cameras))
+        try:
+            for cam in self.cameras.values():
+                self._opened_cameras.append(cam)  # include a partially failed connect in cleanup
+                cam.connect()
+        except BaseException:
+            try:
+                self._disconnect_cameras()
+            except BaseException:  # noqa: BLE001 — preserve the original acquisition failure
+                logger.warning("camera startup cleanup incomplete; ownership retained until process exit")
+            raise
+        try:
+            modes = {key: getattr(cfg, "color_mode", "rgb") for key, cfg in self.camera_configs.items()}
+            self._preview = start_from_env(modes, owner=self._camera_lease.owner)
+        except Exception:  # noqa: BLE001 — optional previews cannot prevent acquisition
+            logger.warning("camera previews unavailable; continuing acquisition")
+
+    def _camera_observation(self, obs: dict) -> None:
+        for key, cam in self.cameras.items():
+            frame = cam.read_latest()
+            obs[key] = frame
+            try:
+                source_time = None
+                # LeRobot 0.6.1 publishes pixels and perf_counter timestamp together.
+                # Read metadata only if immediately available and still for this frame.
+                lock = getattr(cam, "frame_lock", None) if self._preview.enabled else None
+                if lock is not None and lock.acquire(blocking=False):
+                    try:
+                        if (getattr(cam, "latest_frame", None) is frame
+                                or getattr(cam, "latest_color_frame", None) is frame):
+                            source_time = getattr(cam, "latest_timestamp", None)
+                    finally:
+                        lock.release()
+                self._preview.offer(key, frame, source_time=source_time)
+            except Exception:  # noqa: BLE001, S110 — no logging or failures on observation thread
+                pass  # even a replacement hook must not interrupt recording
+
+    def _disconnect_cameras(self) -> None:
+        failure = None
+        failed_cameras = []
+        for cam in self._opened_cameras:
+            reader = getattr(cam, "thread", None)
+            try:
+                try:
+                    cam.disconnect()
+                except DeviceNotConnectedError:
+                    pass  # LeRobot may have cleaned up a partially failed connect.
+                if cam.is_connected or (reader is not None and reader.is_alive()):
+                    raise RuntimeError("camera release could not be confirmed")
+            except BaseException as exc:  # noqa: BLE001 — disconnect all cameras, then re-raise
+                failure = failure or exc
+                failed_cameras.append(cam)
+        self._opened_cameras[:] = failed_cameras
+        try:
+            self._preview.close()
+        except Exception:  # noqa: BLE001, S110 — preview cleanup must not retain camera ownership
+            pass
+        self._preview = NullPreview()
+        if failure is not None:
+            # The parent keeps direct capture suspended until process exit in this case.
+            raise failure
+        self._opened_cameras.clear()
+        if self._camera_lease is not None:
+            self._camera_lease.release()
+            self._camera_lease = None
+
+
+class YamFollower(_CameraPreview, Robot):
     config_class = YamFollowerConfig
     name = "yam_follower"
 
@@ -167,7 +240,7 @@ class YamFollower(Robot):
         self._h = _FollowerHandle(self.rig, config.arm, config.max_joint_speed, config.max_gripper_speed)
         self.camera_configs = _rig_cameras(self.rig, config)
         self.cameras = make_cameras_from_configs(self.camera_configs)
-        self._opened_cameras: list = []
+        self._init_preview()
 
     @property
     def _motors_ft(self) -> dict[str, type]:
@@ -196,9 +269,7 @@ class YamFollower(Robot):
             raise RuntimeError("previous resources remain open; call disconnect(home=False) before reconnecting")
         try:
             self._h.connect()
-            for cam in self.cameras.values():
-                self._opened_cameras.append(cam)  # include a camera whose connect fails partway
-                cam.connect()
+            self._connect_cameras()
         except BaseException:
             try:
                 self.disconnect(home=False)
@@ -220,8 +291,7 @@ class YamFollower(Robot):
     @check_if_not_connected
     def get_observation(self) -> RobotObservation:
         obs: dict = self._h.observation()
-        for key, cam in self.cameras.items():
-            obs[key] = cam.read_latest()
+        self._camera_observation(obs)
         return obs
 
     @check_if_not_connected
@@ -230,11 +300,11 @@ class YamFollower(Robot):
 
     def disconnect(self, *, home: bool = True) -> None:
         """Release all resources; ``home=False`` skips the normal return-home move."""
-        _disconnect([self._h], self._opened_cameras, home=home)
+        _disconnect([self._h], self._disconnect_cameras, home=home)
         logger.info("%s disconnected", self)
 
 
-class BiYamFollower(Robot):
+class BiYamFollower(_CameraPreview, Robot):
     """Two YAM followers; keys prefixed ``left_`` / ``right_``; cameras unprefixed."""
 
     config_class = BiYamFollowerConfig
@@ -253,7 +323,7 @@ class BiYamFollower(Robot):
         }
         self.camera_configs = _rig_cameras(self.rig, config)
         self.cameras = make_cameras_from_configs(self.camera_configs)
-        self._opened_cameras: list = []
+        self._init_preview()
 
     @property
     def _motors_ft(self) -> dict[str, type]:
@@ -284,9 +354,7 @@ class BiYamFollower(Robot):
             for h in self._sides.values():
                 h.connect(home=False)
             _home_together(self._sides.values())  # both arms park at the same time
-            for cam in self.cameras.values():
-                self._opened_cameras.append(cam)
-                cam.connect()
+            self._connect_cameras()
         except BaseException:
             try:
                 self.disconnect(home=False)
@@ -310,8 +378,7 @@ class BiYamFollower(Robot):
         obs: dict = {}
         for side, h in self._sides.items():
             obs.update({f"{side}_{k}": v for k, v in h.observation().items()})
-        for key, cam in self.cameras.items():
-            obs[key] = cam.read_latest()
+        self._camera_observation(obs)
         return obs
 
     @check_if_not_connected
@@ -332,5 +399,5 @@ class BiYamFollower(Robot):
 
     def disconnect(self, *, home: bool = True) -> None:
         """Release all resources; ``home=False`` skips the normal return-home move."""
-        _disconnect(self._sides.values(), self._opened_cameras, home=home)
+        _disconnect(self._sides.values(), self._disconnect_cameras, home=home)
         logger.info("%s disconnected", self)

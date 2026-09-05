@@ -64,7 +64,7 @@ async function refreshSession() {
   updateSidebar();
   document.dispatchEvent(new CustomEvent("session"));
   // a session starting, ending or handing the cameras back changes what the tiles should show: refresh now
-  const key = `${session.active}|${session.mode}|${session.parsed?.phase || ""}`;
+  const key = `${session.active}|${session.mode}|${session.parsed?.phase || ""}|${session.preview_generation || 0}`;
   if (key !== lastSessionKey) { lastSessionKey = key; refreshOverview(); }
 }
 function updateSidebar() {
@@ -99,28 +99,70 @@ function cameraNames() {
   return ordered.slice(0, 3).map((n) => ({ name: n, configured: true }));
 }
 
-const camsBusy = () => overview?.cameras?.[0]?.suspended_by || "";
 let camsRendered = null;
-// The tiles are plain MJPEG <img> streams (/api/cameras/<name>/stream). They are re-rendered only when
-// the camera list or its owner changes: a session that owns the devices replaces them with a
-// placeholder, and they reconnect by themselves when it hands the cameras back.
+const cameraKey = () => (overview?.cameras || []).map((c) =>
+  `${c.name}:${c.preview_source || "direct"}:${c.preview_generation || 0}`).join("|");
+
+// Poll status only; pixels remain one MJPEG connection per visible tile.
+async function refreshCameras() {
+  if (!$("#cams-slot")) return;
+  try {
+    const cameras = await api("/cameras");
+    if (overview) overview.cameras = cameras;
+    syncCams();
+  } catch {
+    document.querySelectorAll(".cam .preview-state").forEach((el) => {
+      el.textContent = "preview unavailable";
+    });
+  }
+}
+function cameraStreamError(img) {
+  img.dataset.retryAt = String(Date.now() + 2000);
+  const state = $(".preview-state", img.parentElement);
+  if (state) state.textContent = "preview unavailable · reconnecting";
+}
+function cameraStateText(c) {
+  const state = c.preview_state || (c.error ? "unavailable" : c.streaming ? "live" : "waiting");
+  const age = c.frame_age_s;
+  if (state === "stale") return `stale · last frame ${age == null ? "age unknown" : age.toFixed(1) + " s ago"}`;
+  if (state === "unavailable") return "preview unavailable · reconnecting";
+  if (state === "waiting" || state === "idle") return "waiting for frames";
+  return c.preview_source === "session" ? "live · session camera" : "live";
+}
 function syncCams() {
   const slot = $("#cams-slot");
   if (!slot) return;
-  const key = camsBusy() + "|" + (overview?.cameras || []).map((c) => c.name).join(",");
-  if (key !== camsRendered) { slot.innerHTML = camsHTML(); }
+  if (cameraKey() !== camsRendered) slot.innerHTML = camsHTML();
+  slot.querySelectorAll(".cam").forEach((tile) => {
+    const c = (overview?.cameras || []).find((item) => item.name === tile.dataset.cam);
+    if (!c) return;
+    const img = $("img", tile);
+    const label = $(".preview-state", tile);
+    if (label) label.textContent = cameraStateText(c);
+    if (!img) return;
+    // Native MJPEG images can report complete=true while still streaming. Use source status
+    // and errors for quick retries; a slow renewal also recovers a silently ended response.
+    const now = Date.now();
+    const retry = +img.dataset.retryAt || 0;
+    const elapsed = now - (+img.dataset.connectedAt || 0);
+    const needsFrames = c.preview_state && c.preview_state !== "live";
+    if ((retry && now >= retry) || (!retry && needsFrames && elapsed > 2000) || elapsed > 30000) {
+      delete img.dataset.retryAt;
+      img.dataset.connectedAt = String(now);
+      img.src = `/api/cameras/${encodeURIComponent(c.name)}/stream?generation=${c.preview_generation || 0}&retry=${now}`;
+    }
+  });
 }
 function camsHTML() {
-  const cams = cameraNames();
-  const busy = camsBusy();
-  camsRendered = busy + "|" + (overview?.cameras || []).map((c) => c.name).join(",");
-  return `<div class="cams">` + cams.map((c) => `
+  camsRendered = cameraKey();
+  return `<div class="cams">` + cameraNames().map((c) => `
     <div class="cam" data-cam="${esc(c.name)}">
       <span class="label">${esc(c.name)}</span>
-      ${c.configured && !busy
+      ${c.configured
         ? `<img src="/api/cameras/${encodeURIComponent(c.name)}/stream" alt="${esc(c.name)}"
-             onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'placeholder',textContent:'no signal'}))" />`
-        : `<div class="placeholder">${busy ? `in use by ${esc(busy)} session` : "no camera configured in rig.yaml"}</div>`}
+             data-connected-at="${Date.now()}" onerror="cameraStreamError(this)" />
+           <span class="preview-state">waiting for frames</span>`
+        : `<div class="placeholder">no camera configured in rig.yaml</div>`}
     </div>`).join("") + `</div>`;
 }
 
@@ -888,4 +930,5 @@ document.querySelectorAll("#theme-switch button").forEach((b) => {
   route();
   setInterval(refreshSession, 1000);
   setInterval(refreshOverview, 5000);
+  setInterval(refreshCameras, 1000);
 })();
