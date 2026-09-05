@@ -192,6 +192,44 @@ def test_rapid_sessions_invalidate_registration_and_redact_token():
         previous = reg
 
 
+def test_child_credentials_are_redacted_from_commands_logs_and_structured_results(monkeypatch, tmp_path):
+    from yamkit import hub
+
+    credentials = {
+        "YAMKIT_OPENAI_API_KEY": "DUMMY_OPENAI_PARENT_KEY",
+        "OPENAI_API_KEY": "DUMMY_OPENAI_FALLBACK_KEY",
+        "MODAL_TOKEN_ID": "DUMMY_MODAL_ID",
+        "MODAL_TOKEN_SECRET": 'DUMMY_MODAL_"quoted"/é\\backslash\rDUMMY_CR_PART\nDUMMY_NL_PART',
+        "HF_TOKEN": "DUMMY_HF_ENV_KEY",
+        "HUGGING_FACE_HUB_TOKEN": "DUMMY_HF_ALTERNATE_KEY",
+        "HF_NAMESPACE": "DUMMY_HF_NAMESPACE",
+    }
+    for name, value in credentials.items():
+        monkeypatch.setenv(name, value)
+    token_path = tmp_path / "hf-token"
+    token_path.write_text("DUMMY_HF_FILE_KEY")
+    monkeypatch.setattr(hub, "get_token", token_path.read_text)
+    values = [*credentials.values(), token_path.read_text()]
+    # Literals in argv verify command rendering too; these are dummy credentials.
+    body = (
+        "import json; values=" + repr(values) + "; "
+        "[print(value) for value in values]; "
+        "[print(json.dumps(value,ensure_ascii=flag)) for value in values for flag in (True,False)]; "
+        "[print(json.dumps(json.dumps(value))) for value in values]; "
+        "print('[yamkit-result] '+json.dumps({'safe':123,'echoed':values}))"
+    )
+    manager = child_manager(body)
+    assert manager.wait(5) == 0
+    status = json.dumps(manager.status(), ensure_ascii=False)
+    for value in values:
+        for fragment in (value, *value.splitlines()):
+            assert fragment not in status
+            assert json.dumps(fragment)[1:-1] not in status
+    assert manager.parsed["result"] == {"safe": 123, "echoed": ["[redacted]"] * len(values)}
+    assert "[redacted]" in manager.log[0]
+    assert all(os.environ[name] == value for name, value in credentials.items())
+
+
 @pytest.mark.skipif(not os.path.isdir("/proc"), reason="Linux process group/zombie inspection")
 def test_launcher_crash_holds_ownership_until_descendant_exits(tmp_path):
     ready = tmp_path / "descendant-ready"

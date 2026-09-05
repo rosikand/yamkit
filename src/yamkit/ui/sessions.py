@@ -46,6 +46,37 @@ _OWNERSHIP_PREFIX = "@yamkit-cameras/1 "
 _PREVIEW_PREFIX = "@yamkit-preview/1 "
 _MAX_CONTROL_LINE = 8192
 PREVIEW_START_TIMEOUT_S = 10.0
+_CREDENTIAL_NAMES = ("YAMKIT_OPENAI_API_KEY", "OPENAI_API_KEY", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET",
+                     "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_NAMESPACE")
+
+
+def _credential_redactions(environ, preview_token: str) -> tuple[str, ...]:
+    """Handle plain/JSON output and line-oriented streams splitting malformed multiline keys."""
+    from .. import hub
+
+    values = [environ.get(name, "") for name in _CREDENTIAL_NAMES] + [preview_token]
+    # HF's normal token file is equally sensitive; get_token is a local lookup,
+    # not a Hub request. No credential is copied into the environment or metadata.
+    try:
+        values.append(hub.get_token() or "")
+    except Exception:  # noqa: BLE001, S110 — optional lookup errors must not leak credential details
+        pass
+    variants = set()
+    for value in values:
+        if not value:
+            continue
+        for fragment in (value, *value.splitlines()):
+            if not fragment:
+                continue
+            variants.add(fragment)
+            for ensure_ascii in (False, True):
+                encoded = json.dumps(fragment, ensure_ascii=ensure_ascii)[1:-1]
+                variants.add(encoded)
+                variants.add(encoded.replace("/", "\\/"))
+                variants.add(json.dumps(encoded, ensure_ascii=ensure_ascii)[1:-1])
+    # Replace complete values before their components so newline fragments cannot
+    # prevent replacement of the whole JSON-escaped credential.
+    return tuple(sorted(variants, key=len, reverse=True))
 
 
 @dataclass(frozen=True)
@@ -183,6 +214,7 @@ class SessionManager:
         self.on_camera_release = on_camera_release
         self._session = ""
         self._token = ""
+        self._redactions: tuple[str, ...] = ()
         self._finishing = False
         self._camera_owner: str | None = None
         self._camera_names: tuple[str, ...] = ()
@@ -236,6 +268,7 @@ class SessionManager:
                 raise RuntimeError(f"a {self.mode!r} session is already running (stop it first)")
             env = dict(os.environ, PYTHONUNBUFFERED="1", COLUMNS="300", NO_COLOR="1")
             session, token = secrets.token_hex(16), secrets.token_urlsafe(32)
+            self._redactions = _credential_redactions(env, token)
             env.update(YAMKIT_PREVIEW_SESSION=session, YAMKIT_PREVIEW_TOKEN=token)
             env.pop("YAMKIT_OPENAI_API_KEY", None)
             env.pop("DATABASE_URL", None)
@@ -258,7 +291,7 @@ class SessionManager:
             self._preview_registered = False
             self._seen_owners.clear()
             self.preview_generation += 1
-            self.log.append("$ " + " ".join(argv))
+            self.log.append(self._redact("$ " + " ".join(argv)))
             try:
                 self._proc = subprocess.Popen(
                     argv,
@@ -313,7 +346,7 @@ class SessionManager:
                 if self._control_line(line, proc):
                     continue
                 if line.strip():
-                    line = line.replace(self._token, "[redacted]") if self._token else line
+                    line = self._redact(line)
                     self.log.append(line)
                     before = self.parsed.get("phase")
                     try:
@@ -334,6 +367,7 @@ class SessionManager:
             self.ended_at = time.time()
             self.returncode = proc.returncode
             self._token = ""
+            self._redactions = ()
             if proc.stdin:
                 proc.stdin.close()
             proc.stdout.close()
@@ -342,6 +376,12 @@ class SessionManager:
                     self.on_exit(self.status())
                 except Exception:
                     log.exception("session on_exit hook failed")
+
+    def _redact(self, value: str) -> str:
+        for secret in self._redactions:
+            value = value.replace(secret, "[redacted]")
+        # Keep direct protocol/fake-session users protected even without start().
+        return value.replace(self._token, "[redacted]") if self._token else value
 
     def _control_line(self, line: str, proc: subprocess.Popen) -> bool:
         """Consume the two explicit control protocols; never place protocol data in logs."""

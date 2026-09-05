@@ -26,6 +26,17 @@ def credential_status() -> dict[str, str]:
             for key in ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "HF_TOKEN")}
 
 
+def _safe_sdk_error(error: Exception, operation: str) -> Exception:
+    """Keep actionable failure categories without SDK messages, payloads or credentials."""
+    if isinstance(error, TimeoutError):
+        return TimeoutError(f"Modal {operation} timed out")
+    if isinstance(error, PermissionError):
+        return PermissionError(f"Modal {operation} authorization failed")
+    if isinstance(error, ValueError):
+        return ValueError(f"Modal {operation} rejected the request or configuration")
+    return RuntimeError(f"Modal {operation} failed; verify the dedicated service status")
+
+
 def receipt_path() -> Path:
     return OUTPUT_DIR / "modal" / "owned-service.json"
 
@@ -81,13 +92,19 @@ def call(method, *args, timeout: float = 120):
                 except Exception:  # noqa: BLE001, S110 — preserve original error; server has finite timeouts
                     pass
             raise
-    return asyncio.run(invoke())
+    try:
+        return asyncio.run(invoke())
+    except Exception as error:  # noqa: BLE001 — SDK error bodies must not cross into CLI/browser logs
+        raise _safe_sdk_error(error, "request") from None
 
 
 def service_handle(app_name: str, profile_id: str):
     import modal
 
-    return modal.Cls.from_name(app_name, "PolicyService")()
+    try:
+        return modal.Cls.from_name(app_name, "PolicyService")()
+    except Exception as error:  # noqa: BLE001 — lookup can fail before the sanitized request boundary
+        raise _safe_sdk_error(error, "service lookup") from None
 
 
 def prepare(profile_name: str, *, gpu: str = "L40S", development: bool = False,
@@ -120,13 +137,19 @@ def _prepare_locked(profile_name: str, *, gpu: str, development: bool, cache_vol
     _save(receipt)
     app = None
     try:
-        app = create_app(profile_id=profile.id, gpu=gpu, development=development, app_name=app_name,
-                         cache_volume_name=cache_volume_name)
+        try:
+            app = create_app(profile_id=profile.id, gpu=gpu, development=development, app_name=app_name,
+                             cache_volume_name=cache_volume_name)
+        except Exception as error:  # noqa: BLE001 — image/secret construction also invokes the SDK
+            raise _safe_sdk_error(error, "application construction") from None
         receipt["deployment_started"] = True
         _save(receipt)
         async def deploy():
-            async with asyncio.timeout(600):
-                await app.deploy.aio(name=app_name)
+            try:
+                async with asyncio.timeout(600):
+                    await app.deploy.aio(name=app_name)
+            except Exception as error:  # noqa: BLE001 — never display deployment transport error bodies
+                raise _safe_sdk_error(error, "deployment") from None
         asyncio.run(deploy())
         receipt["app_id"] = app.app_id
         _save(receipt)

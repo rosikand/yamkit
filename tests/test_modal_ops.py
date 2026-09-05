@@ -1,12 +1,70 @@
 """Ownership operations are serialized across processes; no tests contact Modal."""
 
 import multiprocessing
+import traceback
 from types import SimpleNamespace
 
 import pytest
 
 from yamkit import modal_ops
 from yamkit.inference.profiles import get_profile
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, ValueError, TimeoutError, PermissionError])
+@pytest.mark.parametrize("phase", ["spawn", "get"])
+def test_sdk_request_error_messages_are_sanitized_and_cancelled(failure, phase):
+    sentinel = "DUMMY_FILE_OR_ENV_CREDENTIAL\\\"\\r\\n_PRIVATE"
+    cancelled = []
+
+    async def get():
+        raise failure(sentinel)
+
+    async def cancel():
+        cancelled.append(True)
+
+    async def spawn():
+        if phase == "spawn":
+            raise failure(sentinel)
+        return SimpleNamespace(get=SimpleNamespace(aio=get), cancel=SimpleNamespace(aio=cancel))
+
+    with pytest.raises(failure) as error:
+        modal_ops.call(SimpleNamespace(spawn=SimpleNamespace(aio=spawn)), timeout=1)
+    rendered = "".join(traceback.format_exception(error.value))
+    assert sentinel not in rendered and "DUMMY_FILE_OR_ENV_CREDENTIAL" not in rendered
+    assert error.value.__suppress_context__
+    assert cancelled == ([True] if phase == "get" else [])
+
+
+def test_sdk_service_lookup_error_is_sanitized(monkeypatch):
+    import sys
+
+    def fail(*args):
+        raise RuntimeError("DUMMY_LOOKUP_CREDENTIAL")
+
+    monkeypatch.setitem(sys.modules, "modal", SimpleNamespace(Cls=SimpleNamespace(from_name=fail)))
+    with pytest.raises(RuntimeError, match="service lookup") as error:
+        modal_ops.service_handle("yamkit-vla-test", "smolvla")
+    assert "DUMMY_LOOKUP_CREDENTIAL" not in "".join(traceback.format_exception(error.value))
+
+
+def test_sdk_deploy_error_is_sanitized_and_owned_cleanup_still_runs(monkeypatch, tmp_path):
+    from yamkit.inference import modal_service
+
+    monkeypatch.setattr(modal_ops, "receipt_path", lambda: tmp_path / "owned-service.json")
+
+    async def deploy(**kwargs):
+        raise RuntimeError("DUMMY_DEPLOY_CREDENTIAL")
+
+    monkeypatch.setattr(modal_service, "create_app", lambda **kwargs: SimpleNamespace(
+        app_id="ap-test", deploy=SimpleNamespace(aio=deploy)))
+    calls = []
+    monkeypatch.setattr(modal_ops.subprocess, "run", lambda argv, **kwargs:
+                        calls.append(argv) or SimpleNamespace(returncode=0, stdout="[]"))
+    with pytest.raises(RuntimeError, match="deployment") as error:
+        modal_ops.prepare("smolvla")
+    assert "DUMMY_DEPLOY_CREDENTIAL" not in "".join(traceback.format_exception(error.value))
+    assert modal_ops.owned_service()["status"] == "stopped"
+    assert any("stop" in argv for argv in calls)
 
 
 def ready(profile_id="smolvla"):
@@ -109,7 +167,7 @@ def test_prepare_failure_cleanup_retains_lock_without_reentrant_deadlock(monkeyp
     monkeypatch.setattr(modal_service, "create_app", fail)
     monkeypatch.setattr(modal_ops.subprocess, "run", lambda argv, **kwargs:
                         pytest.fail("deployment was never invoked; no cloud resource exists"))
-    with pytest.raises(ValueError, match="mocked image"):
+    with pytest.raises(ValueError, match="application construction"):
         modal_ops.prepare("smolvla")
     assert modal_ops.owned_service()["status"] == "stopped"
     assert modal_ops.owned_service()["shutdown_verification"] == "deployment was never invoked"
