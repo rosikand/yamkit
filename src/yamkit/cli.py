@@ -683,6 +683,84 @@ def rollout(
     _exec_lerobot("lerobot_rollout", [*args, *ctx.args], dry_run)
 
 
+@app.command()
+def agent(
+    model: Annotated[str, typer.Option(help="OpenAI model ID with image and function-call support")],
+    task: Annotated[str, typer.Option(help="instruction for this episode")],
+    arm: Annotated[str, typer.Option(help="one follower arm name from the rig")],
+    rig: RigOpt = DEFAULT_RIG,
+    max_steps: Annotated[int, typer.Option(help="maximum model decisions, including invalid/observe-only replies")] = 50,
+    settle_s: Annotated[float, typer.Option(help="settle time after an action, in seconds")] = 0.5,
+    max_joint_delta: Annotated[float, typer.Option(help="maximum joint change per action, in radians")] = 0.10,
+    motion_timeout_s: Annotated[float, typer.Option(help="deadline for each fixed-target motion, in seconds")] = 5.0,
+    api_timeout_s: Annotated[float, typer.Option(help="deadline for each model request, in seconds")] = 30.0,
+    episode_timeout_s: Annotated[float, typer.Option(help="deadline for the whole episode, in seconds")] = 300.0,
+    log_path: Annotated[Path | None, typer.Option(help="new JSONL file inside the repo (default: outputs/agent/episode-<time>.jsonl)")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="use labeled fixtures; OpenAI calls are still paid unless --offline")] = False,
+    execute: Annotated[bool, typer.Option("--execute", help="request live execution (currently blocked by core lifecycle/freshness gaps)")] = False,
+    offline: Annotated[bool, typer.Option("--offline", help="use the deterministic mocked provider; requires --dry-run")] = False,
+) -> None:
+    """Run a bounded multimodal LLM episode. Live execution is currently disabled; see docs/AGENT.md."""
+    from .agent import AgentConfig, run_episode
+    from .agent_openai import MockProvider, OpenAIProvider, ProviderError, credential_status
+    from .agent_robot import FixtureRobot, LiveIntegrationError, RobotAdapter, make_live_robot, validate_rig
+
+    if dry_run == execute:
+        raise typer.BadParameter("choose exactly one of --dry-run or --execute")
+    if offline and not dry_run:
+        raise typer.BadParameter("--offline requires --dry-run")
+
+    config = AgentConfig(
+        model=model,
+        task=task,
+        max_steps=max_steps,
+        settle_s=settle_s,
+        max_joint_delta=max_joint_delta,
+        motion_timeout_s=motion_timeout_s,
+        api_timeout_s=api_timeout_s,
+        episode_timeout_s=episode_timeout_s,
+    )
+    try:
+        config.validate()
+        validate_rig(rig, arm)
+        destination = log_path or OUTPUT_DIR / "agent" / f"episode-{time.time_ns()}.jsonl"
+        destination = (destination if destination.is_absolute() else ROOT / destination).resolve()
+        if not destination.is_relative_to(ROOT.resolve()):
+            raise ValueError("--log-path must stay inside this repository")
+        if destination.exists():
+            raise ValueError("--log-path must name a new file")
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        raise typer.BadParameter(str(exc)) from None
+
+    try:
+        if execute:
+            adapter = make_live_robot(rig, arm)
+        else:
+            console.print("Hardware dry-run: labeled synthetic fixtures; no physical arms or cameras are opened.")
+            adapter = RobotAdapter(FixtureRobot())
+        if offline:
+            console.print("Offline mocked provider: no API requests or charges.")
+            provider = MockProvider()
+        else:
+            console.print(f"Paid OpenAI API mode; images are sent to OpenAI. Credential: {credential_status()}.")
+            provider = OpenAIProvider(model, task)
+    except (LiveIntegrationError, ProviderError) as exc:
+        err.print(str(exc), markup=False)
+        raise typer.Exit(1) from None
+
+    try:
+        result = run_episode(adapter, provider, config, destination)
+    except (OSError, ValueError) as exc:
+        err.print(f"Episode could not run ({type(exc).__name__}); check the log path and permissions.", markup=False)
+        raise typer.Exit(1) from None
+    console.print(f"Episode: {result['status']}; {result['reason']}", markup=False)
+    if result["success_basis"] == "model_declared":
+        console.print(f"Success: {result['success']} (model-declared; not independently verified).", markup=False)
+    console.print(f"Log: {destination}", markup=False)
+    if result["status"] != "finished":
+        raise typer.Exit(130 if result["status"] == "cancelled" else 1)
+
+
 @app.command(context_settings=PASSTHROUGH)
 def train(
     ctx: typer.Context,

@@ -225,6 +225,10 @@ on CPU. The same speed clamps as in teleop bound every commanded step. For a rem
 `lerobot-rollout` here with the policy served by LeRobot's async inference (`lerobot[async]`) over
 Tailscale, or copy the checkpoint over.
 
+For a small multimodal LLM controller, see [the agent guide](docs/AGENT.md). `yamkit agent` offers
+an offline fixture mode and paid OpenAI calls with fixtures; live execution is disabled pending
+the documented plugin cleanup and observation freshness fixes. VLA `rollout` is unchanged.
+
 ## 8. Web UI
 
 ```bash
@@ -262,6 +266,7 @@ motor. See `docs/UI.md` and `docs/ui-screenshots/`.
 | `yamkit teleoperate` | Teleop through LeRobot's `lerobot-teleoperate` (same plugins used for recording). |
 | `yamkit record` | Record teleop episodes into a LeRobot dataset (`lerobot-record`). |
 | `yamkit rollout` | Run a policy/VLA on the follower arm(s) (`lerobot-rollout`). |
+| `yamkit agent` | Bounded multimodal LLM controller with labeled fixtures; `--dry-run --offline` makes no API calls. Live execution is blocked; see [docs/AGENT.md](docs/AGENT.md). |
 | `yamkit train` | Fine-tune a policy with `lerobot-train` (needs a GPU box; see README for the remote workflow). |
 | `yamkit policy-check` | Load a policy/VLA for this rig and run it on a synthetic frame (no arm is energised). |
 | `yamkit ui` | Serve the local web UI (viewer + launcher for the commands above; pages never energise a motor). |
