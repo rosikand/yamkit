@@ -871,11 +871,12 @@ def policy_check(
 
 
 @app.command("modal-prepare")
-def modal_prepare(policy: str = "molmoact2", gpu: str = "L40S", development: bool = False) -> None:
+def modal_prepare(policy: str = "molmoact2", gpu: str = "L40S", development: bool = False,
+                  cache_volume: str = "yamkit-policy-weights") -> None:
     """Explicitly deploy and warm this workspace's dedicated cloud pool; never activate hardware."""
     from .modal_ops import prepare
 
-    _print_inference_result(prepare(policy, gpu=gpu, development=development))
+    _print_inference_result(prepare(policy, gpu=gpu, development=development, cache_volume_name=cache_volume))
 
 
 @app.command("modal-shutdown")

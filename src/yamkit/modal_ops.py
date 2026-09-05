@@ -7,12 +7,15 @@ identifiers and public profile metadata only; credentials are read by the outbou
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from .paths import OUTPUT_DIR, ROOT
@@ -40,6 +43,26 @@ def _save(receipt: dict) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(receipt, indent=2) + "\n")
     temporary.replace(path)
+
+
+@contextmanager
+def _ownership_lock():
+    """Serialize CLI processes as well as UI workers; never wait behind a paid operation.
+
+    Keep the lock file in place: unlinking it would let another process lock a new
+    inode while the old owner still holds its lock. The OS releases flock on exit.
+    """
+    path = receipt_path().with_suffix(".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("another Modal preparation or shutdown is already in progress") from None
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def call(method, *args, timeout: float = 120):
@@ -70,6 +93,12 @@ def service_handle(app_name: str, profile_id: str):
 def prepare(profile_name: str, *, gpu: str = "L40S", development: bool = False,
             cache_volume_name: str = "yamkit-policy-weights") -> dict:
     """Deploy and warm explicitly. A failed prepare shuts down only its owned app."""
+    with _ownership_lock():
+        return _prepare_locked(profile_name, gpu=gpu, development=development,
+                               cache_volume_name=cache_volume_name)
+
+
+def _prepare_locked(profile_name: str, *, gpu: str, development: bool, cache_volume_name: str) -> dict:
     from .inference.modal_service import create_app
     from .inference.profiles import get_profile
 
@@ -86,11 +115,15 @@ def prepare(profile_name: str, *, gpu: str = "L40S", development: bool = False,
     app_name = "yamkit-vla-" + uuid.uuid4().hex[:16]
     receipt = {"app_name": app_name, "app_id": None, "profile_id": profile.id,
                "revision": profile.revision, "status": "preparing", "created_at": time.time(),
-               "development": development, "gpu": gpu, "scaledown_window": 15 if development else 300}
+               "development": development, "gpu": gpu, "scaledown_window": 15 if development else 300,
+               "deployment_started": False}
     _save(receipt)
+    app = None
     try:
         app = create_app(profile_id=profile.id, gpu=gpu, development=development, app_name=app_name,
                          cache_volume_name=cache_volume_name)
+        receipt["deployment_started"] = True
+        _save(receipt)
         async def deploy():
             async with asyncio.timeout(600):
                 await app.deploy.aio(name=app_name)
@@ -103,53 +136,115 @@ def prepare(profile_name: str, *, gpu: str = "L40S", development: bool = False,
         _save(receipt)
         return receipt
     except BaseException:
+        # Modal can learn the ID before a later build/deployment step fails.
+        if app is not None and getattr(app, "app_id", None):
+            receipt["app_id"] = app.app_id
+            _save(receipt)
         # If deployment failed before returning its ID, the unique owned name remains sufficient.
-        shutdown()
+        _shutdown_locked()
         raise
 
 
 def _validate_ready(metadata: dict, profile) -> None:
+    if not isinstance(metadata, dict):
+        raise ValueError("service readiness must contain validated metadata")  # noqa: TRY004
     if metadata.get("profile_id") != profile.id or metadata.get("revision") != profile.revision:
         raise ValueError("service readiness does not match the requested profile revision")
+    for key in ("ready", "fresh_chunk", "saved_processors"):
+        if metadata.get(key) is not True:
+            raise ValueError(f"service readiness requires {key}=true")
+    if metadata.get("repo_id") != profile.repo_id or metadata.get("model_revision") != profile.revision:
+        raise ValueError("service readiness model identity does not match the pinned checkpoint")
+    for key in ("state_names", "action_names", "image_keys", "native_image_keys"):
+        actual = metadata.get(key)
+        if not isinstance(actual, (list, tuple)) or tuple(actual) != tuple(getattr(profile, key)):
+            raise ValueError(f"service readiness {key} does not match the ordered profile schema")
+    for key, expected in (("chunk_size", profile.chunk_size), ("max_chunk_steps", profile.chunk_size),
+                          ("fps", profile.fps)):
+        if type(metadata.get(key)) is not int or metadata[key] != expected:
+            raise ValueError(f"service readiness {key} does not match the profile")
+    expected_units = "robot" if profile.mapping_verified else "checkpoint_native"
+    if metadata.get("mapping_verified") is not profile.mapping_verified or metadata.get("action_units") != expected_units:
+        raise ValueError("service readiness mapping or action units do not match the profile")
+    if metadata.get("supports_rtc") is not False:
+        raise ValueError("service readiness must not advertise unverified RTC guidance")
 
 
 def shutdown() -> dict:
     """Stop only the exact app named in our ownership receipt; robot Stop is separate."""
+    with _ownership_lock():
+        return _shutdown_locked()
+
+
+def _shutdown_locked() -> dict:
     receipt = owned_service()
     if receipt is None or receipt.get("status") == "stopped":
         return {"status": "stopped", "owned_app": None}
     name = receipt.get("app_name", "")
-    if not name.startswith("yamkit-vla-"):
+    if not isinstance(name, str) or not re.fullmatch(r"yamkit-vla-[a-z0-9-]{1,80}", name):
         raise ValueError("invalid owned app receipt")
+    if receipt.get("deployment_started") is False and not receipt.get("app_id"):
+        receipt.update(status="stopped", stopped_at=time.time(), remaining_containers=0,
+                       shutdown_verification="deployment was never invoked")
+        _save(receipt)
+        return receipt
     env = {k: v for k, v in os.environ.items() if k not in ("YAMKIT_OPENAI_API_KEY", "DATABASE_URL", "HF_TOKEN")}
     env["MODAL_CONFIG_PATH"] = str(ROOT / ".context" / "modal.toml")
-    completed = subprocess.run([sys.executable, "-m", "modal", "app", "stop", "--yes",
-                                receipt.get("app_id") or name],
-                               env=env, capture_output=True, text=True, timeout=30, check=False)
-    app_id = receipt.get("app_id")
-    if app_id:
+
+    def run(*args: str, timeout: int = 15):
+        try:
+            return subprocess.run([sys.executable, "-m", "modal", *args], env=env,
+                                  capture_output=True, text=True, timeout=timeout, check=False)
+        except (subprocess.TimeoutExpired, OSError):
+            raise RuntimeError("Modal shutdown control operation failed or timed out; retirement is unverified") from None
+
+    def inventory(result) -> list[dict]:
+        if result.returncode:
+            raise RuntimeError("Modal shutdown inventory failed; retirement is unverified")
+        try:
+            rows = json.loads(result.stdout)
+        except (json.JSONDecodeError, TypeError):
+            raise RuntimeError("Modal shutdown inventory was malformed; retirement is unverified") from None
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            raise RuntimeError("Modal shutdown inventory was malformed; retirement is unverified")
+        return rows
+
+    try:
+        app_id = receipt.get("app_id")
+        if not app_id:
+            matches = [row for row in inventory(run("app", "list", "--json")) if row.get("description") == name]
+            if len(matches) != 1:
+                raise RuntimeError("cannot uniquely identify the owned Modal app; shutdown is unverified")
+            app_id = matches[0].get("app_id")
+            if not isinstance(app_id, str) or not re.fullmatch(r"ap-[A-Za-z0-9-]{1,80}", app_id):
+                raise RuntimeError("owned Modal app ID is invalid; shutdown is unverified")
+            receipt["app_id"] = app_id
+            _save(receipt)
+        elif not isinstance(app_id, str) or not re.fullmatch(r"ap-[A-Za-z0-9-]{1,80}", app_id):
+            raise RuntimeError("owned Modal app ID is invalid; shutdown is unverified")
+        completed = run("app", "stop", "--yes", app_id, timeout=30)
+        if completed.returncode:
+            # The CLI returns nonzero for an already stopped app too. An empty
+            # container inventory alone cannot distinguish stopped from idle.
+            matches = [row for row in inventory(run("app", "list", "--json")) if row.get("app_id") == app_id]
+            if len(matches) != 1 or matches[0].get("state") != "stopped":
+                raise RuntimeError("owned Modal app stop was not confirmed; shutdown is unverified")
         # Stop is asynchronous at the control plane. Confirm container retirement with a
         # finite poll before a subsequent model can acquire this workspace's pool.
         containers = None
         for attempt in range(6):
-            inventory = subprocess.run([sys.executable, "-m", "modal", "container", "list",
-                                        "--app-id", app_id, "--json"], env=env, capture_output=True,
-                                       text=True, timeout=15, check=False)
-            if inventory.returncode == 0:
-                containers = json.loads(inventory.stdout)
-                if not containers:
-                    break
+            containers = inventory(run("container", "list", "--app-id", app_id, "--json"))
+            if not containers:
+                break
             if attempt < 5:
                 time.sleep(1)
         if containers != []:
-            receipt["status"] = "shutdown_failed"
-            _save(receipt)
             raise RuntimeError("owned Modal containers have not retired; no other model may be prepared")
         receipt["remaining_containers"] = 0
-    elif completed.returncode:
-        receipt["status"] = "shutdown_failed"
+    except RuntimeError:
+        receipt["status"] = "shutdown_unverified"
         _save(receipt)
-        raise RuntimeError("owned Modal app shutdown failed; use the app ID in the local ownership receipt")
+        raise
     receipt.update(status="stopped", stopped_at=time.time())
     _save(receipt)
     return receipt

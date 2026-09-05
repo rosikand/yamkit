@@ -64,7 +64,9 @@ def run_check(policy: str, *, backend: str = "local", device: str = "cpu", task:
             "source": "checkpoint-native synthetic fixture; no physical YAM compatibility implied",
             "action_units": "checkpoint_native", "mapping_verified": profile.mapping_verified,
             "mapping_note": profile.mapping_note, "readiness_s": readiness_s, "metadata": metadata,
-            "fresh_chunks": samples, "cold": percentiles([readiness_s + samples[0]["round_trip_s"]]),
+            "fresh_chunks": samples,
+            "readiness_and_first_call": percentiles([readiness_s + samples[0]["round_trip_s"]]),
             "warm": percentiles([x["round_trip_s"] for x in samples[1:]]),
             "queue_depth": None, "underruns": None,
-            "measurement_note": "Small diagnostic sample; cold includes readiness. No hardware queue exercised."}
+            "measurement_note": "Small diagnostic sample. Readiness may reuse a warm pool; this is not a "
+                                "cold-container latency measurement. No hardware queue exercised."}

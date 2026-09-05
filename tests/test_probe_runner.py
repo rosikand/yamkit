@@ -37,7 +37,7 @@ class FakeRuntime:
         self.profile = profile
         self.events = []
         self.requests = []
-        self.metadata = {**profile.metadata(), "ready": True, "saved_processors": True}
+        self.metadata = {**profile.metadata(), "ready": True, "saved_processors": True, "fresh_chunk": True}
         self.response_changes = {}
 
     def ready(self):
