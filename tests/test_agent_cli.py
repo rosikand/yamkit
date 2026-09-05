@@ -89,6 +89,17 @@ def test_paid_dry_run_uses_fixtures_and_explicit_provider(agent_cli_rig, monkeyp
     assert "dummy-cli-key" not in result.output
 
 
+def test_missing_namespaced_key_stops_before_sdk_or_fixture(agent_cli_rig, monkeypatch):
+    forbid_hardware_imports(monkeypatch)
+    monkeypatch.setenv("YAMKIT_OPENAI_API_KEY", "")
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy-fallback-must-not-be-used")
+    monkeypatch.setattr(agent_robot, "FixtureRobot", forbidden)
+    result = CliRunner().invoke(cli.app, args(agent_cli_rig, "--dry-run"))
+    assert result.exit_code == 1, result.output
+    assert "MISSING" in result.output
+    assert "dummy-fallback" not in result.output
+
+
 @pytest.mark.parametrize("extra", [
     [], ["--dry-run", "--execute"], ["--offline"], ["--execute", "--offline"],
     ["--dry-run", "--max-steps", "0"], ["--dry-run", "--max-steps", "1001"],
@@ -153,6 +164,16 @@ def test_invalid_rig_precedes_factories(agent_cli_rig, monkeypatch):
     result = CliRunner().invoke(cli.app, args(agent_cli_rig, "--dry-run"))
     assert result.exit_code == 2
     assert "control.max_joint_speed" in result.output
+
+
+@pytest.mark.parametrize("text", ["arms: [", "scalar", "- list", "cameras: ['bad']"])
+def test_malformed_rig_has_clean_error(agent_cli_rig, monkeypatch, text):
+    agent_cli_rig.path.write_text(text)
+    monkeypatch.setattr(agent_openai, "OpenAIProvider", forbidden)
+    monkeypatch.setattr(agent_robot, "FixtureRobot", forbidden)
+    result = CliRunner().invoke(cli.app, args(agent_cli_rig, "--dry-run"))
+    assert result.exit_code == 2, result.output
+    assert "Traceback" not in result.output
 
 
 def test_existing_log_is_preserved_before_provider(agent_cli_rig, monkeypatch, tmp_path):

@@ -176,6 +176,23 @@ def test_stale_feedback_aborts_and_releases_fixture(episode):
     assert result["status"] == "error" and robot.closed and len(robot.commands) == 1
 
 
+def test_drift_during_settle_stops_before_next_decision(episode):
+    class Drifts(FixtureRobot):
+        reads_after_send = 0
+
+        def get_observation(self):
+            if self.commands:
+                self.reads_after_send += 1
+                if self.reads_after_send > 1:
+                    self.state["joint_1.pos"] += 1
+            return super().get_observation()
+
+    result, robot, provider, events = episode([[call("open_gripper")], [finish()]], Drifts)
+    assert result["status"] == "error" and "after settling" in result["reason"]
+    assert robot.closed and len(robot.commands) == 1 and len(provider.observations) == 1
+    assert not any(e["event"] == "action_complete" for e in events)
+
+
 def test_cancellation_does_not_start_action(episode):
     result, robot, _, events = episode([[finish()]], cancelled=lambda: True)
     assert result["status"] == "cancelled" and robot.closed and robot.commands == []

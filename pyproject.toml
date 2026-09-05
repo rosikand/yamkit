@@ -72,3 +72,4 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--basetemp=.pytest_cache/tmp"  # test artifacts, including agent logs, stay in the repo

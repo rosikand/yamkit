@@ -213,6 +213,8 @@ def fixed_target_operation(adapter, name, args, config, episode_deadline, log,
     # A new acquisition after settling, not the cached readback above.
     fresh = adapter.observe(after=settled_after)
     _check(episode_deadline, clock, cancelled)
+    if any(abs(sent[k] - fresh.state[k]) > 0.35 for k in target):
+        raise AgentError("excessive tracking error after settling")
     result = {"ok": True, "requested": requested, "bounded": target, "sent": sent,
               "measured": measured.state, "post_settle": observation_record(fresh)}
     log.write("action_complete", **result)

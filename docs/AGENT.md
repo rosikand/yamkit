@@ -35,6 +35,8 @@ Supply an API key to the command's environment using your usual secret manager:
 The selected value is passed explicitly to the OpenAI client. The command reports only
 **SET** or **MISSING**, never a value or prefix. Keys do not belong in `configs/rig.yaml`, source
 files, logs, or committed shell scripts. This feature does not change Codex/Conductor credentials.
+The client endpoint is fixed to `https://api.openai.com/v1`. Nonempty `OPENAI_CUSTOM_HEADERS`
+is rejected so custom headers cannot override the explicitly selected credential.
 
 Choose a model available to your account that supports images, strict function calling, and the
 provider's `low` reasoning setting. Model access is specific to the requested ID: testing a
@@ -52,15 +54,17 @@ also supplied.** Named fixture RGB images, joint/gripper state, the task, and bo
 history are transferred to OpenAI. The provider uses the Responses API with `store=False`,
 `parallel_tool_calls=False`, strict tool schemas, a 512-token output limit, and no SDK retries.
 The output cap includes reasoning tokens for reasoning models. Low-detail JPEG image inputs
-are resized to at most 512 pixels per side, with at most four cameras. Recent conversation
-history is capped at four complete turns; historical images are removed. These bounds limit
+are resized to at most 512 pixels per side, with at most four cameras. A request keeps at most
+three complete previous turns plus the current observation; historical images are removed,
+and pruning preserves function call/output pairs. These bounds limit
 usage per request; they are not a monetary budget. Start with a small step count and check the
-[current API pricing](https://openai.com/api/pricing/) before paid episodes.
+[current API pricing](https://developers.openai.com/api/docs/pricing) before paid episodes.
 
 ## Options and execution
 
 `--model`, `--task`, and one `--arm` are required. The arm must identify a follower with a motor
-gripper. `--rig` defaults to `configs/rig.yaml`. Select exactly one of `--dry-run` or `--execute`;
+gripper, and the rig must contain at least one camera configuration. `--rig` defaults to
+`configs/rig.yaml`. Select exactly one of `--dry-run` or `--execute`;
 `--offline` requires `--dry-run`. Configuration is validated before robot/provider construction.
 `--execute` currently exits with the integration blockers before importing or opening hardware
 and before making an API request.
@@ -69,7 +73,7 @@ and before making an API request.
 | --- | --- | --- |
 | `--max-steps` | `50` | Total decisions, including malformed, empty, duplicate, and observe-only replies. |
 | `--settle-s` | `0.5` | Delay after each action, followed by a fresh observation. |
-| `--max-joint-delta` | `0.10` | Per-joint delta clamp, in radians. |
+| `--max-joint-delta` | `0.10` | Per-joint delta clamp, in radians; can be lowered, never raised above `0.10`. |
 | `--motion-timeout-s` | `5` | Deadline for each fixed-target operation. |
 | `--api-timeout-s` | `30` | Deadline for each API request. |
 | `--episode-timeout-s` | `300` | Overall episode deadline, in seconds. |
@@ -99,7 +103,16 @@ completion is established separately from measured feedback. Timeout, cancellati
 stale feedback, and excessive tracking error stop the operation. After an action, the controller
 settles and reacquires state/images before asking the model for another decision.
 
-Logs have bounded events/size and include task/model, timing, decision/tool IDs, camera names,
+The operation submits at most 10 times per second. Joint arrival tolerance is 0.01 rad and
+gripper tolerance is 0.03; tracking error over 0.35 rad (or 0.35 gripper units) aborts, including
+the observation after settling. `--max-joint-delta` can lower the 0.10 rad cap, but cannot raise it.
+API/motion/episode deadlines are checked around synchronous calls; late API responses cannot
+execute actions. The SDK timeout limits transport inactivity, not total wall time. A blocked
+native robot call or continuously trickling HTTP response cannot be preempted by this loop.
+This is an additional limitation to resolve before enabling hardware execution.
+
+Logs are capped at 2 MiB, with 64 KiB per event and reserved space for termination. They include
+task/model, timing, decision/tool IDs, camera names,
 arguments, state, requested/bounded/sent/measured actions, errors, usage, and termination.
 They contain no base64 image dumps or API keys. Task text, scene descriptions, and joint state
 can still be private: keep generated logs under the ignored `outputs/` directory. A `finished`
@@ -140,7 +153,48 @@ make test
 make lint
 ```
 
+Use `HF_HUB_OFFLINE=1 make test` to prevent existing Hub/UI tests from accessing your Hub account.
+Pytest temporary files stay under the repository's ignored `.pytest_cache/tmp` directory.
+
 The agent tests mock provider responses and use fixture/fake robots. They make no paid API calls
 and cover schemas, targets and readback, freshness, deadlines, duplicate/multiple calls,
 cleanup, credential precedence, and CLI mode isolation. Real API verification is a separate,
 explicitly budgeted development activity using fixtures only.
+
+### Feature verification (2026-09-05)
+
+Starting revision: `dbd01f1e70be66bb0e639789d0d37d7ecb5bd166`. The first implementation milestone
+was committed and pushed as `700e23d` on `oslo`. No physical arms/cameras were opened, and no
+CAN/system settings were changed. Final review added rejection of excessive post-settle drift.
+
+The intended test model was **`gpt-5.4`**, using OpenAI SDK **2.54.0**, Responses, `low` reasoning,
+and at most 512 output tokens per request. One real three-decision fixture episode called
+`observe` → `move_joints` → `finish`. It correctly described the red shape on the left and blue
+shape on the right, and reported measured joint 1 at 0.01 rad after one simulated command.
+The fixture closed successfully. The final declaration was `success=false`, explicitly limited
+to software verification; this does not validate physical manipulation.
+
+Paid requests: **3 of 10**. Usage: **2,774 input + 312 output tokens**, including **195 reasoning
+tokens** within the output count; no cached input tokens. At the checked
+[official GPT-5.4 prices](https://developers.openai.com/api/docs/models/gpt-5.4) of $2.50/M input
+and $15/M output, estimated cost is **$0.011615**, leaving **$1.988385** of the $2 allowance and
+seven request slots unused. No further paid testing is needed or scheduled.
+
+Before each call, the ignored persistent ledger `.context/agent/paid-usage.json` reserved
+$0.173448: 60,000 input tokens, 512 maximum output/reasoning tokens, and a 10% surcharge reserve.
+The input bound includes the 32,768-character text/context cap, framing, opaque conversation
+items, and up to four bounded images under the official
+[image token rules](https://developers.openai.com/api/docs/guides/images-vision). Total reserved
+cost was $0.520344, leaving $1.479656 conservatively unreserved. Reservations and request counts
+were written before calls, and the ledger is now marked complete/halted. The ledger and raw
+JSONL records are development artifacts and are not committed.
+
+Hardware-free validation: one full run had **265 tests passed** with Hub networking disabled;
+`make lint` and `git diff --check` passed. After configuring repo-local pytest temporary files,
+the final full repeat had **264 passed and one existing intermittent failure** at
+`tests/test_arm.py:148` (`test_go_home_all_runs_arms_together_and_ctrl_c_releases_all`); it passed
+again in isolation. Its arm code and test are unchanged from `origin/main`. All new agent tests
+passed in both runs. An initial run also encountered a UI assertion influenced by live Hub
+entries; `HF_HUB_OFFLINE=1` prevents that network dependence. A pre-existing Starlette/httpx
+deprecation warning remains. Mocked tests include actual SDK request serialization over an
+in-memory HTTP transport.

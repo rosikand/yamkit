@@ -737,13 +737,14 @@ def agent(
             adapter = make_live_robot(rig, arm)
         else:
             console.print("Hardware dry-run: labeled synthetic fixtures; no physical arms or cameras are opened.")
-            adapter = RobotAdapter(FixtureRobot())
         if offline:
             console.print("Offline mocked provider: no API requests or charges.")
             provider = MockProvider()
         else:
             console.print(f"Paid OpenAI API mode; images are sent to OpenAI. Credential: {credential_status()}.")
             provider = OpenAIProvider(model, task)
+        if dry_run:
+            adapter = RobotAdapter(FixtureRobot())
     except (LiveIntegrationError, ProviderError) as exc:
         err.print(str(exc), markup=False)
         raise typer.Exit(1) from None
