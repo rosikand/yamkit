@@ -25,6 +25,7 @@ from yamkit.camera_ownership import claim_from_env
 from yamkit.cameras import camera_configs_from_dicts
 from yamkit.config import N_JOINTS, RigConfig
 from yamkit.preview import NullPreview, start_from_env
+from yamkit.teleop_control import GatedAction, LeaderAction, disconnect_home
 from yamkit.validation import finite_scalar
 
 from .config_yam_follower import BiYamFollowerConfig, YamFollowerConfig
@@ -94,9 +95,14 @@ class _FollowerHandle:
         values = [finite_scalar(action[name], f"{name}: target") for name in self.features]
         return np.asarray(values[:N_JOINTS]), values[-1] if self.spec.has_motor_gripper else None
 
-    def send(self, action: dict[str, float]) -> dict[str, float]:
+    def send(self, action: dict[str, float], *, capture_hold: bool = False) -> dict[str, float]:
         q, g = self.target(action)
-        sent = self.arm.command(q, g)
+        # A release captures the measured follower pose, exactly like native hold().
+        # Replace the obsolete tracking target before any zeroed gains are restored.
+        if capture_hold:
+            state = self.arm.read()
+            q, g = state.q, state.gripper if self.spec.has_motor_gripper else None
+        sent = self.arm.command(q, g, limit_speed=not capture_hold)
         return {f"{n}.pos": float(v) for n, v in zip(self.names, sent)}
 
     def disconnect(self, home: bool = True) -> None:
@@ -313,11 +319,16 @@ class YamFollower(_CameraPreview, Robot):
 
     @check_if_not_connected
     def send_action(self, action: RobotAction) -> RobotAction:
-        return self._h.send(action)
+        if isinstance(action, LeaderAction):
+            raise TypeError("raw YAM leader input requires the operator processor; use yamkit record or teleoperate")
+        sent = self._h.send(action, capture_hold=isinstance(action, GatedAction) and "" in action.capture_hold)
+        if isinstance(action, GatedAction):
+            action.acknowledge(sent)
+        return sent
 
-    def disconnect(self, *, home: bool = True) -> None:
+    def disconnect(self, *, home: bool | None = None) -> None:
         """Release all resources; ``home=False`` skips the normal return-home move."""
-        _disconnect([self._h], self._disconnect_cameras, home=home)
+        _disconnect([self._h], self._disconnect_cameras, home=disconnect_home(home))
         logger.info("%s disconnected", self)
 
     def disconnect_no_home(self) -> None:
@@ -408,6 +419,8 @@ class BiYamFollower(_CameraPreview, Robot):
 
     @check_if_not_connected
     def send_action(self, action: RobotAction) -> RobotAction:
+        if isinstance(action, LeaderAction):
+            raise TypeError("raw YAM leader input requires the operator processor; use yamkit record or teleoperate")
         _validate_action_keys(action, self.action_features)
         actions = {
             side: {k: action[f"{side}_{k}"] for k in h.features}
@@ -416,15 +429,23 @@ class BiYamFollower(_CameraPreview, Robot):
         # Check every target and every arm's measured/previous state before either can move.
         # command() still revalidates its own state immediately before sending to the SDK.
         for side, h in self._sides.items():
-            h.arm.validate_command(*h.target(actions[side]))
+            q, g = h.target(actions[side])
+            capture = isinstance(action, GatedAction) and f"{side}_" in action.capture_hold
+            if capture:
+                state = h.arm.read()
+                q, g = state.q, state.gripper if h.spec.has_motor_gripper else None
+            h.arm.validate_command(q, g, limit_speed=not capture)
         out: dict = {}
         for side, h in self._sides.items():
-            out.update({f"{side}_{k}": v for k, v in h.send(actions[side]).items()})
+            capture = isinstance(action, GatedAction) and f"{side}_" in action.capture_hold
+            out.update({f"{side}_{k}": v for k, v in h.send(actions[side], capture_hold=capture).items()})
+        if isinstance(action, GatedAction):
+            action.acknowledge(out)
         return out
 
-    def disconnect(self, *, home: bool = True) -> None:
+    def disconnect(self, *, home: bool | None = None) -> None:
         """Release all resources; ``home=False`` skips the normal return-home move."""
-        _disconnect(self._sides.values(), self._disconnect_cameras, home=home)
+        _disconnect(self._sides.values(), self._disconnect_cameras, home=disconnect_home(home))
         logger.info("%s disconnected", self)
 
     def disconnect_no_home(self) -> None:

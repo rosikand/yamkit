@@ -50,7 +50,12 @@ def test_bimanual_follower_and_leader(rig, fake_connect, tmp_path, monkeypatch):
     fake_connect["left_leader"].pos = np.array([0.3, 0, 0, 0, 0, 0])
     act = teleop.get_action()
     assert act["left_joint_1.pos"] == pytest.approx(0.3)
-    sent = robot.send_action(act)
+    from yamkit.lerobot_teleop import make_teleop_processor
+
+    with pytest.raises(TypeError, match="operator processor"):
+        robot.send_action(act)
+    processor = make_teleop_processor(robot.config, teleop.config, 30)
+    sent = robot.send_action(processor((act, robot.get_observation())))
     assert set(sent) == set(robot.action_features)
     robot.disconnect()
     teleop.disconnect()

@@ -48,13 +48,22 @@ def test_session_homes_every_arm_on_start_and_stop(rig, fake_connect):
     assert leader.closed and follower.closed
 
 
-def test_stop_returns_home_after_teleop(rig, fake_connect):
+def test_stop_returns_home_after_teleop(rig, fake_connect, monkeypatch):
+    import time
+
     session = TeleopSession.from_rig(rig, ["left_follower"], hz=500.0, sync_seconds=0.01, auto_engage=True, home_speed=50.0, leader_home_speed=50.0)
     leader, follower = fake_connect["left_leader"], fake_connect["left_follower"]
     leader.pos = np.full(6, 0.3)
-    session.engage(session.pairs[0])  # follower syncs to the leader pose
-    session.step()
+    realtime = time.monotonic
+    clock = [realtime()]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    session.engage(session.pairs[0])  # synchronization advances without blocking the outer loop
+    for _ in range(180):
+        clock[0] += 1 / session.hz
+        session.step()
     assert np.allclose(follower.pos[:6], 0.3, atol=0.05)  # tracking
+    offset = max(0, clock[0] - realtime())
+    monkeypatch.setattr(time, "monotonic", lambda: realtime() + offset)  # real pacing, continuous clock
     session.shutdown()
     assert np.allclose(follower.pos[:6], 0) and np.allclose(leader.pos, 0)
     assert leader.closed and follower.closed
@@ -65,7 +74,7 @@ def test_home_speed_zero_keeps_arms_where_they_are(rig, fake_connect):
     session = TeleopSession.from_rig(rig, ["left_follower"], hz=200.0, sync_seconds=0.02, home_speed=0.0)
     follower = fake_connect["left_follower"]
     session.run(duration=0.05)
-    assert follower.commands == [] and np.allclose(follower.pos[:6], 0.3)
+    assert follower.commands and all(np.allclose(command, [0.3] * 6 + [1.0]) for command in follower.commands)
 
 
 def test_second_interrupt_during_return_home_releases_every_arm(rig, fake_connect):
@@ -359,14 +368,12 @@ def test_stop_during_sync_does_not_engage_or_change_leader_gains(rig, fake_conne
     leader = fake_connect["left_leader"]
     gains = leader.kp.copy()
 
-    def stop_sync(q, gripper, *, duration, stop):
-        assert stop is session.stop_event
-        stop.set()
-
-    monkeypatch.setattr(pair.follower, "move_to", stop_sync)
     try:
         session.engage(pair)
-        assert not pair.engaged
+        assert pair._gate.syncing and pair.engaged
+        session.stop_event.set()
+        session.step()
+        assert not fake_connect["left_follower"].commands
         np.testing.assert_array_equal(leader.kp, gains)
     finally:
         session.shutdown(home=False)
@@ -391,10 +398,10 @@ def test_stop_during_button_sync_skips_later_pair_commands(rig, fake_connect, mo
     session.pairs[1].engaged = True
     fake_connect["left_leader"].encoder[0].io_inputs = [1, 0]
 
-    def stop_sync(q, gripper, *, duration, stop):
-        stop.set()
+    def stop_sync(q, gripper, **kwargs):
+        session.stop_event.set()
 
-    monkeypatch.setattr(session.pairs[0].follower, "move_to", stop_sync)
+    monkeypatch.setattr(session.pairs[0].follower, "command", stop_sync)
     try:
         session.step()
         assert all(not robot.commands for robot in fake_connect.values())

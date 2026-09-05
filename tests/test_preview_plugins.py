@@ -198,6 +198,8 @@ def test_installed_lerobot_record_and_reset_both_publish(preview_robot, monkeypa
     from lerobot_teleoperator_yamkit import BiYamLeaderConfig, YamLeaderConfig
     from lerobot_teleoperator_yamkit.yam_leader import BiYamLeader, YamLeader
 
+    from yamkit.lerobot_teleop import make_teleop_processor
+
     robot, _, preview, events = preview_robot
     if robot.name == "bi_yam_follower":
         teleop = BiYamLeader(BiYamLeaderConfig(rig=robot.config.rig))
@@ -210,7 +212,8 @@ def test_installed_lerobot_record_and_reset_both_publish(preview_robot, monkeypa
     teleop.connect()
     try:
         args = {"robot": robot, "teleop": teleop, "fps": 30, "events": {"exit_early": False},
-                "teleop_action_processor": lambda pair: pair[0], "robot_action_processor": lambda pair: pair[0],
+                "teleop_action_processor": make_teleop_processor(robot.config, teleop.config, 30),
+                "robot_action_processor": lambda pair: pair[0],
                 "robot_observation_processor": lambda obs: obs, "control_time_s": 0.1}
         recorder.record_loop(**args, dataset=dataset)
         count = len(preview.offers)

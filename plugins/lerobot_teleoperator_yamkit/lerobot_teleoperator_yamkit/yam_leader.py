@@ -15,6 +15,7 @@ from lerobot.utils.decorators import check_if_already_connected, check_if_not_co
 
 from yamkit.arm import YamArm, go_home_all, resolve_channel
 from yamkit.config import N_JOINTS, RigConfig
+from yamkit.teleop_control import LeaderAction, disconnect_home, position_vector, vector_action
 
 from .config_yam_leader import BiYamLeaderConfig, YamLeaderConfig
 
@@ -56,12 +57,10 @@ class _LeaderHandle:
 
     def action(self) -> dict[str, float]:
         st = self.arm.read()
-        act = {f"{n}.pos": float(v) for n, v in zip(JOINT_NAMES, st.q)}
-        if self.spec.has_handle:
-            if st.gripper is None:
-                raise ValueError(f"{self.spec.name}: teaching-handle trigger is missing")
-            act["gripper.pos"] = float(st.gripper)
-        return act
+        if self.spec.has_handle and st.gripper is None:
+            raise ValueError(f"{self.spec.name}: teaching-handle trigger is missing")
+        return LeaderAction(vector_action(position_vector(st.q, st.gripper if self.spec.has_handle else None)),
+                            buttons={"": st.buttons})
 
     def disconnect(self, home: bool = True) -> None:
         if self.arm is None:
@@ -114,6 +113,7 @@ class YamLeader(Teleoperator):
         self.rig = RigConfig.load(config.rig)
         _validate_rig(self.rig)
         self._h = _LeaderHandle(self.rig, config.arm)
+        config._runtime_teleop = self
 
     @cached_property
     def action_features(self) -> dict:
@@ -159,9 +159,9 @@ class YamLeader(Teleoperator):
     def send_feedback(self, feedback: dict) -> None:  # bilateral feedback is handled by `yamkit teleop`
         pass
 
-    def disconnect(self, *, home: bool = True) -> None:
+    def disconnect(self, *, home: bool | None = None) -> None:
         """Release all resources; ``home=False`` skips the normal return-home move."""
-        _disconnect([self._h], home=home)
+        _disconnect([self._h], home=disconnect_home(home))
         logger.info("%s disconnected", self)
 
 
@@ -177,6 +177,7 @@ class BiYamLeader(Teleoperator):
         if config.left == config.right:
             raise ValueError("bimanual leader needs two different arms")
         self._sides = {"left": _LeaderHandle(self.rig, config.left), "right": _LeaderHandle(self.rig, config.right)}
+        config._runtime_teleop = self
 
     @cached_property
     def action_features(self) -> dict:
@@ -219,12 +220,16 @@ class BiYamLeader(Teleoperator):
 
     @check_if_not_connected
     def get_action(self) -> RobotAction:
-        return {f"{side}_{k}": v for side, h in self._sides.items() for k, v in h.action().items()}
+        actions = {side: handle.action() for side, handle in self._sides.items()}
+        return LeaderAction(
+            {f"{side}_{key}": value for side, action in actions.items() for key, value in action.items()},
+            buttons={f"{side}_": action.buttons[""] for side, action in actions.items()},
+        )
 
     def send_feedback(self, feedback: dict) -> None:
         pass
 
-    def disconnect(self, *, home: bool = True) -> None:
+    def disconnect(self, *, home: bool | None = None) -> None:
         """Release all resources; ``home=False`` skips the normal return-home move."""
-        _disconnect(self._sides.values(), home=home)
+        _disconnect(self._sides.values(), home=disconnect_home(home))
         logger.info("%s disconnected", self)

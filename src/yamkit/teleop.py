@@ -17,12 +17,13 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
 from .arm import ArmState, YamArm, close_all, go_home_all, resolve_channel
 from .config import ControlSpec, RigConfig
+from .teleop_control import PairGate, position_vector
 from .validation import finite_scalar
 
 log = logging.getLogger(__name__)
@@ -33,10 +34,18 @@ class TeleopPair:
     name: str
     leader: YamArm
     follower: YamArm
-    engaged: bool = False
-    _button_prev: bool = False
+    _gate: PairGate = field(default_factory=PairGate)
+    _feedback: bool = False
     last_leader: ArmState | None = None
     last_follower: ArmState | None = None
+
+    @property
+    def engaged(self) -> bool:
+        return self._gate.engaged
+
+    @engaged.setter
+    def engaged(self, value: bool) -> None:
+        self._gate = replace(self._gate, engaged=value, target=self._gate.target if value else None)
 
     @property
     def tracking_error(self) -> float:
@@ -157,24 +166,34 @@ class TeleopSession:
         if self.stop_event.is_set():
             return
         lead = pair.leader.read()
+        foll = pair.follower.read()
         pair.follower.validate_command(lead.q, lead.gripper)
         if self.bilateral_kp > 0:
-            pair.leader.validate_command(pair.follower.read().q, None, limit_speed=False)
+            pair.leader.validate_command(foll.q, None, limit_speed=False)
         log.info("[%s] engaging: follower syncing to leader over %.1fs", pair.name, self.sync_seconds)
-        pair.follower.move_to(lead.q, lead.gripper, duration=self.sync_seconds, stop=self.stop_event)
         if self.stop_event.is_set():
             return
-        if self.bilateral_kp > 0:
-            pair.leader.scale_gains(self.bilateral_kp, 0.0)
-        pair.engaged = True
-        log.info("[%s] engaged", pair.name)
+        pair._gate, _, _ = self._advance(pair, lead, foll, time.monotonic(), engage=True)
 
     def disengage(self, pair: TeleopPair) -> None:
-        pair.engaged = False
         pair.follower.hold()
+        state = pair.follower.read()
+        pair._gate = PairGate(button_prev=pair._gate.button_prev, hold=position_vector(
+            state.q, state.gripper if pair.follower.spec.has_motor_gripper else None), previous_t=time.monotonic())
         pair.leader.gravity_idle()
         pair.leader.restore_gains()
+        pair._feedback = False
         log.info("[%s] disengaged (follower holding, leader free)", pair.name)
+
+    def _advance(self, pair, lead, foll, now, *, engage=None):
+        grip = pair.follower.spec.has_motor_gripper
+        pressed = bool(lead.buttons[self.engage_button]) if lead.buttons and len(lead.buttons) > self.engage_button else False
+        return pair._gate.advance(
+            position_vector(lead.q, lead.gripper if grip else None),
+            position_vector(foll.q, foll.gripper if grip else None), pressed=pressed, now=now,
+            period=1 / self.hz, sync_seconds=self.sync_seconds, joint_speed=pair.follower.max_joint_speed,
+            gripper_speed=pair.follower.max_gripper_speed, engage=engage,
+        )
 
     # ----- loop -----------------------------------------------------------------------------
     def step(self) -> None:
@@ -183,31 +202,43 @@ class TeleopSession:
         if self.stop_event.is_set():
             return
         pending = []
+        now = time.monotonic()
         for pair in self.pairs:
             lead = pair.leader.read()
             foll = pair.follower.read()
             pair.last_leader, pair.last_follower = lead, foll
-            pressed = bool(lead.buttons[self.engage_button]) if lead.buttons and len(lead.buttons) > self.engage_button else False
-            pending.append((pair, lead, foll, pressed))
+            gate, command, capture = self._advance(pair, lead, foll, now)
+            pending.append((pair, lead, foll, gate, command, capture))
         # Validate the complete tick before engaging, restoring gains or commanding any pair.
-        for pair, lead, foll, pressed in pending:
-            toggled = pressed and not pair._button_prev
-            if (pair.engaged and not toggled) or (not pair.engaged and toggled):
+        for pair, lead, foll, gate, command, capture in pending:
+            if gate.engaged:
                 pair.follower.validate_command(lead.q, lead.gripper)
                 if self.bilateral_kp > 0:
                     pair.leader.validate_command(foll.q, None, limit_speed=False)
-            elif pair.engaged and toggled:
-                pair.follower.validate_command(foll.q, foll.gripper, limit_speed=False)
-        for pair, lead, foll, pressed in pending:
+            pair.follower.validate_command(command[:6], command[6] if len(command) > 6 else None,
+                                           limit_speed=not capture)
+        for pair, lead, foll, gate, command, capture in pending:
             if self.stop_event.is_set():
                 return
-            if pressed and not pair._button_prev:  # rising edge toggles
-                self.disengage(pair) if pair.engaged else self.engage(pair)
-            pair._button_prev = pressed
-            if pair.engaged:
-                pair.follower.command(lead.q, lead.gripper)
-                if self.bilateral_kp > 0:
-                    pair.leader.command(foll.q, None, limit_speed=False)
+            released = pair.engaged and not gate.engaged
+            if capture:
+                measured = pair.follower.read()
+                command = position_vector(measured.q, measured.gripper if pair.follower.spec.has_motor_gripper else None)
+                gate = gate.acknowledge_hold(command, joint_speed=pair.follower.max_joint_speed,
+                                             gripper_speed=pair.follower.max_gripper_speed)
+            pair._gate = gate
+            pair.follower.command(command[:6], command[6] if len(command) > 6 else None, limit_speed=not capture)
+            if self.stop_event.is_set():
+                return
+            if released:
+                pair.leader.gravity_idle()
+                pair.leader.restore_gains()
+                pair._feedback = False
+            if gate.engaged and not gate.syncing and self.bilateral_kp > 0:
+                if not pair._feedback:
+                    pair.leader.scale_gains(self.bilateral_kp, 0.0)
+                    pair._feedback = True
+                pair.leader.command(foll.q, None, limit_speed=False)
 
     def run(self, duration: float | None = None) -> TeleopStats:
         failed = False

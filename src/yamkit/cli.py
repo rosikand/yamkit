@@ -544,6 +544,8 @@ def align(
 # ------------------------------------------------------------------------------- LeRobot wrappers --
 def _exec_lerobot(script: str, args: list[str], dry_run: bool) -> None:
     module = "yamkit.local_rollout" if script == "lerobot_rollout" else f"lerobot.scripts.{script}"
+    if script in ("lerobot_record", "lerobot_teleoperate"):
+        module, args = "yamkit.lerobot_teleop", [script.removeprefix("lerobot_"), *args]
     cmd = [sys.executable, "-m", module, *args]
     console.print("[dim]$ " + " ".join(shlex.quote(c) for c in cmd) + "[/]")
     if dry_run:
@@ -665,7 +667,10 @@ def _run_lerobot(script: str, args: list[str]) -> int:
     group), which parks the arms and finalises the dataset; we keep waiting so the caller can upload."""
     import subprocess
 
-    cmd = [sys.executable, "-m", f"lerobot.scripts.{script}", *args]
+    module = f"lerobot.scripts.{script}"
+    if script in ("lerobot_record", "lerobot_teleoperate"):
+        module, args = "yamkit.lerobot_teleop", [script.removeprefix("lerobot_"), *args]
+    cmd = [sys.executable, "-m", module, *args]
     console.print("[dim]$ " + " ".join(shlex.quote(c) for c in cmd) + "[/]")
     proc = subprocess.Popen(cmd)
     interrupts = 0
