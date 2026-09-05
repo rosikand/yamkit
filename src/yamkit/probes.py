@@ -99,8 +99,11 @@ def preflight_live_probe(
     Calibration endpoints are [closed, open]; their numeric order can legitimately be reversed.
     """
     selected = list(arm_names) if arm_names is not None else [p.follower for p in rig.pairs]
-    if not 1 <= len(selected) <= 2 or len(set(selected)) != len(selected):
+    if not 1 <= len(selected) <= 2 or not all(isinstance(name, str) for name in selected) or len(set(selected)) != len(selected):
         raise ValueError("select one follower or an ordered left/right pair of distinct followers")
+    missing = [name for name in selected if name not in rig.arms]
+    if missing:
+        raise ValueError(f"unknown probe follower arm(s): {', '.join(missing)}; use rig follower names; this profile requires its complete physical arm selection")
     specs = [rig.arm(name) for name in selected]
     names: list[str] = []
     errors: list[str] = []

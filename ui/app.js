@@ -563,43 +563,107 @@ function makeChart(canvas, label, t, s1, s2) {
 pages.inference = {
   async render(el, args) {
     if (args.length) return renderRunDetail(el, decodeURIComponent(args[0]));
+    this._submitted = null;
     el.innerHTML = `
-      ${pageHead("Inference", "policy runs launched from this UI")}
-      <div class="cols cols-2">
-        <div class="sect"><div class="sect-head">Policy check <span class="crumb">safe — no arm is energised</span></div><div class="panel pad">
-          <label class="field" style="margin-top:0">policy (checkpoint dir or Hub id)<input type="text" id="pc-policy" list="policy-list" placeholder="outputs/train/…/pretrained_model or <user>/<model> or lerobot/smolvla_base" /></label>
-          <datalist id="policy-list"></datalist>
-          <label class="field">task<input type="text" id="pc-task" value="pick up the object" /></label>
-          <div class="toolbar" style="margin-top:12px"><button id="btn-pc" class="primary">Run policy check</button></div>
-        </div></div>
-        <div class="sect"><div class="sect-head">Rollout <span class="crumb">moves the arms</span></div><div class="panel pad">
-          <label class="field" style="margin-top:0">policy<input type="text" id="ro-policy" list="policy-list" /></label>
-          <label class="field">task<input type="text" id="ro-task" /></label>
-          <div class="form-grid">
-            <label class="field">duration (s)<input type="number" id="ro-duration" value="60" /></label>
-            <label class="check" style="margin-top:30px"><input type="checkbox" id="ro-rtc" checked /> RTC inference</label>
-          </div>
-          <div class="toolbar" style="margin-top:12px"><button id="btn-ro" class="danger">Start rollout</button></div>
-          <div class="hint warn">Runs <code>yamkit rollout</code>: the follower arms will move. Clear the workspace first.</div>
-        </div></div>
-      </div>
+      ${pageHead("Inference", "check, prepare, probe, then explicitly start a policy run")}
+      <div class="sect"><div class="sect-head">Policy deployment</div><div class="panel pad">
+        <div class="form-grid">
+          <label class="field">preset<select id="inf-preset"><option value="smolvla">SmolVLA base · forward check</option><option value="molmoact2">MolmoAct2 · bimanual YAM</option><option value="pi05">pi05 base · forward check</option><option value="custom">Custom compatible local checkpoint</option></select></label>
+          <label class="field">backend<select id="inf-backend"><option value="local">Local (default)</option><option value="modal">Modal GPU</option></select></label>
+          <label class="field">checkpoint<input type="text" id="inf-policy" value="smolvla" list="policy-list" /></label>
+          <label class="field">task<input type="text" id="inf-task" value="pick up the object" /></label>
+          <label class="field">followers<select id="inf-arms"><option value="">Both arms</option><option value="left">Left only (compatible local model)</option><option value="right">Right only (compatible local model)</option></select></label>
+          <label class="field">duration (seconds)<input type="number" id="inf-duration" value="60" min="1" max="3600" /></label>
+          <label class="field">local device<select id="inf-device"><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="mps">MPS</option></select></label>
+          <label class="field">Modal GPU<select id="inf-gpu"><option value="L40S">L40S · one container</option></select></label>
+        </div>
+        <datalist id="policy-list"></datalist>
+        <div class="toolbar"><label class="check"><input type="checkbox" id="inf-rtc" /> Local RTC (policy must support guidance)</label>
+          <label class="check"><input type="checkbox" id="inf-crop" /> Optional center crop to 16:9 at Modal policy boundary</label></div>
+        <div id="inf-profile-note" class="hint"></div>
+        <div class="hint">Modal uses unguided background chunks. Crop stays off by default and does not restore training camera geometry. Recording camera settings stay unchanged.</div>
+        <div class="toolbar" style="margin-top:12px">
+          <button id="btn-pc">Check (no hardware)</button><button id="btn-prepare">Prepare Modal</button>
+          <button id="btn-ro" class="danger">Start rollout</button><button id="btn-inf-stop" class="danger">Stop local execution</button>
+          <button id="btn-cloud-stop">Shut down owned cloud service</button>
+        </div>
+        <div class="hint warn">Start rollout enables motors and moves the followers. Stop halts local execution; cloud shutdown is separate. Closing this browser is not Stop.</div>
+        <div class="hint">Prepared Modal GPUs scale to zero after up to 300 seconds idle (development tests: 15 seconds). Idle warm time is billable. No permanent heartbeat.</div>
+      </div></div>
+      <div class="sect"><div class="sect-head">Action probe · never executes predicted positions</div><div class="panel pad">
+        <label class="field">saved observation (.npz path inside this repository)<input type="text" id="inf-saved" placeholder="data/probes/observation.npz" /></label>
+        <div class="toolbar"><button id="btn-probe-saved">Probe saved observation</button><button id="btn-probe-live">Probe live active read</button></div>
+        <div class="hint warn">Live probe is GRAVITY-COMPENSATION ACTIVE READ: motors are active and this is not guaranteed motion-free. All gripper calibrations must be valid first. A successful probe never approves motion or replays its chunk.</div>
+      </div></div>
+      <div class="sect"><div class="sect-head">Operation</div><div id="inf-status" class="panel pad">No operation for this selection.</div><pre id="inf-result" class="log tall"></pre></div>
+      <div class="sect"><div class="sect-head">Cameras</div><div id="cams-slot">${camsHTML()}</div></div>
       <div class="sect"><div class="sect-head">Runs</div><div id="run-list">loading…</div></div>`;
+    this._profiles = [];
+    api("/inference/profiles").then((data) => { this._profiles = data.profiles; this.syncForm(); }).catch(() => {});
     api("/models").then((list) => {
       const dl = $("#policy-list");
-      if (dl) dl.innerHTML = list.map((m) => `<option value="${esc(m.where === "cloud" ? m.repo_id : "outputs/" + m.path)}">${esc(m.policy_type ?? "")} · ${esc(m.where)}</option>`).join("");
+      if (dl) dl.innerHTML = list.map((m) => `<option value="${esc(m.where === "cloud" ? m.repo_id : "outputs/" + m.path)}">${esc(m.policy_type ?? "")}</option>`).join("");
     }).catch(() => {});
-    $("#btn-pc").onclick = (e) => {
-      const policy = $("#pc-policy").value.trim();
-      if (!policy) return alert("policy is required");
-      doPost("/session/policy-check", { policy, task: $("#pc-task").value }, e.target).then(() => this.refreshList());
-    };
+    $("#inf-preset").onchange = () => { $("#inf-policy").value = $("#inf-preset").value === "custom" ? "" : $("#inf-preset").value; this.syncForm(); };
+    ["inf-backend", "inf-policy", "inf-task", "inf-arms", "inf-duration", "inf-device", "inf-gpu", "inf-rtc", "inf-crop", "inf-saved"].forEach((id) => {
+      document.getElementById(id).addEventListener("input", () => this.syncForm());
+    });
+    $("#btn-pc").onclick = (e) => this.launch("/session/policy-check", {}, e.target);
+    $("#btn-prepare").onclick = (e) => this.launch("/session/modal-prepare", {}, e.target);
     $("#btn-ro").onclick = (e) => {
-      const policy = $("#ro-policy").value.trim(), task = $("#ro-task").value.trim();
-      if (!policy || !task) return alert("policy and task are required");
-      if (!confirm("Start rollout? The follower arms WILL move.")) return;
-      doPost("/session/rollout", { policy, task, duration: +$("#ro-duration").value || 60, rtc: $("#ro-rtc").checked }, e.target).then(() => this.refreshList());
+      if (!confirm("Start rollout? Motors will be enabled and the follower arms WILL move. Clear the workspace and supervise the run.")) return;
+      this.launch("/session/rollout", { confirm_motion: true }, e.target);
     };
+    $("#btn-probe-saved").onclick = (e) => this.launch("/session/policy-probe", { saved: $("#inf-saved").value.trim() }, e.target);
+    $("#btn-probe-live").onclick = (e) => {
+      if (!confirm("Approve GRAVITY-COMPENSATION ACTIVE READ? Motors will be active. This is not guaranteed motion-free. No predicted position will be executed.")) return;
+      this.launch("/session/policy-probe", { live: true, confirm_active_read: true }, e.target);
+    };
+    $("#btn-inf-stop").onclick = (e) => doPost("/session/stop", {}, e.target);
+    $("#btn-cloud-stop").onclick = (e) => doPost("/session/modal-shutdown", {}, e.target);
+    this.syncForm();
     this.refreshList();
+  },
+  selection() {
+    return { policy: $("#inf-policy").value.trim(), task: $("#inf-task").value.trim(),
+      backend: $("#inf-backend").value, device: $("#inf-device").value, gpu: $("#inf-gpu").value,
+      duration: Number($("#inf-duration").value), fps: 30, rtc: $("#inf-rtc").checked,
+      center_crop: $("#inf-crop").checked, async_chunks: true,
+      arms: $("#inf-arms").value ? [$("#inf-arms").value] : null };
+  },
+  syncForm() {
+    if (!$("#inf-policy")) return;
+    const modal = $("#inf-backend").value === "modal";
+    $("#inf-device").disabled = modal;
+    $("#inf-gpu").disabled = !modal;
+    $("#inf-rtc").disabled = modal;
+    if (modal) $("#inf-rtc").checked = false;
+    $("#inf-crop").disabled = !modal;
+    if (!modal) $("#inf-crop").checked = false;
+    const selected = this.selection();
+    const profile = this._profiles.find((p) => p.id === selected.policy || p.repo_id === selected.policy);
+    $("#inf-profile-note").textContent = profile ? `Revision ${profile.revision}. ${profile.mapping_note}` : "Custom checkpoints use the existing local LeRobot path; verify their rig compatibility before motion.";
+    ["btn-pc", "btn-prepare", "btn-ro", "btn-probe-saved", "btn-probe-live", "btn-cloud-stop"].forEach((id) => { document.getElementById(id).disabled = session.active || this._launching; });
+    $("#btn-prepare").disabled ||= !modal;
+    $("#btn-ro").disabled ||= !!profile && (!profile.mapping_verified || (!modal && profile.id === "molmoact2"));
+    $("#btn-inf-stop").disabled = !session.active;
+    const submitted = this._submitted;
+    const matches = submitted && submitted.selection === JSON.stringify(selected) && submitted.saved === $("#inf-saved").value && submitted.id === session.meta?.operation_id;
+    $("#inf-status").textContent = matches ? `${session.mode}: ${session.active ? (session.stopping ? "stopping local process…" : "running…") : session.returncode === 0 ? "completed" : "failed or stopped"} · operation ${submitted.id}` : "No completed operation for this selection. Changing options invalidates the displayed readiness result.";
+    $("#inf-result").textContent = matches ? (session.parsed?.result ? JSON.stringify(session.parsed.result, null, 2) : (session.log || []).join("\n")) : "";
+    syncCams();
+  },
+  async launch(path, extra, button) {
+    if (this._launching || session.active) return;
+    const selected = this.selection();
+    this._launching = true;
+    this.syncForm();
+    try {
+      const result = await post(path, { ...selected, ...extra });
+      this._submitted = { id: result.meta?.operation_id, selection: JSON.stringify(selected), saved: $("#inf-saved").value };
+      await refreshSession();
+    } catch (e) { alert(e.message); }
+    finally { this._launching = false; this.syncForm(); }
   },
   async refreshList() {
     const el = $("#run-list");
@@ -617,6 +681,7 @@ pages.inference = {
     } catch (e) { el.innerHTML = errBanner(e.message); }
   },
   update() {  // re-fetch only when a session starts/ends, not on every poll
+    this.syncForm();
     if (this._wasActive !== session.active) { this._wasActive = session.active; this.refreshList(); }
   },
 };

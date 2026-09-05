@@ -25,9 +25,9 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 # Modes whose child process opens the rig cameras (the UI's own streams must let go first).
-CAMERA_MODES = frozenset({"record", "teleoperate", "rollout"})
+CAMERA_MODES = frozenset({"record", "teleoperate", "rollout", "policy-probe-live"})
 # Modes that energise motors (gravity-comp on connect; teleop/record/rollout also move them).
-HARDWARE_MODES = frozenset({"read", "teleop", "teleoperate", "record", "rollout", "rest"})
+HARDWARE_MODES = frozenset({"read", "teleop", "teleoperate", "record", "rollout", "rest", "policy-probe-live"})
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 # `yamkit read`:  `    left_follower q=[+0.001 -0.512 ...] grip=0.98 btn=10`
@@ -47,6 +47,11 @@ _NEXT_CALLS_RE = re.compile(r"next calls.*?│([^│]*)")
 def parse_line(line: str, parsed: dict[str, Any]) -> None:
     """Update the shared parsed-state dict from one line of child output (in place)."""
     line = _ANSI_RE.sub("", line)
+    if line.startswith("[yamkit-result] ") and len(line) <= 65536:
+        result = json.loads(line[len("[yamkit-result] "):])
+        if isinstance(result, dict):
+            parsed["result"] = result
+        return
     m = _READ_RE.match(line)
     if m:
         name, qs, grip, btn = m.groups()
@@ -146,9 +151,11 @@ class SessionManager:
 
     def start(self, mode: str, argv: list[str], meta: dict[str, Any] | None = None) -> dict[str, Any]:
         with self._lock:
-            if self.active:
+            if self.active or (self._reader is not None and self._reader.is_alive()):
                 raise RuntimeError(f"a {self.mode!r} session is already running (stop it first)")
             env = dict(os.environ, PYTHONUNBUFFERED="1", COLUMNS="300", NO_COLOR="1")
+            env.pop("YAMKIT_OPENAI_API_KEY", None)
+            env.pop("DATABASE_URL", None)
             # LeRobot's recorder grabs the keyboard system-wide when it sees a display (Esc / arrows /
             # n / r / q in *any* window would end or skip an episode). Sessions started from the UI
             # are controlled by the UI's buttons only.
@@ -164,14 +171,22 @@ class SessionManager:
             self.ended_at = self.returncode = None
             self.stopping = False
             self.log.append("$ " + " ".join(argv))
-            self._proc = subprocess.Popen(
-                argv,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                env=env,
-                start_new_session=True,  # own process group → signals reach lerobot children too
-            )
+            try:
+                self._proc = subprocess.Popen(
+                    argv,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    env=env,
+                    start_new_session=True,  # own process group → signals reach lerobot children too
+                )
+            except OSError:
+                self._proc = None
+                self.ended_at = time.time()
+                self.returncode = 1
+                if self.on_exit:
+                    self.on_exit(self.status())  # relinquish cameras even if the process never started
+                raise RuntimeError("could not start the requested CLI process") from None
             self._reader = threading.Thread(target=self._read_output, args=(self._proc,), daemon=True)
             self._reader.start()
         return self.status()
@@ -273,7 +288,9 @@ class DeploymentLog:
         self.root = Path(root)
 
     def create(self, status: dict[str, Any]) -> Path:
-        run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + (status.get("mode") or "run")
+        import uuid
+
+        run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + (status.get("mode") or "run") + "-" + uuid.uuid4().hex[:8]
         d = self.root / run_id
         d.mkdir(parents=True, exist_ok=True)
         self._write_meta(d, status, run_id)
