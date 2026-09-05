@@ -3,6 +3,12 @@
 Audited against the actual PyPI `lerobot==0.6.1` wheel. The adapter depends on this
 pin; upgrading LeRobot requires rerunning the integration and fault tests.
 
+**Production physical Modal rollout is unconditionally blocked.** The architecture
+below is exercised with fake hardware and RPC; the actual integrated real-service
+queue has not been qualified. [Performance evidence](REMOTE_PERFORMANCE.md) separates
+those synthetic runs from [historical C model measurements](MODAL_VALIDATION.md).
+Molmo's source mapping is reviewed, but no supervised physical validation was performed.
+
 ## Factories and activation
 
 `yamkit.remote_policy` registers `YamkitRemoteConfig` as `yamkit_remote` through
@@ -16,8 +22,12 @@ normalization. Saved model processing and the camera rename happen on the server
 
 `run_remote_rollout` first inspects the unconnected YAM plugin schema, including
 exact ordered names, calibration for every gripper, camera color mode, hardware
-variant and action cadence. It then calls the real `build_rollout_context`.
-The proxy's readiness request and metadata validation execute in the upstream
+variant and action cadence, then enforces the unconditional performance gate before
+calling `build_rollout_context`. Shared CLI/UI motion validation and the raw proxy
+constructor enforce it too; no environment variable, CLI option or ready pool bypasses
+it. Tests replace the gate only alongside fake hardware and transport.
+
+On that diagnostic path, the proxy's readiness request and metadata validation execute in the upstream
 policy-loading phase, before `Robot.connect`. A transient shutdown event is passed
 to the policy and YAM plugin so Stop during preparation prevents subsequent
 activation. Initial homing retains the existing implementation and speed settings;
@@ -63,14 +73,16 @@ Buffering is not labeled RTC.
 ## Faults and Stop
 
 Upstream normally retries worker errors until ten consecutive failures, returns `None` on underrun,
-and tears down by returning to the initial pose and calling a plugin disconnect
-that also homes. Those defaults are unsuitable for a remote fault.
+and can return to the initial pose during teardown. The YAM plugin also normally homes
+on clean disconnect. The remote runner explicitly prevents these return moves on faults.
 
 The adapter invalidates the policy session and current queue on a fault. Queue
 objects are permanently invalidated before replacement on pause/reset, so even
 an in-flight worker retaining an old queue cannot merge a late result. The queue
 has a finite capacity (one chunk plus a half-chunk prefetch threshold) and tracks
-the local observation deadline of every action. Responses are checked for exact
+the original observation-relative timestep deadline of every action. A merge drops
+both the elapsed prefix and the additional prefix overlapping the existing queued
+tail; it never shifts expired targets into the future. Responses are checked for exact
 session/sequence/revision/schema, finite values, units and local deadlines. RPC
 requests are serialized, bounded, and made only in the background worker.
 An instance-ID change after readiness also stops execution and requires fresh
@@ -78,11 +90,12 @@ preparation; a restarted container cannot silently inherit an active robot sessi
 
 The first chunk gets a bounded startup grace period. Once execution begins, an
 empty or expired queue raises a fault before upstream interpolation can replay
-an old action. Local Stop is also checked immediately before dispatch. Release
+an old action. Both local Stop and the dequeued action's deadline are checked again
+after upstream action processing, immediately before canonical dispatch. Release
 uses `disconnect_no_home`, before joining an outstanding RPC worker; it never
 returns to start, homes, or falls back to CPU. A transient reference on the YAM
 config enables release even if upstream context construction fails after connect.
-Normal local plugin disconnection still homes as before.
+Normal local plugin disconnection still homes; fault cleanup requests no-home release.
 
 Local observation timestamps represent receipt of the robot/camera snapshot;
 they are not camera exposure timestamps. Server clock values are not subtracted
@@ -101,10 +114,15 @@ validation, late replies, deadlines, queue limits, underrun and no post-stop
 actions. A tiny local ACT performs a real forward pass through the unchanged
 local sync context and base strategy, also using fake hardware.
 
+`tests/test_remote_performance.py` additionally exercises elapsed/overlap prefix
+discard, final-dispatch expiry, actual worker overlap and fail-closed underruns with
+fake SDK commands. The benchmark's request percentiles measure injected fake RPC
+delays, not new network or GPU inference. Saved processors remain unchanged.
+
 Remote rollout currently supports only the base strategy, exact profile cadence,
 no interpolation, and the CPU RPC proxy. Recording/DAgger/episodic remote
-strategies and guided RTC are rejected. Physical operation still requires a
-supervised probe and separate motion approval; passing unit tests or native
-checkpoint inference does not validate a particular robot's calibration or
-camera geometry. See the feature's main documentation for actual CPU/GPU test
-results, model revisions and deployment procedures.
+strategies and guided RTC are rejected. These software constraints do not enable
+physical Modal operation: the performance gate remains closed. Base SmolVLA/pi05
+also lack physical YAM mapping. See [staged acceptance](acceptance-test.md) for the
+blocked stages, and [operator parity](OPERATOR_PARITY.md) for the separately supported
+native teleop and required record/LeRobot teleoperate wrappers.

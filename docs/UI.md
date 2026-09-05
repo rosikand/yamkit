@@ -8,6 +8,7 @@ yamkit ui --port 9000 --rig configs/rig.yaml
 ```
 
 Screenshots: [`docs/ui-screenshots/`](ui-screenshots/).
+Current command effects and blocked stages: [staged acceptance](acceptance-test.md).
 
 ## Design rule: yamkit stays the source of truth
 
@@ -24,7 +25,7 @@ The UI adds **no second robot driver and no new control loop**:
   different process — the UI cannot see its output. Stop sends the
   process group a SIGINT (identical to Ctrl-C in a terminal), escalating to SIGTERM/SIGKILL only
   if the child hangs. One session at a time.
-* **Camera previews** keep the same MJPEG browser URL (`/api/cameras/<name>/stream`). While no session owns the cameras, the UI opens direct previews lazily. While a follower plugin owns them, the UI proxies images already acquired by that plugin's observation loop. Previews target 10 fps independently of the recording rate, and continue through resets while observations are acquired. There is only one capture owner at a time; the UI confirms that its direct captures have stopped before the plugin opens its cameras. A preview failure during ownership displays an unavailable tile and never reopens a competing capture.
+* **Camera previews** keep the same MJPEG browser URL (`/api/cameras/<name>/stream`). Live and Record request their tiles; Inference starts with previews off and opens streams only after **Show camera previews**. While no session owns the cameras, the UI opens requested direct previews lazily. While a follower plugin owns them, the UI proxies images already acquired by that plugin's observation loop. Previews target 10 fps independently of the recording rate, and continue through resets while observations are acquired. There is only one capture owner at a time; the UI confirms that its direct captures have stopped before the plugin opens its cameras. A preview failure during ownership displays an unavailable tile and never reopens a competing capture.
 * **UI-started sessions get no display**: `DISPLAY` / `WAYLAND_DISPLAY` are stripped from the child environment so LeRobot's recorder does not install its system-wide keyboard hook (Esc / arrows / n / r / q pressed in any window would otherwise end or skip an episode). Sessions are driven by the UI buttons only.
 
 ## Pages
@@ -35,9 +36,9 @@ Navigation is a fixed left sidebar; the theme switcher (Light / Dark / System) l
 | page | contents |
 |---|---|
 | **Live** | camera tiles (top / left wrist / right wrist), follower joint+gripper state, CAN/camera/rig status, current mode + loop rate, read-only controls (`yamkit read` stream), Park arms (`yamkit rest`: every arm moves slowly home and is released) |
-| **Record** | camera tiles, teleop pair status (engaged, tracking error, Hz), dataset name / task / episodes / durations form (recording rate fixed at 30 fps unless changed under "Advanced", capped by the slowest camera), Start Teleop / Start Recording / Park / Stop, episode + elapsed progress, live log. Start moves every arm home first; Stop sends Ctrl-C, the arms return home and are released; clicking Stop again during that move releases them immediately |
+| **Record** | camera tiles, teleop pair status (engaged, tracking error, Hz), dataset name / task / episodes / durations form (recording rate fixed at 30 fps unless changed under "Advanced", capped by the slowest camera), Start Teleop / Start Recording / Park / Stop, episode + elapsed progress, live log. Normal Start/Stop use configured homing; clicking Stop again during the return releases immediately. Startup and operator-session faults release without another home move |
 | **Datasets** | LeRobot v3 datasets under `data/datasets/` and, when signed in, the account's Hub datasets in the same table with a local / cloud / both tag, Upload and Download buttons and Hub links; per-episode detail page with synchronized videos and state/action small-multiple charts |
-| **Inference** | policy runs launched from the UI (rollout + policy-check) with model, task, latency, status, termination reason; per-run detail page with log and replay videos (`outputs/ui/deployments/`) |
+| **Inference** | local/Modal selection, model/task/options, checks, explicit cloud preparation/shutdown and saved/live probes; camera previews opt in. Compatible local rollout requires motion confirmation. All physical Modal rollout is disabled by the performance gate. Run history includes latency, status, termination reason, logs and replay videos (`outputs/ui/deployments/`) |
 | **Models** | checkpoint directories under `outputs/` and the account's Hub models, tagged local / cloud / both; per-checkpoint detail page with file sizes and `config.json` / `train_config.json` contents; Upload buttons; Hub models get their own detail page and can be typed straight into the rollout form |
 | **Settings** | Hugging Face sign-in (the token goes to `data/hf/token`, never through the rig) and the rig's hub settings (account, private, default destination); view/edit `configs/rig.yaml`: structured fields for the control knobs, read-only arm/camera tables (with the discovery notes: model, serial, USB port), and a raw-YAML editor. Every save is validated server-side first (parse → `RigConfig` → `validate()`), raw YAML is written verbatim (comments kept), saving is refused while a hardware session runs, and the camera feeds are reloaded from the saved file (no restart). The rig file holds hardware identifiers only — no credentials pass through the UI. |
 
@@ -59,6 +60,21 @@ and `/api/overview` (5 s). Chart colors are the validated categorical pair per t
 font is vendored at `ui/InterVariable.woff2`, so the UI needs no network access.
 
 Screenshots (light + dark for every page): `docs/ui-screenshots/<page>-<theme>.png`.
+
+The Inference page's initial load reads no cameras, loads no weights and starts no
+cloud service. **Show camera previews** can open physical cameras but never arms.
+Prepare Modal and remote checks/probes are explicit billable operations; live probes
+require their own active-read motor approval. Stop local execution and shutting down
+the owned cloud service are separate actions. Readiness or confirmation cannot bypass
+the [physical Modal performance gate](REMOTE_PERFORMANCE.md). Molmo's source mapping
+is reviewed, but physical validation was not performed; base SmolVLA/pi05 physical
+mapping and guided remote RTC remain unsupported. See [the Modal workflow](MODAL.md).
+
+Record launches `yamkit record`, which installs the same operator processing used by
+native teleop. Unprocessed raw LeRobot YAM leader actions are rejected. Native bilateral
+feedback remains supported; recording and LeRobot teleoperation reject nonzero
+`control.bilateral_kp`. See [operator parity](OPERATOR_PARITY.md) for button edges,
+interruptible synchronization, measured holds and recorded action labels.
 
 ## Camera previews during sessions
 
@@ -88,7 +104,9 @@ Camera ownership is a separate claim/release handshake from preview registration
 acquisition, the plugin sends a versioned `@yamkit-cameras/1` ownership claim on stdout and waits
 up to 15 seconds for the parent's JSON stdin acknowledgement that direct captures have released
 their devices. Each claim/acknowledgement identifies both the session and the camera owner.
-Release is reported only after plugin camera disconnect completes. This follows actual camera ownership, so a
+Release is reported only after camera disconnection is confirmed, including termination of its
+existing capture thread. A failed release retains the lease and prevents reconnect until cleanup
+succeeds. This follows actual camera ownership, so a
 command that does not connect cameras leaves direct previews available. Registration does not
 grant ownership, and loss of preview transport does not release it. Confirmed process-group
 death also clears ownership and registration after a crash. Rapid session changes reject
@@ -97,8 +115,9 @@ previous registrations and stop previous streams.
 Tiles show **waiting** before their first published frame and **stale** when acquisition stops
 producing fresh frames (currently after one second), or **unavailable** after a preview failure.
 If the camera owner never registers a preview, waiting becomes unavailable after ten seconds.
-Source sequence and age belong to the acquired image; reconnecting or replaying an old image
-does not make it fresh. A stale last image can remain visible with its state label.
+Source sequence and age track the image handed to the publisher; they are not verified sensor
+exposure timestamps. Reconnecting or replaying an old image does not make it fresh.
+A stale last image can remain visible with its state label.
 Failed or stale streams retry at two-second intervals. Healthy streams renew every thirty
 seconds to recover silent MJPEG disconnects that a browser may not report as errors.
 
@@ -138,9 +157,10 @@ area clear. No physical acceptance is included in the automated tests or synthet
 Record observed behavior and any missing checks; synthetic results do not establish physical
 camera compatibility, control-loop timing, real recording throughput, or upload performance.
 
-## Hardware-free validation
+## Historical preview-workstream validation
 
-On 2026-09-05, `make test` passed **151 tests in 34.74 seconds** with an isolated, offline
+Before integration, on 2026-09-05, the preview workstream's `make test` passed
+**151 tests in 34.74 seconds** with an isolated, offline
 Hugging Face environment. One existing Starlette/httpx deprecation warning remained.
 `make lint`, benchmark-script Ruff, and `git diff --check` passed.
 
@@ -156,3 +176,5 @@ Chrome reported `complete=true`; that property is not treated as an ended stream
 The [synthetic benchmark](preview-benchmark.md) records handoff/loop percentiles, CPU, memory,
 and drops for three 640×480 RGB sources at 30 Hz. These checks did not exercise physical arms,
 USB cameras, real recording throughput, or a real Hub upload.
+These historical counts are not the final integrated suite results. Follow the
+[acceptance checklist](acceptance-test.md) for the current combined workflow.

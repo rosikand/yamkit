@@ -1,4 +1,17 @@
-# Development validation — 2026-09-05
+# Historical C development validation — 2026-09-05
+
+This report preserves the standalone C workstream's actual CPU/GPU measurements,
+test counts and resource cleanup. They are historical results, not reruns of the
+final integration. The original result JSON and development ledger are not present
+in this integration workspace; their recorded paths below refer to the C workspace.
+
+**Current integration status: all physical Modal rollout is unconditionally blocked**
+pending qualification of the actual integrated queue. Molmo's source mapping was
+reviewed, but no supervised physical validation was performed. Base SmolVLA/pi05
+physical mapping and guided remote RTC remain unsupported. See
+[integrated performance](REMOTE_PERFORMANCE.md), [operator parity](OPERATOR_PARITY.md)
+and [staged acceptance](acceptance-test.md) for current behavior. The integrated
+benchmark's fake hardware/RPC results do not add real-service samples to this report.
 
 Starting revision: `dbd01f1e70be66bb0e639789d0d37d7ecb5bd166`.
 All development stayed on the feature branch. No real arms/cameras, SSH, CAN/system
@@ -14,7 +27,8 @@ Completed milestones were committed and pushed incrementally:
 - `787d7bf8cb3ed200f0695a992972627f2f138fad`: process ownership and complete readiness checks.
 - `9006b4544b7164489cf71b61af339f6a0f976ae2`: effective local configuration validation and preserved local options.
 
-The final documentation commit is identified in the task's completion message.
+These commits describe C's implementation history, before integration with hardening,
+preview ownership, shared operator processing and the physical performance gate.
 
 | Area | Main files |
 |---|---|
@@ -24,7 +38,7 @@ The final documentation commit is identified in the task's completion message.
 | Existing browser/session integration | `ui/app.js`, `src/yamkit/ui/{server,sessions}.py` |
 | Verification and operator instructions | `tests/test_{remote_policy,local_rollout,inference_service,modal_ops,deployment,probes,probe_runner,inference_ui}.py`, this report and linked audit/runtime docs |
 
-## Real inference
+## Historical real inference
 
 All successful cases used pinned model and saved pre/postprocessors with three **fresh
 `predict_action_chunk` calls**. No cached `select_action` pops, synthetic normalization
@@ -32,7 +46,7 @@ statistics or physical-vector padding/truncation counted as success.
 
 | Test | Result | Chunk shape, each of 3 calls | Server model load | Compute region |
 |---|---|---|---|---|
-| SmolVLA CPU | Passed, finite | 50×6 | 29.38 s local readiness | This x86_64 cloud workspace; 4 OpenMP threads |
+| SmolVLA CPU | Passed, finite | 50×6 | 29.38 s local readiness | C's x86_64 cloud VM; 4 OpenMP threads |
 | SmolVLA L40S | Passed, finite | 50×6 | 23.91 s | us-east-2 |
 | MolmoAct2-YAM L40S, first attempt | Readiness timeout during downloads/loading; no successful inference claimed | — | Startup capped at 240 s; client readiness 300 s | App stopped before retry |
 | MolmoAct2-YAM L40S, cached retry | Passed, finite | 30×14 | 149.35 s | eu-frankfurt-1 |
@@ -54,7 +68,7 @@ Revisions:
 Nested dependency revisions, gripper direction evidence and exact camera/state mapping
 are recorded in [INFERENCE_MODELS.md](INFERENCE_MODELS.md).
 
-## Latency and payloads
+## Historical latency and payloads
 
 Only two warm observations per model were collected. Quantiles below are descriptive
 interpolations over those two samples, not reliable estimates of production tails.
@@ -67,16 +81,15 @@ First request is after preparation and therefore **not** a cold-container measur
 | MolmoAct2 L40S | 2.959 s | 1.482 / 1.503 / 1.505 s | 0.405–0.412 s | 2,073,600 bytes |
 | pi05 L40S | 4.314 s | 2.712 / 2.783 / 2.789 s | 0.184–0.188 s | 451,584 bytes |
 
-Client fixture generation/encoding ranged approximately 0.0007–0.011 seconds. JSON
-artifacts retain separate encoding, server preprocessing, inference, postprocessing,
+Client fixture generation/encoding ranged approximately 0.0007–0.011 seconds. C's JSON
+artifacts retained separate encoding, server preprocessing, inference, postprocessing,
 round-trip and locally measured observation age for every successful request.
 
 Each successful pool has just **one** cold preparation observation (p50/p95/p99 would
 all equal that one observation): SmolVLA **434.64 s**, pi05 **153.83 s**, and the cached
 Molmo retry **166.88 s**. Readiness includes deployment/scheduling and, for the first
 app, a 387.63-second CUDA image build. The table above separately reports server model loading.
-These measurements came from
-this cloud VM, not the Lenovo or its network connection.
+These measurements came from C's cloud VM, not the Lenovo or its network connection.
 
 Two additional Molmo **saved synthetic** probes used 14 ordered state values and
 three 640×480 RGB frames, with explicit synthetic source and capture age. They never
@@ -92,15 +105,16 @@ These probes passed numerical/schema/pre-clamp reporting, **not** live-motion fr
 The Molmo chunk lasts one second, while even native warm RPC took about 1.5 seconds.
 Continuous remote robot execution is therefore **not validated** by these measurements;
 the default two-second freshness limit also rejects the observed rig-resolution probe
-latencies. Do not infer that buffering hides this latency. Measure from the actual
-robot host and review transport/region/latency before supervised motion.
+latencies. Do not infer that buffering hides this latency. The final integration
+therefore blocks physical Modal rollout; it requires actual integrated queue and
+robot-host measurements before any future qualification decision.
 
 Actual hardware queue depth/underruns were not measured. Queue capacity, expired actions,
 underruns, Stop, pause/reset generations and no post-stop actions are covered by tests
 using the actual upstream worker/strategy and fake hardware. The runtime emits these
 metrics on success and failure; no fake metrics are substituted for a physical run.
 
-## Automated and browser coverage
+## Historical automated and browser coverage
 
 Normal tests are hardware-free and isolate inherited Hub/Modal credentials. Tests use
 actual pinned LeRobot policy factories, processor factory and rollout context; the
@@ -115,18 +129,19 @@ snapshot results, credential exclusion, lingering previews, recording preservati
 local arm selection. Page handlers execute in QuickJS. Chrome also rendered the existing
 Inference page against a hardware-free local preview server.
 
-The final validation commands passed: **306 tests**, `make lint`, and `git diff --check`.
+The standalone C validation commands passed: **306 tests**, `make lint`, and `git diff --check`.
 An earlier full run had one intermittent failure in the existing
 `test_go_home_all_runs_arms_together_and_ctrl_c_releases_all` assertion; its isolated
 rerun and the subsequent full suite passed. The underlying homing implementation was
 not changed beyond accepting the optional remote startup-stop event. This intermittent
-Ctrl-C release check remains relevant to the separate hardware-hardening work.
+Ctrl-C release observation belongs to the pre-integration implementation; current
+hardening and operator cleanup are covered separately by the integration tests.
 Known environment warnings:
 Starlette's httpx adapter deprecation, multiprocessing fork warnings in ownership-lock
 tests, and the repository's pre-existing uv.toml/tool.uv overlap. No system package was
 installed to suppress these warnings.
 
-## Budget, resources and cleanup
+## Historical budget, resources and cleanup
 
 Persistent local ledger: `.context/modal-development-ledger.json` (never reset).
 The total authorized limits were $8 and 3,600 allocated GPU seconds, with one L40S pool
@@ -134,13 +149,15 @@ at a time. Each operation reserved $2 and 900 GPU seconds before starting. No te
 minimum containers, buffer containers, persistent heartbeats or configured retries.
 The single Molmo retry was explicit after its previous app stopped.
 
-[Modal pricing](https://modal.com/pricing) was checked before paid work: L40S
+[Modal pricing](https://modal.com/pricing) was checked by C before that paid work: L40S
 $0.000542/s, CPU $0.0000131/core/s, RAM $0.00000222/GiB/s, volume $0.09/GiB/month.
 The estimate conservatively charges **all elapsed wall time, including image build**, as
 one GPU plus 4 CPU cores and 64 GiB RAM, applies the largest 1.75× regional multiplier,
 adds 30 seconds of cleanup per operation and $0.20 per operation for build/storage
-contingency. It does not subtract free credits or included storage. Egress billing
-starts October 2026, according to [Modal's announcement](https://modal.com/docs/guide/network-egress-billing).
+contingency. It did not subtract free credits or included storage. The historical
+estimate used the then-announced October 2026 egress billing start in
+[Modal's announcement](https://modal.com/docs/guide/network-egress-billing);
+this report does not establish current pricing.
 
 | App | Outcome | Conservative allocated-time upper bound | Estimated usage upper bound |
 |---|---|---|---|
@@ -150,17 +167,19 @@ starts October 2026, according to [Modal's announcement](https://modal.com/docs/
 | `ap-zcaXzBUEVXy1hBVcbRySYy` | Molmo retry + probes passed | 215.81 s | $0.478 |
 | **Total** | | **1,225.57 s (20.43 min)** | **$2.380** |
 
-Remaining allowance: **$5.620** and **2,374.43 GPU seconds**, using these conservative
-upper bounds. These are estimates, not a retrieved billing invoice or exact GPU
+Remaining allowance at C's completion: **$5.620** and **2,374.43 GPU seconds**, using these conservative
+upper bounds. This historical balance does not authorize new spending. These are
+estimates, not a retrieved billing invoice or exact GPU
 allocation measurements. Container `ta-01M1QMW6JN0PF6Y18M2NF7KCAR` was recorded for the
 last app; the ledger retains app IDs and bounded wall times for every operation.
 
-Final checks confirmed all four owned apps in `stopped` state and each app's container
+C's final checks confirmed all four owned apps in `stopped` state and each app's container
 list empty. The owned volume `yamkit-vla-dev-dbd01f1e-20260905` was deleted and its absence
-verified. **No named test-weight storage or test GPUs remain.** Modal-managed build
+verified. **No named test-weight storage or test GPUs remained at C's completion.** Modal-managed build
 image cache (`im-gN9LwYNusxpmX92ae19AzI`) may remain; its retained size was not measured.
 Unrelated applications/volumes were not stopped or modified. Local downloaded model
-fixtures remain under git-ignored `data/hf/`; logs and result JSON remain in `.context/`.
+fixtures were retained under C's git-ignored `data/hf/`; logs and result JSON were
+retained in its `.context/`. Integration did not redeploy those pools or make new paid calls.
 
 ## Outstanding acceptance limits
 
@@ -171,3 +190,7 @@ freshness and WebSocket transport remain unsupported or unvalidated as documente
 Local Molmo synchronous inference is subject to sufficient local RAM/GPU/dependencies;
 its physical execution was not tested. Source-defined conventions and finite outputs
 alone do not approve motion.
+
+The current performance gate is enforced before physical Modal activation, including
+direct remote proxy construction. Successful checks and supervised active-read probes
+remain diagnostic; they cannot enable that blocked rollout path.

@@ -2,13 +2,16 @@
 
 The catalog is offline. Merely listing models does not download weights, contact Modal,
 open cameras, or connect arms. The catalog distinguishes a successful native forward
-pass from a physical YAM mapping. A source-defined mapping still requires a supervised
-probe, matching robot calibration and camera setup; it is not a validated robot rollout.
+pass from a physical YAM mapping. Molmo's source conventions were reviewed; no supervised
+physical mapping, calibration or camera validation was performed. **All physical Modal
+rollout is blocked** pending qualification of the actual integrated queue. A probe,
+source mapping or ready service cannot override [the performance gate](REMOTE_PERFORMANCE.md).
+See [staged acceptance](acceptance-test.md) for available checks and command effects.
 
 | Profile | Checkpoint revision (model and saved processors) | Native state/action | YAM deployment |
 |---|---|---|---|
 | `smolvla` | [`c83c3163b8ca9b7e67c509fffd9121e66cb96205`](https://huggingface.co/lerobot/smolvla_base/tree/c83c3163b8ca9b7e67c509fffd9121e66cb96205) | 6 / 6; chunk 50 | No verified physical mapping; diagnostic inference only |
-| `molmoact2` | [`fdade02d1f1c1dd819114b0478f735072fb6b212`](https://huggingface.co/lerobot/MolmoAct2-BimanualYAM-LeRobot/tree/fdade02d1f1c1dd819114b0478f735072fb6b212) | 14 / 14; chunk 30 | Source-defined bimanual YAM convention; requires calibration and supervised acceptance |
+| `molmoact2` | [`fdade02d1f1c1dd819114b0478f735072fb6b212`](https://huggingface.co/lerobot/MolmoAct2-BimanualYAM-LeRobot/tree/fdade02d1f1c1dd819114b0478f735072fb6b212) | 14 / 14; chunk 30 | Source mapping reviewed; local sync path available but physically unvalidated; Modal blocked |
 | `pi05` | [`b211f3d44c36b6acfcf7ae94a64e8e96f75a64ba`](https://huggingface.co/lerobot/pi05_base/tree/b211f3d44c36b6acfcf7ae94a64e8e96f75a64ba) | 32 / 32; chunk 50 | No physical YAM mapping or saved robot statistics; diagnostic inference only |
 
 No physical vector is padded or truncated. The native fixture keeps the checkpoint's
@@ -93,8 +96,9 @@ placement or perspective. It is disabled by default and logged identically for c
 probes and rollout. It never changes recording settings.
 
 Serving performs saved preprocessor → `predict_action_chunk` → saved postprocessor.
-It never calls cached `select_action` pops. Returned executable chunks are explicitly
-`robot` units for the mapped profile. The remote policy's client processors are numerical
+It never calls cached `select_action` pops. Returned processed chunks are explicitly
+`robot` units for the source-mapped profile; those units do not authorize execution.
+The remote policy's client processors are numerical
 identity with the required batch/device/schema handling; there is no second normalization.
 
 Molmo's saved postprocessor clamps normalized actions to [-1,1] before masked quantile
@@ -162,3 +166,10 @@ transport. The service rejects continuation rather than sending raw robot units 
 denoiser. An unguided background chunk worker is not advertised as guided RTC.
 No inference-mode wrapper is imposed around denoising; future verified guidance must retain
 upstream gradient requirements. There are no pause heartbeats or permanent keepalives.
+
+[Historical C validation](MODAL_VALIDATION.md) records actual model forward passes and
+two warm RPC samples per model. [Integrated performance measurements](REMOTE_PERFORMANCE.md)
+use fake hardware/RPC and preserve saved processors; their larger synthetic sample
+count is not additional real-service evidence. Native bilateral teleop remains available;
+recording and LeRobot teleoperation require yamkit's [operator wrappers](OPERATOR_PARITY.md)
+and reject nonzero bilateral feedback.

@@ -80,7 +80,7 @@ class InferenceOptions:
                     profile.require_robot_mapping()
                     if profile.id == "molmoact2" and self.rtc:
                         raise ValueError("MolmoAct2 guided RTC has not been qualified for this physical profile; "
-                                         "use local sync or Modal unguided async")
+                                         "use local sync; physical Modal rollout is currently blocked")
                     if self.fps != profile.fps or (self.arms and len(self.arms) != 2):
                         raise ValueError("the reviewed YAM profile requires both followers at 30 Hz")
         return self

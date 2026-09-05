@@ -29,7 +29,7 @@ def validate_local_rollout(cfg: RolloutConfig) -> None:
         # Pinned upstream Molmo declares RTC support in continuous mode. Physical
         # prefix guidance and its failure handling have not been qualified here.
         raise ValueError("Local MolmoAct2 RTC execution is not qualified for this physical profile; "
-                         "select local sync or Modal unguided async")
+                         "select local sync; physical Modal rollout is currently blocked")
     if not math.isfinite(cfg.fps) or cfg.fps <= 0:
         raise ValueError("Local rollout requires a finite positive FPS")
     if not math.isfinite(cfg.duration) or cfg.duration < 0:
