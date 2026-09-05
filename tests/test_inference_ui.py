@@ -355,3 +355,12 @@ def test_spawn_failure_releases_preview_ownership(inference_ui, monkeypatch):
     assert response.status_code == 409
     assert not inference_ui.manager.active
     assert all(camera['suspended_by'] is None for camera in inference_ui.client.get('/api/cameras').json())
+
+
+def test_custom_local_check_forwards_selected_arm(inference_ui):
+    inference_ui.child = 'pass'
+    response = inference_ui.client.post('/api/session/policy-check', json=payload(
+        policy='outputs/custom', backend='local', arms=['left']))
+    assert response.status_code == 200
+    argv = inference_ui.seen[-1]
+    assert argv[argv.index('--arms') + 1] == 'left'

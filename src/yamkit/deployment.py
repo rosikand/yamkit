@@ -34,10 +34,10 @@ class InferenceOptions:
             raise ValueError("task must contain 1–2048 characters")
         if self.backend not in ("local", "modal"):
             raise ValueError("backend must be local or modal")
-        if self.device not in ("cpu", "cuda", "mps"):
-            raise ValueError("device must be cpu, cuda or mps")
-        if not math.isfinite(self.duration) or not 0 < self.duration <= 3600:
-            raise ValueError("duration must be finite and between 0 and 3600 seconds")
+        if not re.fullmatch(r"(?:cpu|mps|cuda(?::[0-9]+)?)", self.device):
+            raise ValueError("device must be cpu, mps, cuda or cuda:N")
+        if not math.isfinite(self.duration) or self.duration < 0:
+            raise ValueError("duration must be finite and nonnegative (local 0 means unlimited)")
         if not math.isfinite(self.fps) or not 0 < self.fps <= 100:
             raise ValueError("fps must be finite and between 0 and 100")
         if len(self.arms) > 2 or len(set(self.arms)) != len(self.arms):
@@ -48,6 +48,8 @@ class InferenceOptions:
             from .inference.profiles import get_profile
 
             profile = get_profile(self.policy)
+            if not 0 < self.duration <= 3600:
+                raise ValueError("Modal duration must be between 0 and 3600 seconds")
             if self.gpu != "L40S":
                 raise ValueError("this release supports one L40S per model pool")
             if self.rtc:
@@ -73,9 +75,9 @@ class InferenceOptions:
                     profile = None  # existing compatible local checkpoints keep their LeRobot path
                 if profile is not None:
                     profile.require_robot_mapping()
-                    if profile.id == "molmoact2":
-                        raise ValueError("local MolmoAct2 rollout is blocked by LeRobot 0.6.1 relative-action/RTC "
-                                         "gates; use Modal unguided async, or a compatible local checkpoint")
+                    if profile.id == "molmoact2" and self.rtc:
+                        raise ValueError("MolmoAct2 guided RTC has not been qualified for this physical profile; "
+                                         "use local sync or Modal unguided async")
                     if self.fps != profile.fps or (self.arms and len(self.arms) != 2):
                         raise ValueError("the reviewed YAM profile requires both followers at 30 Hz")
         return self

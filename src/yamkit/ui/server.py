@@ -415,6 +415,8 @@ def create_app(
     def session_policy_check(body: PolicyCheckBody) -> dict[str, Any]:
         options = inference_options(body)
         args = ["policy-check", "--rig", str(rig_path), *options.cli_args()]
+        for arm in body.arms or []:
+            args += ["--arms", arm]
         return inference_start("policy-check", args, options)
 
     @app.post("/api/session/modal-prepare")

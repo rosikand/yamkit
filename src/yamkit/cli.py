@@ -515,7 +515,8 @@ def align(
 
 # ------------------------------------------------------------------------------- LeRobot wrappers --
 def _exec_lerobot(script: str, args: list[str], dry_run: bool) -> None:
-    cmd = [sys.executable, "-m", f"lerobot.scripts.{script}", *args]
+    module = "yamkit.local_rollout" if script == "lerobot_rollout" else f"lerobot.scripts.{script}"
+    cmd = [sys.executable, "-m", module, *args]
     console.print("[dim]$ " + " ".join(shlex.quote(c) for c in cmd) + "[/]")
     if dry_run:
         return

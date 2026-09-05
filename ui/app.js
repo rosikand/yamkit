@@ -645,7 +645,7 @@ pages.inference = {
     $("#inf-profile-note").textContent = profile ? `Revision ${profile.revision}. ${profile.mapping_note}` : "Custom checkpoints use the existing local LeRobot path; verify their rig compatibility before motion.";
     ["btn-pc", "btn-prepare", "btn-ro", "btn-probe-saved", "btn-probe-live", "btn-cloud-stop"].forEach((id) => { document.getElementById(id).disabled = session.active || this._launching; });
     $("#btn-prepare").disabled ||= !modal;
-    $("#btn-ro").disabled ||= !!profile && (!profile.mapping_verified || (!modal && profile.id === "molmoact2"));
+    $("#btn-ro").disabled ||= !!profile && (!profile.mapping_verified || (profile.id === "molmoact2" && selected.rtc));
     $("#btn-inf-stop").disabled = !session.active;
     const submitted = this._submitted;
     const matches = submitted && submitted.selection === JSON.stringify(selected) && submitted.saved === $("#inf-saved").value && submitted.id === session.meta?.operation_id;

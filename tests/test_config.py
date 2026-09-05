@@ -173,6 +173,7 @@ def test_find_root_prefers_the_checkout_the_code_runs_from(monkeypatch, tmp_path
     (other / "pyproject.toml").write_text("")
     monkeypatch.setenv("YAMKIT_ROOT", str(other))
     monkeypatch.setenv("HF_HOME", str(other / "data" / "hf"))  # exported by the other clone's env.sh
+    monkeypatch.setenv("TMPDIR", str(other / "data" / "tmp"))
     monkeypatch.setenv("TORCH_HOME", "/somewhere/shared/torch")  # the user's own choice: untouched
     assert _env.find_root() == here
     _env.apply()
@@ -180,6 +181,8 @@ def test_find_root_prefers_the_checkout_the_code_runs_from(monkeypatch, tmp_path
 
     assert os.environ["YAMKIT_ROOT"] == str(here)
     assert os.environ["HF_HOME"] == str(here / "data" / "hf")
+    assert os.environ["TMPDIR"] == str(here / "data" / "tmp")
+    assert (here / "data" / "tmp").is_dir()
     assert os.environ["TORCH_HOME"] == "/somewhere/shared/torch"
 
 

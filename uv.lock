@@ -983,6 +983,11 @@ intelrealsense = [
     { name = "pyrealsense2", marker = "sys_platform != 'darwin'" },
     { name = "pyrealsense2-macosx", marker = "sys_platform == 'darwin'" },
 ]
+molmoact2 = [
+    { name = "peft" },
+    { name = "scipy" },
+    { name = "transformers" },
+]
 pi = [
     { name = "scipy" },
     { name = "transformers" },
@@ -1402,6 +1407,28 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a6/de/8b1895b107277d52f2b42d3a6806e69cfef0d5cf1d0ba343470b9d8e0a04/pandas-2.3.3-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:a68e15f780eddf2b07d242e17a04aa187a7ee12b40b930bfdd78070556550e98", size = 12771002, upload-time = "2025-09-29T23:20:26.76Z" },
     { url = "https://files.pythonhosted.org/packages/87/21/84072af3187a677c5893b170ba2c8fbe450a6ff911234916da889b698220/pandas-2.3.3-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:371a4ab48e950033bcf52b6527eccb564f52dc826c02afd9a1bc0ab731bba084", size = 13450971, upload-time = "2025-09-29T23:20:41.344Z" },
     { url = "https://files.pythonhosted.org/packages/86/41/585a168330ff063014880a80d744219dbf1dd7a1c706e75ab3425a987384/pandas-2.3.3-cp312-cp312-win_amd64.whl", hash = "sha256:a16dcec078a01eeef8ee61bf64074b4e524a2a3f4b3be9326420cabe59c4778b", size = 10992722, upload-time = "2025-09-29T23:20:54.139Z" },
+]
+
+[[package]]
+name = "peft"
+version = "0.20.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "accelerate" },
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "psutil" },
+    { name = "pyyaml" },
+    { name = "safetensors" },
+    { name = "torch", version = "2.11.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
+    { name = "torch", version = "2.11.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "platform_machine != 'arm64' or sys_platform != 'darwin'" },
+    { name = "tqdm" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b4/08/02541a2c29be7c78698f73d438bc0e733b214f3f35ec5db79fca8da8fc61/peft-0.20.0.tar.gz", hash = "sha256:4769c8093a4ca145fd6fb3fd4dd50449675f5fe46434ad1e98b285a132d4b1d0", size = 880503, upload-time = "2026-07-28T13:46:01.85Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/28/79/13bcabb8048126422d5c4b880575d40886c726f354db88cfeed4325525bb/peft-0.20.0-py3-none-any.whl", hash = "sha256:0fbba16ffebfad3de96e06f2da6860fd860292324b85b6141909fa1e26ea9233", size = 775777, upload-time = "2026-07-28T13:45:59.809Z" },
 ]
 
 [[package]]
@@ -2591,6 +2618,9 @@ dev = [
 modal = [
     { name = "modal" },
 ]
+molmoact2 = [
+    { name = "lerobot", extra = ["molmoact2"] },
+]
 realsense = [
     { name = "lerobot", extra = ["intelrealsense"] },
 ]
@@ -2602,6 +2632,7 @@ requires-dist = [
     { name = "i2rt", editable = "third_party/i2rt" },
     { name = "lerobot", extras = ["core-scripts", "smolvla", "pi", "async", "training"], specifier = "==0.6.1" },
     { name = "lerobot", extras = ["intelrealsense"], marker = "extra == 'realsense'" },
+    { name = "lerobot", extras = ["molmoact2"], marker = "extra == 'molmoact2'" },
     { name = "lerobot-robot-yamkit", editable = "plugins/lerobot_robot_yamkit" },
     { name = "lerobot-teleoperator-yamkit", editable = "plugins/lerobot_teleoperator_yamkit" },
     { name = "modal", marker = "extra == 'modal'", specifier = "==1.5.5" },
@@ -2618,7 +2649,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.15" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-provides-extras = ["modal", "realsense", "dev"]
+provides-extras = ["molmoact2", "modal", "realsense", "dev"]
 
 [[package]]
 name = "yarl"

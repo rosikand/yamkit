@@ -28,6 +28,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+molmoact2 = ["lerobot[molmoact2]"]  # optional local Molmo model dependencies
 modal = ["modal==1.5.5"]  # outbound authenticated GPU inference; local remains the default
 realsense = ["lerobot[intelrealsense]"]
 dev = ["pytest>=8.0", "ruff>=0.6", "httpx>=0.27", "quickjs>=1.19"]  # quickjs: syntax-checks ui/app.js in the tests (no node needed)
