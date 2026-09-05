@@ -398,7 +398,10 @@ def create_app(
     def inference_options(body: InferenceBody, *, motion: bool = False):
         from ..deployment import InferenceOptions
 
-        values = {field.name: getattr(body, field.name) for field in dataclasses.fields(InferenceOptions)}
+        # CLI qualification controls are intentionally absent from the browser
+        # request schema. Preserve their safe defaults when building shared options.
+        values = {field.name: getattr(body, field.name) for field in dataclasses.fields(InferenceOptions)
+                  if hasattr(body, field.name)}
         values["arms"] = tuple(body.arms or ())
         try:
             return InferenceOptions(**values).validate(motion=motion)

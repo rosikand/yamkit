@@ -7,6 +7,7 @@ class constructors (each parameter set would otherwise have its own GPU pool).
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 from .profiles import get_profile
@@ -21,8 +22,9 @@ CPU_CORES = 4
 
 def create_app(profile_id: str = "smolvla", *, gpu: str = DEFAULT_GPU, development: bool = False,
                app_name: str | None = None, scaledown_window: int = DEFAULT_SCALEDOWN_S,
-               timeout: int = 120, startup_timeout: int = 600, region: str | None = None,
-               routing_region: str = "us-east", cache_volume_name: str = "yamkit-policy-weights"):
+               timeout: int = 120, startup_timeout: int = 600, region: str | None = "us-west",
+               routing_region: str = "us-west", cache_volume_name: str = "yamkit-policy-weights",
+               memory_mib: int = MEMORY_MIB):
     """Build an App definition; the caller owns deployment, budget and shutdown.
 
     ``HF_TOKEN`` is the only environment credential forwarded, through Modal Secrets.
@@ -31,6 +33,8 @@ def create_app(profile_id: str = "smolvla", *, gpu: str = DEFAULT_GPU, developme
     profile = get_profile(profile_id)
     if gpu != DEFAULT_GPU:
         raise ValueError("This development version is qualified for one L40S only")
+    if type(memory_mib) is not int or not 49152 <= memory_mib <= MEMORY_MIB:
+        raise ValueError("Host memory must be 49152–65536 MiB; lower loading peaks are unmeasured")
     if not 1 <= timeout <= 120 or not 1 <= startup_timeout <= 900:
         raise ValueError("Finite request/startup timeouts are required")
     if development:
@@ -39,10 +43,8 @@ def create_app(profile_id: str = "smolvla", *, gpu: str = DEFAULT_GPU, developme
         startup_timeout = min(startup_timeout, 240)
     elif not 300 <= scaledown_window <= 600:
         raise ValueError("Production scaledown_window must be 300–600 seconds")
-    if routing_region != "us-east":
-        # v0 uses cancellable spawned SDK calls. Modal currently supports only
-        # remote/map for non-default routing; all spawned payloads use US storage.
-        raise ValueError("v0 cancellable SDK calls require routing_region=us-east")
+    if routing_region not in ("us-east", "us-west"):
+        raise ValueError("Unsupported Modal routing region")
     if region not in (None, "us", "us-east", "us-west", "us-central", "eu", "eu-west", "ap"):
         raise ValueError("Unsupported compute region")
     import modal
@@ -64,7 +66,7 @@ def create_app(profile_id: str = "smolvla", *, gpu: str = DEFAULT_GPU, developme
     app = modal.App(app_name or f"yamkit-policy-{profile.id}")
     fixed_profile_id = profile.id
 
-    @app.cls(image=image, gpu=gpu, cpu=CPU_CORES, memory=MEMORY_MIB,
+    @app.cls(image=image, gpu=gpu, cpu=CPU_CORES, memory=memory_mib,
              min_containers=0, max_containers=1, buffer_containers=0,
              scaledown_window=scaledown_window, timeout=timeout, startup_timeout=startup_timeout,
              retries=0, region=region, routing_region=routing_region,
@@ -72,10 +74,14 @@ def create_app(profile_id: str = "smolvla", *, gpu: str = DEFAULT_GPU, developme
     class PolicyService:
         @modal.enter()
         def load(self):
+            entered = time.monotonic()
             from yamkit.inference.service import ModelRuntime
 
             self.runtime = ModelRuntime.load(fixed_profile_id, device="cuda")
+            loaded = time.monotonic()
             volume.commit()
+            self.container_init_s = time.monotonic() - entered
+            self.volume_commit_s = self.container_init_s - (loaded - entered)
 
         @modal.method()
         def ready(self) -> dict:
@@ -83,7 +89,15 @@ def create_app(profile_id: str = "smolvla", *, gpu: str = DEFAULT_GPU, developme
                     "requested_compute_region": region, "routing_region": routing_region,
                     "scaledown_window_s": scaledown_window, "min_containers": 0, "max_containers": 1,
                     "request_timeout_s": timeout, "startup_timeout_s": startup_timeout,
-                    "payload_routing": "Spawned SDK payloads of every size use Modal's US storage"}
+                    "requested_memory_mib": memory_mib,
+                    "memory_scope": "Requested memory is host RAM; CUDA telemetry measures GPU memory separately",
+                    "container_init_s": self.container_init_s, "volume_commit_s": self.volume_commit_s,
+                    "supported_call_modes": ["remote", "spawn"] if routing_region == "us-east" else ["remote"],
+                    "preferred_call_mode": "remote",
+                    "observed_compute_region": os.environ.get("MODAL_REGION"),
+                    "requested_routing_region": routing_region, "observed_routing_region": None,
+                    "payload_routing": "Requested SDK routing region; actual routing is not independently observable. "
+                    "Spawned SDK payloads use US storage; use remote for non-default routing."}
 
         @modal.method()
         def predict_chunk(self, request: dict) -> dict:

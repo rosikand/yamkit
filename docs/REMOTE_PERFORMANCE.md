@@ -1,5 +1,24 @@
 # Remote inference performance gate
 
+The latest [Modal latency investigation](MODAL_LATENCY.md) measures 100 warm raw
+requests and 50 warm optimized requests against the real deployed Molmo service.
+JPEG, cached handles and direct calls materially reduce RTT, but the measured
+integrated queue still fails qualification. No robot host has qualified.
+
+`yamkit modal-qualify --policy molmoact2 --requests 50` now collects host-bound
+evidence with real inference and fake hardware. Physical CLI rollout requires a
+matching record from the last 24 hours, 20% usable-horizon margin, healthy queue
+supply, separate mapping acceptance and explicit supervised confirmation. Cloud
+rollout is always blocked; a cloud record cannot qualify the Lenovo. The browser
+continues to disable physical Modal rollout. See [the current workflow](MODAL.md).
+
+## Historical audit before the latency changes
+
+The sections below preserve the earlier synthetic audit at the source revision
+named in its table. Its 15-step scheduling threshold, raw-only transport and
+unconditional release block describe that revision, not the current implementation.
+The subsequent real measurements and revised gate are documented above.
+
 Physical Modal rollout is **BLOCKED**. The integrated real-service path has not
 demonstrated a continuously supplied, fresh action queue. Checkpoint mapping,
 successful GPU inference, readiness, and operator confirmation cannot override

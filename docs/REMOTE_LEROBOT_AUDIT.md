@@ -3,9 +3,11 @@
 Audited against the actual PyPI `lerobot==0.6.1` wheel. The adapter depends on this
 pin; upgrading LeRobot requires rerunning the integration and fault tests.
 
-**Production physical Modal rollout is unconditionally blocked.** The architecture
-below is exercised with fake hardware and RPC; the actual integrated real-service
-queue has not been qualified. [Performance evidence](REMOTE_PERFORMANCE.md) separates
+**Production physical Modal rollout requires current robot-host qualification, mapping
+acceptance and supervised confirmation.** No passing qualification has been demonstrated;
+cloud motion and browser Modal Start remain blocked. The architecture below is exercised
+with fake hardware and RPC. [Current latency results](MODAL_LATENCY.md) and
+[performance evidence](REMOTE_PERFORMANCE.md) separate
 those synthetic runs from [historical C model measurements](MODAL_VALIDATION.md).
 Molmo's source mapping is reviewed, but no supervised physical validation was performed.
 
@@ -22,10 +24,10 @@ normalization. Saved model processing and the camera rename happen on the server
 
 `run_remote_rollout` first inspects the unconnected YAM plugin schema, including
 exact ordered names, calibration for every gripper, camera color mode, hardware
-variant and action cadence, then enforces the unconditional performance gate before
-calling `build_rollout_context`. Shared CLI/UI motion validation and the raw proxy
-constructor enforce it too; no environment variable, CLI option or ready pool bypasses
-it. Tests replace the gate only alongside fake hardware and transport.
+variant and action cadence, then enforces the host qualification and confirmation gates
+before calling `build_rollout_context`. The proxy requires this validated runner context;
+raw LeRobot construction cannot bypass its preflight. A ready pool or confirmation alone
+does not authorize motion. Tests replace the gate only alongside fake hardware and transport.
 
 On that diagnostic path, the proxy's readiness request and metadata validation execute in the upstream
 policy-loading phase, before `Robot.connect`. A transient shutdown event is passed
@@ -79,7 +81,7 @@ on clean disconnect. The remote runner explicitly prevents these return moves on
 The adapter invalidates the policy session and current queue on a fault. Queue
 objects are permanently invalidated before replacement on pause/reset, so even
 an in-flight worker retaining an old queue cannot merge a late result. The queue
-has a finite capacity (one chunk plus a half-chunk prefetch threshold) and tracks
+has finite capacity independent of the configurable prediction trigger and tracks
 the original observation-relative timestep deadline of every action. A merge drops
 both the elapsed prefix and the additional prefix overlapping the existing queued
 tail; it never shifts expired targets into the future. Responses are checked for exact
@@ -122,7 +124,8 @@ delays, not new network or GPU inference. Saved processors remain unchanged.
 Remote rollout currently supports only the base strategy, exact profile cadence,
 no interpolation, and the CPU RPC proxy. Recording/DAgger/episodic remote
 strategies and guided RTC are rejected. These software constraints do not enable
-physical Modal operation: the performance gate remains closed. Base SmolVLA/pi05
+physical Modal operation: a passing host qualification and separate supervised mapping
+acceptance remain required, and current evidence has not passed. Base SmolVLA/pi05
 also lack physical YAM mapping. See [staged acceptance](acceptance-test.md) for the
 blocked stages, and [operator parity](OPERATOR_PARITY.md) for the separately supported
 native teleop and required record/LeRobot teleoperate wrappers.

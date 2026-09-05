@@ -1,11 +1,14 @@
 # Optional Modal inference and browser checks
 
-**Physical Modal rollout is blocked for every profile.** The actual integrated
-real-service path has not qualified continuous queue supply and fresh action timing.
-The gate is unconditional in CLI/UI validation, the remote runner and direct proxy
-construction. Readiness, reviewed source mapping and motion confirmation do not
-override it. See [the performance gate](REMOTE_PERFORMANCE.md) and
-[staged acceptance](acceptance-test.md).
+**Physical Modal rollout requires a passing qualification on the actual robot host,
+accepted mapping and explicit supervised confirmation.** No passing qualification
+has been demonstrated by the current measurements. `modal-qualify` collects evidence
+without hardware; failed, expired or foreign-host records cannot authorize motion.
+CLI validation and the integrated runner enforce these conditions before activation;
+direct raw LeRobot rollout cannot bypass that runner. Cloud workspaces cannot activate
+physical Modal rollout, and browser Modal Start remains disabled.
+See [the latency investigation](MODAL_LATENCY.md),
+[the performance gate](REMOTE_PERFORMANCE.md) and [staged acceptance](acceptance-test.md).
 
 Local inference remains the default. Install the optional client with
 `source scripts/env.sh` then `uv sync --extra dev --extra modal`. Add
@@ -24,7 +27,7 @@ context, background worker, base strategy and YAM plugin. See
 | Checkpoint/path | Fresh CPU/GPU check | Physical rollout |
 |---|---|---|
 | `smolvla` / `lerobot/smolvla_base` | Native 6-dimensional fixture | Blocked: no published YAM physical mapping |
-| `molmoact2` / `lerobot/MolmoAct2-BimanualYAM-LeRobot` | Native 14-dimensional fixture | Modal blocked by performance gate; local sync path available, source mapping reviewed but physical validation not performed |
+| `molmoact2` / `lerobot/MolmoAct2-BimanualYAM-LeRobot` | Native 14-dimensional fixture | Modal requires current robot-host qualification, mapping acceptance and supervised confirmation; no passing qualification demonstrated. Local sync path available; physical validation not performed |
 | `pi05` / `lerobot/pi05_base` | Native 32-dimensional fixture | Blocked: no published YAM physical mapping/statistics |
 | Compatible custom local checkpoint | Existing local policy-check | Existing local LeRobot CPU/GPU path and supported local RTC |
 | Unreviewed custom Modal checkpoint | Rejected | Blocked; profile/mapping review would not remove the performance gate |
@@ -84,14 +87,30 @@ These first commands do not activate arms or open cameras:
 yamkit policy-check --policy smolvla --device cpu --steps 3
 yamkit modal-prepare --policy molmoact2                         # billable cloud preparation
 yamkit policy-check --policy molmoact2 --backend modal --steps 3 # billable inference
+yamkit modal-qualify --policy molmoact2 --requests 50            # billable, fake hardware only
 ```
 
 `modal-prepare` explicitly deploys a dedicated app with a randomized `yamkit-vla-…`
 name, loads the immutable checkpoint, and validates readiness. It records only resource
 IDs and public metadata in `outputs/modal/owned-service.json`. Repeated preparation
 of the same ready profile warms that pool; switching models requires shutting it down
-first. A check never implicitly deploys an app. `--modal-app` can select an explicitly
-prepared dedicated service. Failed preparations attempt to shut down their own app.
+first. A check or qualification never implicitly deploys an app. `--modal-app` can
+select an explicitly prepared dedicated service. Failed preparations attempt to shut
+down their own app.
+
+Compute placement and request routing both default to `us-west`. They are explicit
+configuration choices, not a promise of available GPU capacity or observed routing.
+Use `--region` and `--routing-region` when preparing a different pool; readiness
+reports the requested compute region and the observed container region separately.
+Changing either invalidates a previous qualification. For example, the defaults are:
+
+```bash
+yamkit modal-prepare --policy molmoact2 --region us-west --routing-region us-west
+```
+
+Preparation reserves 65,536 MiB of host memory by default. `--memory-mib` accepts
+49,152–65,536 MiB for bounded diagnostic comparisons; it does not change model dtype,
+weights or GPU count.
 
 The service has one fixed profile and one L40S maximum, zero minimum/buffer containers,
 serialized model state, finite startup/request timeouts, and no permanent heartbeat.
@@ -99,6 +118,73 @@ Ordinary requests retain warmth; production idle scale-down defaults to 300 seco
 (configurable to 300–600 through the app factory). Idle warm time is billable.
 `--development` caps startup/request/idle timeouts at 240/90/15 seconds. The development
 validation ledger and overall deadline are separate from these production commands.
+
+### Transport and qualification
+
+Modal images default to JPEG quality 85, with RGB dimensions preserved. Three images,
+ordered state and task travel in one request. Encoding happens once per camera;
+recording resolution, the optional center crop and the model's saved preprocessing
+remain unchanged. JPEG is lossy: paired seeded fixture comparisons quantify numerical
+changes, but do not establish physical policy fidelity. `--image-encoding rgb8`
+retains raw RGB for qualification and rollout comparisons; `--jpeg-quality` selects
+the JPEG quality explicitly.
+
+The client reuses its service handle and calls Modal `.remote` from its request
+worker. LeRobot's existing background inference overlaps local action execution.
+`--call-mode spawn` retains the earlier transport for diagnostics on compatible
+`us-east` routing. With `.remote`, Stop/reset invalidates the local response and
+queue promptly; the SDK offers no cancellation handle for that remote call. Its
+worker remains busy until the call returns, and the late result cannot execute.
+Cloud shutdown remains a separate operation.
+
+The next prediction starts as soon as a fresh observation is available after the
+previous request, using a full-chunk queue threshold by default: 30 steps for Molmo
+at its unchanged 30 Hz. `--prediction-queue-threshold` makes that trigger explicit
+(0–30). There is still at most one prediction in flight. Earlier requests do not
+extend action deadlines or preserve expired prefixes. This is unguided async,
+not guided RTC.
+
+Run qualification on the **Lenovo robot host**, using its configured image dimensions
+and intended transport settings:
+
+```bash
+yamkit modal-qualify --policy molmoact2 --requests 50 --rig configs/rig.yaml \
+  --image-encoding jpeg --jpeg-quality 85 --call-mode remote \
+  --prediction-queue-threshold 30
+```
+
+The command reads the rig file but never enumerates or opens arms or cameras. It
+first measures one initial request and at least 50 warm requests using generated
+images. It then exercises the actual LeRobot worker, queue and YAM command path with
+fake arms and generated camera frames against the same real service. It deliberately
+stops during an in-flight request and checks that no later fake SDK commands execute.
+The images contain generated texture so JPEG does not get an unrealistically small
+payload from all-black frames. Measurements describe this host's networking and
+software, not real camera exposure timestamps or physical robot performance.
+
+The result is written to git-ignored `data/qualifications/modal-molmoact2.json`.
+A failed measurement attempt replaces an older success with failed evidence; readiness failures
+retain unknown placement as `null` and do not launch another inference stage.
+Qualification requires all of the following:
+
+- At least the requested number of completed warm requests in both paths, with
+  raw timing samples and one matching container.
+- Warm RPC p95 no greater than 80% of the effective usable action horizon. That
+  horizon includes observation age and the measured horizon remaining after queue
+  merge and expired-prefix removal; the nominal one-second chunk alone is insufficient.
+- A supplied execution queue, successful fake commands, zero underruns or expired
+  queued/dispatched actions, and zero commands after Stop. Normal expired-prefix
+  removal remains enabled.
+- Matching host identity, model/dependency revisions, image dimensions, JPEG settings,
+  crop, transport, scheduling, cadence and compute/routing configuration. The record
+  expires after 24 hours; changed settings require another qualification.
+
+Cloud measurements are labeled `READY_FOR_LENOVO_QUALIFICATION` only when their
+measurements pass. They never qualify the Lenovo, and copying their reports or record
+cannot transfer that qualification. Physical mapping checks remain separate. The
+qualified rollout interface requires both `--accept-mapping` and
+`--confirm-supervised`; these flags cannot override failed, expired, mismatched or
+foreign-host evidence. Browser Modal Start remains disabled.
 
 A saved probe reads a bounded `.npz` snapshot without accessing arms or cameras:
 
@@ -132,15 +218,18 @@ motion. `--center-crop` is optional for Modal checks/probes, uses the same logge
 policy-boundary transform, and leaves recording settings unchanged. It cannot restore
 training camera geometry.
 
-The physical command currently rejects offline, before reading the rig or activating
-hardware. Preparing a pool or confirming motion cannot enable it:
+The physical command requires a passing record from the same host and configuration.
+It rejects a missing or invalid qualification before activating hardware. Preparing
+a pool or confirming motion alone is insufficient:
 
 ```bash
-yamkit rollout --policy molmoact2 --backend modal --task 'pick up the red cube' --duration 30
+yamkit rollout --policy molmoact2 --backend modal --task 'pick up the red cube' --duration 30 \
+  --accept-mapping --confirm-supervised
 ```
 
-The blocked runner is exercised with fake hardware and RPC in regression tests. Its
-readiness and static mapping checks precede follower connection/startup homing.
+The gated runner is exercised with fake hardware and RPC in regression tests.
+Qualification can additionally use real RPC with fake hardware. Its readiness,
+cold first-forward warmup and static mapping checks precede follower connection/startup homing.
 The integrated queue drops expired and overlapping prefixes and checks the original
 action deadline again immediately before dispatch. Existing speed clamps and the
 400 ms firmware timeout remain intact. Remote Stop/fault invalidates in-flight replies
@@ -198,12 +287,13 @@ teleoperation use the yamkit wrappers' [shared operator processing](OPERATOR_PAR
 
 ## Acceptance and operational measurements
 
-Physical Modal acceptance cannot proceed in this release. It requires a future
-qualification of the actual integrated queue, followed by supervised physical
+Physical Modal acceptance requires a passing current robot-host qualification,
+followed by supervised physical
 left/right, gripper, zero/alignment and camera checks. No such hardware acceptance was
-performed. An active-read probe's **unclipped** targets and deltas remain diagnostic;
+performed, and the current measurements have not produced a passing qualification.
+An active-read probe's **unclipped** targets and deltas remain diagnostic;
 never execute a saved probe's old chunk. The [acceptance checklist](acceptance-test.md)
-separates available checks from blocked motion.
+separates checks from commands that activate hardware.
 
 Measure from the actual robot host: cold load, warm round-trip p50/p95/p99 with sample
 count, encoding/payload/server times, observation age, queue depth/peak and underruns.
@@ -212,10 +302,13 @@ request/queue metrics on success and faults. Camera timestamps currently indicat
 snapshot receipt, not sensor exposure time. A one-second Molmo chunk does not guarantee
 latency coverage. Container changes stop the session and require preparation again.
 
-All spawned SDK payloads use US storage, independently of the selected compute region;
-a typical three-camera 640×480 RGB observation is 2.76 MB. See the source-linked model
-document for routing details. WebSocket transport is a future measured upgrade.
+The earlier raw transport sends 2,764,800 image bytes for three 640×480 RGB frames.
+JPEG payload size depends on scene content and is measured per request. The benchmark
+can observe the pinned SDK's actual serialization and blob-transfer costs without
+serializing the input a second time. Requested routing and observed compute placement
+are distinct; network-only latency and actual internal routing are not independently
+observable. See [the latency investigation](MODAL_LATENCY.md) for measured results and limits.
 See [historical C validation](MODAL_VALIDATION.md) for its real CPU/GPU results,
 resource IDs and costs. [Integrated performance results](REMOTE_PERFORMANCE.md)
-use explicitly fake hardware and injected RPC delays; they do not increase the
-historical real warm sample count or qualify physical deployment.
+distinguish real-service measurements from injected fake RPC delays. Neither a
+cloud benchmark nor a synthetic queue run qualifies physical deployment on another host.

@@ -5,8 +5,10 @@ test counts and resource cleanup. They are historical results, not reruns of the
 final integration. The original result JSON and development ledger are not present
 in this integration workspace; their recorded paths below refer to the C workspace.
 
-**Current integration status: all physical Modal rollout is unconditionally blocked**
-pending qualification of the actual integrated queue. Molmo's source mapping was
+**Current integration status: physical Modal rollout requires a current passing robot-host
+qualification, mapping acceptance and supervised confirmation.** Current evidence has not
+passed qualification; cloud workspaces and browser Modal Start remain blocked.
+See [the later latency investigation](MODAL_LATENCY.md). Molmo's source mapping was
 reviewed, but no supervised physical validation was performed. Base SmolVLA/pi05
 physical mapping and guided remote RTC remain unsupported. See
 [integrated performance](REMOTE_PERFORMANCE.md), [operator parity](OPERATOR_PARITY.md)
@@ -105,8 +107,8 @@ These probes passed numerical/schema/pre-clamp reporting, **not** live-motion fr
 The Molmo chunk lasts one second, while even native warm RPC took about 1.5 seconds.
 Continuous remote robot execution is therefore **not validated** by these measurements;
 the default two-second freshness limit also rejects the observed rig-resolution probe
-latencies. Do not infer that buffering hides this latency. The final integration
-therefore blocks physical Modal rollout; it requires actual integrated queue and
+latencies. Do not infer that buffering hides this latency. At that integration stage,
+physical Modal rollout was unconditionally blocked; current behavior still requires actual integrated queue and
 robot-host measurements before any future qualification decision.
 
 Actual hardware queue depth/underruns were not measured. Queue capacity, expired actions,
@@ -191,6 +193,7 @@ Local Molmo synchronous inference is subject to sufficient local RAM/GPU/depende
 its physical execution was not tested. Source-defined conventions and finite outputs
 alone do not approve motion.
 
-The current performance gate is enforced before physical Modal activation, including
-direct remote proxy construction. Successful checks and supervised active-read probes
-remain diagnostic; they cannot enable that blocked rollout path.
+The current host qualification and confirmation gates are enforced before physical Modal
+activation; direct remote proxy construction cannot bypass the validated runner.
+Successful checks and supervised active-read probes remain diagnostic and cannot replace
+a passing qualification. The dated measurements above remain unchanged.

@@ -28,14 +28,20 @@ class InvalidatedRequest(RemoteFault):
 class ModalTransport:
     """One bounded outbound SDK call at a time; never deploys an application."""
 
-    def __init__(self, app_name: str, profile: str, *, shutdown_event=None):
+    def __init__(self, app_name: str, profile: str, *, shutdown_event=None, call_mode: str = "remote"):
         if not app_name or len(app_name) > 100:
             raise ValueError("An explicit dedicated Modal app name is required")
+        if call_mode not in ("remote", "spawn"):
+            raise ValueError("Modal call mode must be remote or spawn")
         self.app_name = app_name
         self.profile = profile
+        self.call_mode = call_mode
         self._shutdown_event = shutdown_event
         self._busy = threading.Lock()
         self._cancel = threading.Event()
+        # Hydration (and its control-plane RPC) belongs to this transport's
+        # lifetime, including readiness. Access is serialized by _busy.
+        self._service = None
         self.last_timing: dict = {}
 
     def cancel(self) -> None:
@@ -53,6 +59,8 @@ class ModalTransport:
         result: dict[str, Any] = {}
         timing: dict[str, Any] = {"network_only_s": None, "modal_queue_s": None,
                                   "sdk_response_decode_s": None,
+                                  "call_mode": self.call_mode,
+                                  "remote_cancellation_supported": self.call_mode == "spawn",
                                   "note": "SDK dispatch/wait include serialization and network; separate internals unobservable"}
         self.last_timing = timing  # clear prior request timings even if this request times out
         deadline = time.monotonic() + timeout_s
@@ -63,21 +71,32 @@ class ModalTransport:
                 import modal
 
                 lookup_started = time.monotonic()
-                service = modal.Cls.from_name(self.app_name, "PolicyService")()
-                remote_method = getattr(service, method)
+                timing["handle_reused"] = self._service is not None
+                if self._service is None:
+                    self._service = modal.Cls.from_name(self.app_name, "PolicyService")()
+                remote_method = getattr(self._service, method)
                 timing["handle_lookup_s"] = time.monotonic() - lookup_started
                 if cancel.is_set():
                     return
                 dispatch_started = time.monotonic()
-                call = remote_method.spawn() if payload is None else remote_method.spawn(payload)
-                timing["dispatch_s"] = time.monotonic() - dispatch_started
-                remaining = deadline - time.monotonic()
-                if cancel.is_set() or remaining <= 0:
-                    call.cancel()
-                    return
-                wait_started = time.monotonic()
-                result["value"] = call.get(timeout=remaining)
-                timing["response_wait_s"] = time.monotonic() - wait_started
+                if self.call_mode == "remote":
+                    # This synchronous SDK call runs in the existing background
+                    # worker, overlapping local action execution. The SDK exposes
+                    # no public remote-call cancellation handle: retain _busy
+                    # until it actually returns, while the caller can Stop or
+                    # time out immediately and reject the entire late response.
+                    result["value"] = remote_method.remote() if payload is None else remote_method.remote(payload)
+                    timing["remote_call_s"] = time.monotonic() - dispatch_started
+                else:
+                    call = remote_method.spawn() if payload is None else remote_method.spawn(payload)
+                    timing["dispatch_s"] = time.monotonic() - dispatch_started
+                    remaining = deadline - time.monotonic()
+                    if cancel.is_set() or remaining <= 0:
+                        call.cancel()
+                        return
+                    wait_started = time.monotonic()
+                    result["value"] = call.get(timeout=remaining)
+                    timing["response_wait_s"] = time.monotonic() - wait_started
             except Exception:  # noqa: BLE001 — SDK exceptions may contain credentials/payloads
                 # SDK exceptions may contain request details; keep secrets/payloads out of logs.
                 result["error"] = True
@@ -100,6 +119,8 @@ class ModalTransport:
                 cancel.set()
                 raise RemoteFault("Modal request deadline exceeded")
         self.last_timing = timing
+        if self._shutdown_event is not None and self._shutdown_event.is_set():
+            cancel.set()
         if cancel.is_set():
             raise InvalidatedRequest("Modal request invalidated locally")
         if time.monotonic() >= deadline:
@@ -206,8 +227,8 @@ class RemoteSession:
                                  "timestamp_basis": "local observation receipt; camera exposure is unobservable",
                                  "payload_bytes": sum(len(im["data"]) for im in images.values()),
                                  "wire_payload_bytes": None,
-                                 "payload_size_basis": "raw RGB image bytes; SDK framing size unobservable",
-                                 "image_encoding": "rgb8", "jpeg_encoding_s": 0.0,
+                                 "payload_size_basis": "encoded image bytes; SDK framing size unobservable",
+                                 "image_encoding": next(iter(images.values()))["encoding"],
                                  "request_validation_s": request_validation_s,
                                  "response_validation_s": response_validation_s,
                                  "transport_timing": dict(getattr(self.transport, "last_timing", {})),

@@ -25,7 +25,8 @@ class FakeTransport:
         if self.ready_hook:
             self.ready_hook()
         return {**get_profile("molmoact2").metadata(), "ready": True, "instance_id": "fake-instance",
-                "fresh_chunk": True, "saved_processors": True, "image_encoding": "rgb8"}
+                "fresh_chunk": True, "saved_processors": True, "image_encoding": "jpeg",
+                "supported_image_encodings": ["jpeg", "rgb8"], "prediction_count": 1}
 
     def cancel(self):
         pass
@@ -48,7 +49,9 @@ def transport(monkeypatch):
     from yamkit.remote_policy import modeling_yamkit_remote
 
     value = FakeTransport()
-    monkeypatch.setattr("yamkit.inference.performance.require_physical_modal_rollout", lambda: None)
+    monkeypatch.setattr("yamkit.inference.performance.require_physical_modal_rollout", lambda *a, **k: None)
+    # Factory-only tests replace the entire transport and never activate hardware.
+    monkeypatch.setattr("yamkit.inference.qualification.require_runner_context", lambda: None)
     monkeypatch.setattr(modeling_yamkit_remote, "make_transport", lambda cfg: value)
     return value
 
@@ -67,7 +70,7 @@ def rollout_config(rig, fake_connect, monkeypatch):
 
     # This test fixture already substitutes every camera, motor and transport.
     # Production has no switch that bypasses the independent performance gate.
-    monkeypatch.setattr("yamkit.inference.performance.require_physical_modal_rollout", lambda: None)
+    monkeypatch.setattr("yamkit.inference.performance.require_physical_modal_rollout", lambda *a, **k: None)
 
     class Camera:
         is_connected = False
@@ -91,7 +94,7 @@ def rollout_config(rig, fake_connect, monkeypatch):
                for k in get_profile("molmoact2").image_keys}
     return RolloutConfig(
         robot=BiYamFollowerConfig(rig=str(rig.path), cameras=cameras),
-        policy=YamkitRemoteConfig(modal_app="fake-app"), device="cpu", task="pick cube", duration=0.15,
+        policy=YamkitRemoteConfig(modal_app="fake-app", image_hw=(8, 8)), device="cpu", task="pick cube", duration=0.15,
         return_to_initial_position=False,
     )
 
@@ -110,7 +113,7 @@ def test_real_policy_factory_registration_processors_and_fresh_chunks(transport,
 
     monkeypatch.setattr(torch, "compile", forbidden)
     monkeypatch.setattr("huggingface_hub.hf_hub_download", forbidden)
-    config = make_policy_config("yamkit_remote", modal_app="fake-app")
+    config = make_policy_config("yamkit_remote", modal_app="fake-app", image_hw=(8, 8))
     features = {"action": {"dtype": "float32", "shape": (14,), "names": list(get_profile("molmoact2").action_names)},
                 "observation.state": {"dtype": "float32", "shape": (14,), "names": list(get_profile("molmoact2").state_names)},
                 **{f"observation.images.{k}": {"dtype": "video", "shape": (8, 8, 3),
@@ -135,6 +138,63 @@ def test_real_policy_factory_registration_processors_and_fresh_chunks(transport,
     assert transport.requests[-1]["session_id"] != transport.requests[0]["session_id"]
 
 
+def test_proxy_image_conversion_preserves_exact_pixels_and_per_camera_timings(transport):
+    from yamkit.inference.protocol import decode_image
+    from yamkit.remote_policy.modeling_yamkit_remote import YamkitRemotePolicy
+
+    inputs = batch()
+    pixels = np.random.default_rng(741).random((17, 19, 3), dtype=np.float32)
+    pixels[0, 0] = [0.0, 1.0, 0.5]
+    # Noncontiguous CHW views are what the real upstream observation path supplies.
+    image = torch.from_numpy(pixels).permute(2, 0, 1).unsqueeze(0)
+    assert not image.is_contiguous()
+    for name in get_profile("molmoact2").image_keys:
+        inputs[f"observation.images.{name}"] = image
+    policy = YamkitRemotePolicy(YamkitRemoteConfig(modal_app="fake-app", image_encoding="rgb8", image_hw=(17, 19)))
+    policy.predict_action_chunk(inputs)
+    expected = (pixels * 255).round().astype(np.uint8)
+    sample = policy.session.samples[-1]
+    for name, encoded in transport.requests[-1]["images"].items():
+        assert np.array_equal(decode_image(encoded), expected)
+        timing = sample["per_camera_timing"][name]
+        assert timing["payload_bytes"] == expected.nbytes
+        assert timing["image_encode_s"] >= 0 and timing["tensor_transform_s"] >= 0
+        assert timing["jpeg_encode_s"] == 0
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -0.001, 1.001])
+def test_proxy_image_validation_rejects_invalid_pixels_before_request(transport, invalid):
+    from yamkit.remote_policy.modeling_yamkit_remote import YamkitRemotePolicy
+
+    policy = YamkitRemotePolicy(YamkitRemoteConfig(modal_app="fake-app", image_hw=(8, 8)))
+    inputs = batch()
+    name = get_profile("molmoact2").image_keys[0]
+    inputs[f"observation.images.{name}"][0, 0, 0, 0] = invalid
+    with pytest.raises(RemoteFault, match="finite RGB"):
+        policy.predict_action_chunk(inputs)
+    assert transport.requests == []
+
+
+def test_proxy_rejects_different_image_resolution_before_request(transport):
+    from yamkit.remote_policy.modeling_yamkit_remote import YamkitRemotePolicy
+
+    policy = YamkitRemotePolicy(YamkitRemoteConfig(modal_app="fake-app", image_hw=(480, 640)))
+    with pytest.raises(RemoteFault, match="dimensions differ"):
+        policy.predict_action_chunk(batch())
+    assert not transport.requests
+
+
+@pytest.mark.parametrize("count", [None, True, -1, float("nan"), float("inf"), 1.0])
+def test_readiness_rejects_missing_or_malformed_prediction_count(transport, count):
+    from yamkit.remote_policy.modeling_yamkit_remote import YamkitRemotePolicy
+
+    original = transport.ready
+    transport.ready = lambda timeout: {**original(timeout), "prediction_count": count}
+    with pytest.raises(RemoteFault, match="prediction count"):
+        YamkitRemotePolicy(YamkitRemoteConfig(modal_app="fake-app"))
+    assert not transport.requests
+
+
 def test_real_rollout_context_readiness_before_connect(transport, rollout_config, fake_connect):
     from lerobot.rollout import build_rollout_context
     from lerobot.rollout.inference import SyncInferenceEngine
@@ -150,6 +210,40 @@ def test_real_rollout_context_readiness_before_connect(transport, rollout_config
         assert result.shape == (14,)
     finally:
         ctx.hardware.robot_wrapper.inner.disconnect_no_home()
+
+
+@pytest.mark.parametrize("stop_during_warmup", [False, True])
+def test_cold_model_warmup_is_native_and_precedes_hardware_activation(
+        transport, rollout_config, fake_connect, stop_during_warmup):
+    from lerobot.rollout import build_rollout_context
+
+    stop = threading.Event()
+    rollout_config.policy._session_shutdown_event = stop
+    original_ready, original_predict = transport.ready, transport.predict_chunk
+    transport.ready = lambda timeout: {**original_ready(timeout), "prediction_count": 0}
+
+    def warm(request, timeout):
+        assert not fake_connect, "First-forward warmup must finish before activation"
+        assert request["mode"] == "native_fixture"
+        assert all((image["height"], image["width"]) == (8, 8) for image in request["images"].values())
+        if stop_during_warmup:
+            stop.set()
+        return {**original_predict(request, timeout), "action_units": "checkpoint_native"}
+
+    transport.predict_chunk = warm
+    if stop_during_warmup:
+        with pytest.raises(RemoteFault, match="Stop"):
+            build_rollout_context(rollout_config, stop)
+        assert not fake_connect
+    else:
+        ctx = build_rollout_context(rollout_config, stop)
+        try:
+            assert len(transport.requests) == 1
+            assert not ctx.policy.policy._actions
+            assert not ctx.policy.policy.session.samples
+            assert ctx.policy.policy.warmup_s > 0
+        finally:
+            ctx.hardware.robot_wrapper.inner.disconnect_no_home()
 
 
 def test_remote_rollout_runs_actual_strategy_and_no_home(transport, rollout_config, fake_connect, monkeypatch):
@@ -327,6 +421,26 @@ def test_underrun_stops_instead_of_replaying(transport):
     assert policy.session._closed
 
 
+@pytest.mark.parametrize("threshold", [None, 0, 15, 30])
+def test_prefetch_threshold_does_not_enlarge_queue_capacity(transport, threshold):
+    from lerobot.policies.factory import make_pre_post_processors
+
+    from yamkit.remote_policy.modeling_yamkit_remote import YamkitRemotePolicy
+    from yamkit.remote_rollout import UnguidedRemoteInferenceEngine
+
+    policy = YamkitRemotePolicy(YamkitRemoteConfig(modal_app="fake-app", prediction_queue_threshold=threshold))
+    pre, post = make_pre_post_processors(policy.config)
+    engine = UnguidedRemoteInferenceEngine(policy=policy, preprocessor=pre, postprocessor=post,
+                                          robot_wrapper=SimpleNamespace(), hw_features={}, task="task", fps=30,
+                                          shutdown_event=threading.Event())
+    engine._action_queue = engine._new_queue()
+    assert engine.max_steps == engine.action_queue.max_steps == 45
+    oversized = torch.ones((46, 14))
+    with pytest.raises(RemoteFault, match="capacity"):
+        engine.action_queue.merge(oversized, oversized, 0)
+    assert engine.failed and engine.action_queue.qsize() == 0
+
+
 def test_stop_releases_before_rpc_completes_and_rejects_late_actions(transport, rollout_config, fake_connect):
     from yamkit.remote_rollout import run_remote_rollout
 
@@ -362,6 +476,46 @@ def test_stop_releases_before_rpc_completes_and_rejects_late_actions(transport, 
         thread.join(3)
     assert not thread.is_alive()
     assert all(not r.commands for r in fake_connect.values())
+
+
+def test_stop_during_overlapping_prediction_releases_and_final_metrics_include_late_reply(
+        transport, rollout_config, fake_connect):
+    from yamkit.remote_rollout import run_remote_rollout
+
+    entered = threading.Event()
+    release = threading.Event()
+    stop = threading.Event()
+    results = []
+    rollout_config.duration = 5
+
+    def wait_second_response():
+        if len(transport.requests) == 2:
+            entered.set()
+            assert release.wait(3)
+
+    transport.hook = wait_second_response
+    thread = threading.Thread(target=lambda: results.append(run_remote_rollout(rollout_config, shutdown_event=stop)))
+    thread.start()
+    try:
+        assert entered.wait(2)
+        assert all(r.commands for r in fake_connect.values())
+        stop.set()
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and not all(r.closed for r in fake_connect.values()):
+            time.sleep(0.01)
+        assert all(r.closed for r in fake_connect.values())
+        commands_at_release = [len(r.commands) for r in fake_connect.values()]
+    finally:
+        stop.set()
+        release.set()
+        thread.join(3)
+    assert not thread.is_alive()
+    assert [len(r.commands) for r in fake_connect.values()] == commands_at_release
+    assert results[0]["queue_depth"] == 0
+    assert results[0]["last_queue_depth_before_stop"] > 0
+    assert results[0]["failed_request_count"] == 1
+    assert results[0]["prediction_samples"][-1]["error"] == "invalidated"
+    assert 0 <= results[0]["stop_to_robot_release_s"] < 1
 
 
 @pytest.mark.parametrize("key,value", [("sequence_id", 99), ("session_id", "wrong"),

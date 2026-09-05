@@ -5,10 +5,12 @@ supervised motor operation. No physical robot or camera acceptance was performed
 the integration agents. An inference result is not a manipulation result.
 
 **Current motion restrictions:** live LLM execution is blocked because state/image
-acquisition freshness cannot be verified. Physical Modal rollout is blocked by the
-remote performance gate. The MolmoAct2 mapping is reviewed from source; no individual
+acquisition freshness cannot be verified. Physical Modal rollout requires a current passing
+robot-host qualification, mapping acceptance and supervised confirmation; none of the current
+measurements passed qualification. Cloud motion and browser Modal Start remain blocked.
+See [current latency results](MODAL_LATENCY.md). The MolmoAct2 mapping is reviewed from source; no individual
 rig's calibration, motor frames, camera geometry, or manipulation performance is
-validated. Passing a check or probe does not remove either block.
+validated. Passing a check or probe does not satisfy either motion restriction.
 
 The exact integrated source revisions, milestone commits and verification results are in
 [integration-yamkit-v1.md](integration-yamkit-v1.md). The performance gate and measured
@@ -363,9 +365,12 @@ demonstrate exposure-level sensor freshness and does not enable the LLM or Modal
 Stop with Ctrl-C/UI **Stop local execution**; verify local session exit, then separately
 shut down cloud compute when no further paid checks are intended.
 
-## J. Short Modal rollout — BLOCKED
+## J. Short Modal rollout — qualification required; no acceptance passed
 
-Physical Modal acceptance is blocked. A nominal Molmo chunk has 30 actions at 30 Hz:
+Physical Modal acceptance requires a passing robot-host qualification and separate supervised
+mapping acceptance. No current configuration has passed. [Current results and qualification
+commands](MODAL_LATENCY.md) supersede the earlier blanket gate; the following timings remain
+historical evidence. A nominal Molmo chunk has 30 actions at 30 Hz:
 one second of horizon. Standalone C measured about 1.48-second warm RPC and 2.38–3.17-second
 rig-resolution saved probes. Those measurements did not establish continuous queue supply.
 [Final integration performance results](REMOTE_PERFORMANCE.md) report observed/injected
@@ -374,7 +379,7 @@ with zero underruns; a 700 ms spike caused a safe underrun, and all three histor
 Molmo delay scenarios sent zero actions.
 Fake-delay overlap tests do not establish real Modal network p95/p99.
 
-On the final guarded branch, the following is a **negative gate check**, not a request
+The following is a **negative gate check** with no supervised or mapping confirmation, not a request
 to move a robot. Expected effects: **no / no / no / no / no / no** because static
 performance validation must reject it before readiness, GPU calls or plugin connection.
 Run only after the final offline gate regression is green.
@@ -383,7 +388,7 @@ Run only after the final offline gate regression is green.
 yamkit rollout --rig configs/rig.example.yaml --policy molmoact2 --backend modal --task "blocked acceptance gate check" --duration 3
 ```
 
-Require an explicit physical-Modal-BLOCKED/performance explanation. In the UI, selecting
+Require an explicit cloud, qualification or missing-confirmation explanation. In the UI, selecting
 Modal must expose the same restriction; **Start rollout** must not bypass it through
 confirmation, custom input, stale readiness or a direct POST. The control remains part
 of the combined Inference page, with unsupported-combination messaging.
@@ -396,7 +401,7 @@ remaining valid horizon, expired prefixes dropped and no systematic underruns. P
 must overlap execution and start early enough to keep the valid queue supplied. Do not
 reuse stale chunks or call unguided async “RTC”.
 
-There is no physical Modal run to approve in this release. The future short-run effects,
+These results do not approve a physical Modal run. The future short-run effects,
 if separately qualified and explicitly authorized, would be **yes / possible / yes
 (startup home and policy motion) / yes / yes / yes**. Local Stop/fault must invalidate
 late remote results and release without a new home trajectory; cloud shutdown remains

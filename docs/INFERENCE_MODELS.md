@@ -3,15 +3,18 @@
 The catalog is offline. Merely listing models does not download weights, contact Modal,
 open cameras, or connect arms. The catalog distinguishes a successful native forward
 pass from a physical YAM mapping. Molmo's source conventions were reviewed; no supervised
-physical mapping, calibration or camera validation was performed. **All physical Modal
-rollout is blocked** pending qualification of the actual integrated queue. A probe,
-source mapping or ready service cannot override [the performance gate](REMOTE_PERFORMANCE.md).
+physical mapping, calibration or camera validation was performed. **Physical Modal rollout
+requires a current passing qualification on the actual robot host**, mapping acceptance and
+supervised confirmation. No passing qualification has been demonstrated; cloud workspaces
+and browser Modal Start remain blocked. A probe or ready service cannot replace these checks.
+See [current latency and qualification results](MODAL_LATENCY.md) and
+[the performance gate](REMOTE_PERFORMANCE.md).
 See [staged acceptance](acceptance-test.md) for available checks and command effects.
 
 | Profile | Checkpoint revision (model and saved processors) | Native state/action | YAM deployment |
 |---|---|---|---|
 | `smolvla` | [`c83c3163b8ca9b7e67c509fffd9121e66cb96205`](https://huggingface.co/lerobot/smolvla_base/tree/c83c3163b8ca9b7e67c509fffd9121e66cb96205) | 6 / 6; chunk 50 | No verified physical mapping; diagnostic inference only |
-| `molmoact2` | [`fdade02d1f1c1dd819114b0478f735072fb6b212`](https://huggingface.co/lerobot/MolmoAct2-BimanualYAM-LeRobot/tree/fdade02d1f1c1dd819114b0478f735072fb6b212) | 14 / 14; chunk 30 | Source mapping reviewed; local sync path available but physically unvalidated; Modal blocked |
+| `molmoact2` | [`fdade02d1f1c1dd819114b0478f735072fb6b212`](https://huggingface.co/lerobot/MolmoAct2-BimanualYAM-LeRobot/tree/fdade02d1f1c1dd819114b0478f735072fb6b212) | 14 / 14; chunk 30 | Source mapping reviewed; local sync physically unvalidated; Modal requires passing host qualification and supervised mapping acceptance |
 | `pi05` | [`b211f3d44c36b6acfcf7ae94a64e8e96f75a64ba`](https://huggingface.co/lerobot/pi05_base/tree/b211f3d44c36b6acfcf7ae94a64e8e96f75a64ba) | 32 / 32; chunk 50 | No physical YAM mapping or saved robot statistics; diagnostic inference only |
 
 No physical vector is padded or truncated. The native fixture keeps the checkpoint's

@@ -239,3 +239,43 @@ def test_interruption_during_inference_retires_session(tmp_path, observation, ru
     with pytest.raises(KeyboardInterrupt):
         run(tmp_path / "unused.yaml", saved=save(tmp_path, observation))
     assert runtime.events[-1] == "reset"
+
+
+def test_local_probe_keeps_original_rgb_pixels_and_dimensions(tmp_path, observation, runtime):
+    from yamkit.inference.protocol import decode_image
+
+    rng = np.random.default_rng(4310)
+    observation.images = {name: rng.integers(0, 256, (17, 19, 3), dtype=np.uint8)
+                          for name in observation.images}
+    result = run(tmp_path / "unused.yaml", saved=save(tmp_path, observation))
+    request = runtime.requests[0]
+    assert request["crop"] == "none"
+    for name, encoded in request["images"].items():
+        assert encoded["encoding"] == "rgb8"
+        assert (encoded["height"], encoded["width"]) == (17, 19)
+        np.testing.assert_array_equal(decode_image(encoded), observation.images[name])
+    assert result["image_encoding"] == "rgb8"
+    assert result["jpeg_quality"] is None
+
+
+def test_local_policy_check_keeps_exact_rgb_fixtures(runtime, monkeypatch):
+    from yamkit.inference.protocol import decode_image
+    from yamkit.inference_check import run_check
+
+    original = runtime.predict_chunk
+
+    def predict_native(request):
+        response = original(request)
+        response["action_units"] = "checkpoint_native"
+        return response
+
+    monkeypatch.setattr(runtime, "predict_chunk", predict_native)
+    result = run_check("molmoact2", backend="local")
+    for sequence, request in enumerate(runtime.requests):
+        rng = np.random.default_rng(sequence)
+        for name in runtime.profile.native_image_keys:
+            expected = rng.integers(0, 256, (*runtime.profile.native_image_hw, 3), dtype=np.uint8)
+            assert request["images"][name]["encoding"] == "rgb8"
+            np.testing.assert_array_equal(decode_image(request["images"][name]), expected)
+    assert all(sample["image_encoding"] == "rgb8" and sample["jpeg_quality"] is None
+               for sample in result["fresh_chunks"])

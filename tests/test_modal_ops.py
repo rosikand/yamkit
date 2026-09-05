@@ -28,11 +28,32 @@ def test_sdk_request_error_messages_are_sanitized_and_cancelled(failure, phase):
         return SimpleNamespace(get=SimpleNamespace(aio=get), cancel=SimpleNamespace(aio=cancel))
 
     with pytest.raises(failure) as error:
-        modal_ops.call(SimpleNamespace(spawn=SimpleNamespace(aio=spawn)), timeout=1)
+        modal_ops.call(SimpleNamespace(spawn=SimpleNamespace(aio=spawn)), timeout=1, call_mode="spawn")
     rendered = "".join(traceback.format_exception(error.value))
     assert sentinel not in rendered and "DUMMY_FILE_OR_ENV_CREDENTIAL" not in rendered
     assert error.value.__suppress_context__
     assert cancelled == ([True] if phase == "get" else [])
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, ValueError, TimeoutError, PermissionError])
+def test_remote_readiness_error_messages_are_sanitized(failure):
+    async def remote():
+        raise failure("DUMMY_REMOTE_CREDENTIAL")
+
+    with pytest.raises(failure) as error:
+        modal_ops.call(SimpleNamespace(remote=SimpleNamespace(aio=remote)), timeout=1)
+    assert "DUMMY_REMOTE_CREDENTIAL" not in "".join(traceback.format_exception(error.value))
+    assert error.value.__suppress_context__
+
+
+def test_remote_readiness_wait_has_finite_local_timeout():
+    import asyncio
+
+    async def remote():
+        await asyncio.Event().wait()
+
+    with pytest.raises(TimeoutError, match="timed out"):
+        modal_ops.call(SimpleNamespace(remote=SimpleNamespace(aio=remote)), timeout=0.01)
 
 
 def test_sdk_service_lookup_error_is_sanitized(monkeypatch):

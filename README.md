@@ -104,7 +104,8 @@ back home at Stop, all arms at the same time (`control.home_speed` for followers
 `control.leader_home_speed` for leaders, both 0.25 rad/s by default; 0 turns it off). Local rollout
 retains its normal return behavior. Leaders move with low gains so a hand on the handle simply
 wins. A second Stop / Ctrl-C during the return releases the arms immediately. Failed startup or
-operator-session faults release without an additional home move. Physical Modal rollout is blocked.
+operator-session faults release without an additional home move. Physical Modal rollout requires
+a passing qualification on the robot host and explicit supervised confirmation.
 
 **Align** fixes a follower that points slightly off its leader: the two arms' motor zeros never agree
 exactly. `yamkit align` reads both arms folded against their stops and stores the per-joint difference
@@ -236,12 +237,32 @@ as in teleop bound every commanded step.
 
 For optional Modal GPU inference and browser deployment, see [docs/MODAL.md](docs/MODAL.md).
 Local remains the default. MolmoAct2-YAM has a reviewed source mapping and a local synchronous
-path, but no supervised physical validation was performed. **All physical Modal rollout is
-blocked** pending qualification of the actual integrated action queue; readiness, source mapping
-and operator confirmation cannot override the gate. Checks and probes remain available. SmolVLA
+path, but no supervised physical validation was performed. **Physical Modal rollout requires
+a current passing qualification on the actual robot host**, separate mapping acceptance and
+explicit supervised confirmation. No passing qualification has been demonstrated; readiness or
+confirmation alone cannot enable motion. Checks and probes remain available. SmolVLA
 and pi05 base profiles support native checks and are blocked from physical rollout because they
 lack a reviewed YAM mapping. Guided remote RTC and local Molmo guidance are unsupported. See
 [remote performance and its measurement limits](docs/REMOTE_PERFORMANCE.md).
+
+Modal now defaults to JPEG quality 85, cached `.remote` calls and `us-west` placement,
+with earlier requests through the same LeRobot async worker. Collect evidence on the
+robot host without opening its arms or cameras:
+
+```bash
+yamkit modal-prepare --policy molmoact2 --region us-west --routing-region us-west
+yamkit modal-qualify --policy molmoact2 --requests 50
+yamkit modal-shutdown
+```
+
+These are billable cloud operations. Qualification uses generated images and fake arms
+with the real service; its record stays under `data/qualifications/`, applies only to
+the measured host/settings and expires after 24 hours. It requires healthy queue execution,
+Stop rejection of late actions, and warm p95 within 80% of the remaining usable action
+horizon. Mapping acceptance and supervised confirmation remain separate. Cloud results
+cannot qualify the Lenovo, and failed or expired records keep physical rollout blocked. Raw RGB,
+transport and scheduling options are described in [the Modal guide](docs/MODAL.md);
+see [the latency investigation](docs/MODAL_LATENCY.md) for evidence and limits.
 
 For a small multimodal LLM controller, see [the agent guide](docs/AGENT.md). `yamkit agent` offers
 an offline fixture mode and paid OpenAI calls with fixtures; live execution is disabled pending
@@ -297,10 +318,12 @@ a safety-rated emergency stop. Cooperative locks do not protect against unrelate
 | `yamkit rest` | Park: move arm(s) slowly to their home pose, then release them there. |
 | `yamkit teleoperate` | LeRobot teleoperation with shared YAM operator processing; bilateral feedback unsupported. |
 | `yamkit record` | Record sent teleop actions into a LeRobot dataset with shared YAM operator processing. |
-| `yamkit rollout` | Run a compatible local policy/VLA on the followers; physical Modal rollout is blocked. |
+| `yamkit rollout` | Run a compatible policy/VLA on the followers; Modal additionally requires current host qualification, mapping acceptance and supervised confirmation. |
 | `yamkit agent` | Bounded multimodal LLM controller with labeled fixtures; `--dry-run --offline` makes no API calls. Live execution is blocked; see [docs/AGENT.md](docs/AGENT.md). |
 | `yamkit train` | Fine-tune a policy with `lerobot-train` (needs a GPU box; see README for the remote workflow). |
 | `yamkit policy-check` | Load a policy/VLA for this rig and run it on a synthetic frame (no arm is energised). |
+| `yamkit modal-prepare` / `modal-shutdown` | Explicitly prepare or shut down the owned Modal service; billable preparation, no hardware activation. |
+| `yamkit modal-qualify` | Measure the real Modal service with generated images and fake hardware; write a host-bound qualification record. Failed records cannot authorize motion. |
 | `yamkit ui` | Serve the local web UI (viewer + launcher for the commands above; pages never energise a motor). |
 | `yamkit doctor` | Check the environment: venv, torch, CAN (and boot-time bring-up), plugins, cameras, rig file vs attached hardware. |
 | `yamkit hub login/status/logout` | Hugging Face sign-in (token kept in `data/hf`, never in the rig). |
@@ -309,7 +332,8 @@ a safety-rated emergency stop. Cooperative locks do not protect against unrelate
 
 Every command accepts `--help`. Local `record`/`teleoperate`/`rollout`/`train` pass extra
 `--flags` to LeRobot, subject to wrapper validation; `--dry-run` prints the command without running it.
-Modal rollout rejects extra LeRobot flags and remains blocked, including with `--dry-run`.
+Modal rollout rejects extra LeRobot flags and requires the same qualification and confirmation
+checks even with `--dry-run`. Browser Modal Start remains disabled.
 
 ## How it fits together
 
@@ -345,7 +369,7 @@ checkpoint ─► lerobot-rollout ─► policy.select_action() ─► YamFollow
 | follower points slightly off its leader | `yamkit align <arm>` (both arms folded to their stops) |
 | arms should not home at Start/Stop | Set both `control.home_speed: 0` and `control.leader_home_speed: 0`, or use `yamkit teleop --no-home` |
 | torchcodec / libavutil errors in logs | harmless: LeRobot falls back to PyAV for video |
-| policy too slow on CPU | Use a suitable local GPU or supported local RTC; physical Modal rollout remains blocked pending queue qualification |
+| policy too slow on CPU | Use a suitable local GPU or supported local RTC; physical Modal rollout requires a passing queue qualification on the robot host |
 | training stops silently at step 0 (leaked semaphores) | forked data-loader workers; `yamkit train` adds `--num_workers=0` on CPU boxes, pass it yourself to plain `lerobot-train` |
 
 ## Development

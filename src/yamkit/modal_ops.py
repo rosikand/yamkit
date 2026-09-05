@@ -76,12 +76,16 @@ def _ownership_lock():
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def call(method, *args, timeout: float = 120):
+def call(method, *args, timeout: float = 120, call_mode: str = "remote"):
     """Bound submission + response, with best-effort cancellation and no retry."""
     async def invoke():
         handle = None
         try:
             async with asyncio.timeout(timeout):
+                if call_mode == "remote":
+                    return await method.remote.aio(*args)
+                if call_mode != "spawn":
+                    raise ValueError("Modal call mode must be remote or spawn")
                 handle = await method.spawn.aio(*args)
                 return await handle.get.aio()
         except BaseException:
@@ -108,14 +112,17 @@ def service_handle(app_name: str, profile_id: str):
 
 
 def prepare(profile_name: str, *, gpu: str = "L40S", development: bool = False,
-            cache_volume_name: str = "yamkit-policy-weights") -> dict:
+            cache_volume_name: str = "yamkit-policy-weights", region: str | None = "us-west",
+            routing_region: str = "us-west", memory_mib: int = 65536) -> dict:
     """Deploy and warm explicitly. A failed prepare shuts down only its owned app."""
     with _ownership_lock():
         return _prepare_locked(profile_name, gpu=gpu, development=development,
-                               cache_volume_name=cache_volume_name)
+                               cache_volume_name=cache_volume_name, region=region, routing_region=routing_region,
+                               memory_mib=memory_mib)
 
 
-def _prepare_locked(profile_name: str, *, gpu: str, development: bool, cache_volume_name: str) -> dict:
+def _prepare_locked(profile_name: str, *, gpu: str, development: bool, cache_volume_name: str,
+                    region: str | None, routing_region: str, memory_mib: int) -> dict:
     from .inference.modal_service import create_app
     from .inference.profiles import get_profile
 
@@ -126,6 +133,10 @@ def _prepare_locked(profile_name: str, *, gpu: str, development: bool, cache_vol
             raise ValueError("shut down the owned cloud service before preparing a different model")
         if prior.get("status") != "ready":
             raise ValueError("previous preparation is incomplete; shut down the owned service before retrying")
+        if (prior.get("region") != region or prior.get("routing_region", "us-east") != routing_region
+                or prior.get("cache_volume_name", "yamkit-policy-weights") != cache_volume_name
+                or prior.get("memory_mib", 65536) != memory_mib):
+            raise ValueError("shut down the owned cloud service before changing placement or its weight cache")
         metadata = call(service_handle(prior["app_name"], profile.id).ready, timeout=300)
         _validate_ready(metadata, profile)
         return {**prior, "metadata": metadata}
@@ -133,13 +144,16 @@ def _prepare_locked(profile_name: str, *, gpu: str, development: bool, cache_vol
     receipt = {"app_name": app_name, "app_id": None, "profile_id": profile.id,
                "revision": profile.revision, "status": "preparing", "created_at": time.time(),
                "development": development, "gpu": gpu, "scaledown_window": 15 if development else 300,
+               "region": region, "routing_region": routing_region, "cache_volume_name": cache_volume_name,
+               "memory_mib": memory_mib,
                "deployment_started": False}
     _save(receipt)
     app = None
     try:
         try:
             app = create_app(profile_id=profile.id, gpu=gpu, development=development, app_name=app_name,
-                             cache_volume_name=cache_volume_name)
+                             cache_volume_name=cache_volume_name, region=region, routing_region=routing_region,
+                             memory_mib=memory_mib)
         except Exception as error:  # noqa: BLE001 — image/secret construction also invokes the SDK
             raise _safe_sdk_error(error, "application construction") from None
         receipt["deployment_started"] = True

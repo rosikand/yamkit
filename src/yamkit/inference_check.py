@@ -47,7 +47,8 @@ def run_check(policy: str, *, backend: str = "local", device: str = "cpu", task:
     for sequence in range(steps):
         encoded_at = time.monotonic()
         request = native_fixture_request(profile, sequence_id=sequence, session_id=session_id,
-                                         crop="center_16_9" if center_crop else "none")
+                                         crop="center_16_9" if center_crop else "none",
+                                         encoding="jpeg" if backend == "modal" else "rgb8")
         request["task"] = task
         encoding_s = time.monotonic() - encoded_at
         sent = time.monotonic()
@@ -56,6 +57,8 @@ def run_check(policy: str, *, backend: str = "local", device: str = "cpu", task:
         validate_response(response, request, profile)
         chunk = np.asarray(response["chunk"])
         samples.append({"sequence_id": sequence, "round_trip_s": elapsed, "encoding_s": encoding_s,
+                        "image_encoding": "jpeg" if backend == "modal" else "rgb8",
+                        "jpeg_quality": 85 if backend == "modal" else None,
                         "payload_bytes": sum(len(i["data"]) for i in request["images"].values()),
                         "shape": list(chunk.shape), "finite": bool(np.isfinite(chunk).all()),
                         "min": float(chunk.min()), "max": float(chunk.max()), "server": response["timing"],

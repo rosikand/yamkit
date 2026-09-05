@@ -47,6 +47,17 @@ class InvalidatableActionQueue(ActionQueue):
         self.expired_prefix_dropped = 0
         self.overlap_prefix_dropped = 0
         self.expired_chunks = 0
+        self.expired_queued_actions = 0
+        self.redundant_chunks = 0
+
+    def timing_snapshot(self, now=None):
+        """Report actual queued deadlines, separately from depth divided by FPS."""
+        with self.lock:
+            now = time.monotonic() if now is None else now
+            deadlines = self._deadlines[self.last_index:]
+            return {"depth": self.qsize(),
+                    "deadline_horizon_s": max(0.0, deadlines[-1] - now) if deadlines else 0.0,
+                    "next_action_margin_s": deadlines[0] - now if deadlines else None}
 
     def invalidate(self):
         with self.lock:
@@ -77,17 +88,30 @@ class InvalidatableActionQueue(ActionQueue):
                 self.expired_prefix_dropped += expired
                 self.overlap_prefix_dropped += overlap
                 available = len(processed_actions) - dropped
+                old_deadline = self._deadlines[-1] if remaining else now
+                new_deadline = min(observation_time + self.max_age_s,
+                                   observation_time + len(processed_actions) / self.fps) if available else now
                 if self._on_merge is not None:
                     self._on_merge({"queue_depth_at_merge": remaining,
+                                    "queue_deadline_horizon_at_merge_s": max(0.0, old_deadline - now),
                                     "expired_prefix_dropped": expired,
                                     "overlap_prefix_dropped": overlap,
                                     "accepted_steps": available,
-                                    "remaining_valid_action_horizon_s": max(0.0,
-                                        len(processed_actions) / self.fps - (now - observation_time)),
-                                    "queue_horizon_after_merge_s": (remaining + available) / self.fps})
-                if observation_time + self.max_age_s <= now or available == 0:
+                                    "remaining_valid_action_horizon_s": max(0.0, min(
+                                        len(processed_actions) / self.fps, self.max_age_s)
+                                        - (now - observation_time)),
+                                    "queue_horizon_after_merge_s": (remaining + available) / self.fps,
+                                    "queue_deadline_horizon_after_merge_s": max(0.0,
+                                        max(old_deadline, new_deadline) - now)})
+                if observation_time + self.max_age_s <= now or expired == len(processed_actions):
                     self.expired_chunks += 1
                     raise RemoteFault("Remote chunk expired: no valid future actions remain")
+                if available == 0:
+                    # An immediate prediction can finish before the main thread
+                    # consumes its next tick. Its entirely overlapping fresh
+                    # prefix adds nothing; existing deadlines remain untouched.
+                    self.redundant_chunks += 1
+                    return
                 if remaining + available > self.max_steps:
                     raise RemoteFault("Remote action queue capacity exceeded")
                 self._deadlines = self._deadlines[self.last_index:] + [
@@ -109,6 +133,7 @@ class InvalidatableActionQueue(ActionQueue):
             if not self.valid:
                 return None
             if self.last_index < len(self._deadlines) and time.monotonic() >= self._deadlines[self.last_index]:
+                self.expired_queued_actions += 1
                 raise RemoteFault("Queued remote actions expired")
             self.last_action_deadline = self._deadlines[self.last_index] if self.last_index < len(self._deadlines) else None
             return super().get()
@@ -125,6 +150,8 @@ class _ObservationSlot(dict):
     def get(self, key, default=None):
         value = super().get(key, default)
         if key == "obs" and value is not None:
+            if self.timestamp == self.policy._last_requested_observation_time:
+                return None  # Exactly one fresh observation per serial prediction.
             self.policy._observation_time = self.timestamp
             self.policy._observation_selected_time = time.monotonic()
         return value
@@ -135,8 +162,11 @@ class UnguidedRemoteInferenceEngine(RTCInferenceEngine):
 
     def __init__(self, *, policy, preprocessor, postprocessor, robot_wrapper, hw_features, task, fps,
                  shutdown_event):
-        threshold = max(1, policy.profile.chunk_size // 2)
-        self.max_steps = policy.profile.chunk_size + threshold
+        threshold = policy.config.prediction_queue_threshold
+        if threshold is None:
+            threshold = policy.profile.chunk_size
+        # Prefetch timing must not enlarge the established queue safety bound.
+        self.max_steps = policy.profile.chunk_size + max(1, policy.profile.chunk_size // 2)
         self.max_age_s = policy.config.max_observation_age_s
         self.startup_timeout_s = policy.config.request_timeout_s
         self.underruns = 0
@@ -144,6 +174,11 @@ class UnguidedRemoteInferenceEngine(RTCInferenceEngine):
         self.last_queue_depth_before_stop = 0
         self.executed_actions = 0
         self.dequeued_actions = 0
+        self.minimum_execution_queue_depth = None
+        self.minimum_dispatch_margin_s = None
+        self.expired_before_dispatch = 0
+        self.stop_detected_at = None
+        self.robot_released_at = None
         self.predictions = deque(maxlen=1000)
         self._ever_had_action = False
         self._started_at = None
@@ -156,12 +191,16 @@ class UnguidedRemoteInferenceEngine(RTCInferenceEngine):
 
     def _prediction_start(self):
         now = time.monotonic()
-        depth = self.action_queue.qsize()
+        queue = self.action_queue.timing_snapshot(now)
+        depth = queue["depth"]
         event = {"prediction_started_monotonic_s": now,
                  "observation_timestamp_monotonic_s": self._policy._observation_time,
                  "observation_age_at_start_s": now - self._policy._observation_time,
                  "observation_processing_s": now - self._policy._observation_selected_time,
                  "queue_depth_at_start": depth, "queue_horizon_at_start_s": depth / self._fps,
+                 "queue_deadline_horizon_at_start_s": queue["deadline_horizon_s"],
+                 "next_action_margin_at_start_s": queue["next_action_margin_s"],
+                 "prefetch_threshold_steps": self._rtc_queue_threshold,
                  "executed_actions_at_start": self.executed_actions,
                  "expired_prefix_dropped": 0, "overlap_prefix_dropped": 0, "accepted_steps": 0}
         self.predictions.append(event)
@@ -170,13 +209,17 @@ class UnguidedRemoteInferenceEngine(RTCInferenceEngine):
     def _prediction_end(self, event, error):
         now = time.monotonic()
         age = now - event["observation_timestamp_monotonic_s"]
+        queue = self.action_queue.timing_snapshot(now)
         event.update(prediction_s=now - event["prediction_started_monotonic_s"],
                      observation_age_at_return_s=age,
                      remaining_valid_action_horizon_s=max(0.0, min(
                          self._policy.profile.chunk_size / self._fps, self.max_age_s) - age),
-                     queue_depth_at_return=self.action_queue.qsize(),
+                     queue_depth_at_return=queue["depth"],
+                     queue_deadline_horizon_at_return_s=queue["deadline_horizon_s"],
+                     next_action_margin_at_return_s=queue["next_action_margin_s"],
                      actions_executed_during_prediction=self.executed_actions - event["executed_actions_at_start"],
                      error=error)
+        event.update(self._policy._last_prediction_timing)
 
     def _record_merge(self, metrics):
         if self.predictions:
@@ -185,6 +228,16 @@ class UnguidedRemoteInferenceEngine(RTCInferenceEngine):
     def record_execution(self):
         # Called only after the canonical Robot.send_action completed successfully.
         self.executed_actions += 1
+        depth = self.action_queue.qsize()
+        if self.minimum_execution_queue_depth is None or depth < self.minimum_execution_queue_depth:
+            self.minimum_execution_queue_depth = depth
+
+    def record_dispatch(self, margin_s):
+        if margin_s is not None:
+            if self.minimum_dispatch_margin_s is None or margin_s < self.minimum_dispatch_margin_s:
+                self.minimum_dispatch_margin_s = margin_s
+            if margin_s <= 0:
+                self.expired_before_dispatch += 1
 
     def _new_queue(self):
         return InvalidatableActionQueue(max_steps=self.max_steps, max_age_s=self.max_age_s,
@@ -210,6 +263,8 @@ class UnguidedRemoteInferenceEngine(RTCInferenceEngine):
             self._obs_holder.timestamp = time.monotonic()
 
     def _fault(self):
+        if self.stop_detected_at is None:
+            self.stop_detected_at = time.monotonic()
         self._rtc_error.set()
         self._shutdown_event.set()
         self._policy_active.clear()
@@ -264,6 +319,8 @@ class UnguidedRemoteInferenceEngine(RTCInferenceEngine):
         self._started_at = time.monotonic()
 
     def invalidate(self):
+        if self.stop_detected_at is None:
+            self.stop_detected_at = time.monotonic()
         self._shutdown_event.set()
         self._policy_active.clear()
         self._policy.close()
@@ -326,8 +383,20 @@ def validate_remote_rollout(cfg):
                 or limits[0] == limits[1]):
             raise ValueError(f"Valid saved gripper calibration required before activating {handle.spec.name}")
     from yamkit.inference.performance import require_physical_modal_rollout
+    from yamkit.inference.qualification import current_settings
 
-    require_physical_modal_rollout()
+    dimensions = {(camera.height, camera.width) for camera in robot.camera_configs.values()}
+    if len(dimensions) != 1:
+        raise ValueError("Qualification requires exact, equal camera dimensions")
+    cfg.policy.set_image_shape(next(iter(dimensions)))
+
+    def settings():
+        if len(dimensions) != 1:
+            raise ValueError("Qualification requires exact, equal camera dimensions")
+        return current_settings(cfg.policy, image_hw=next(iter(dimensions)))
+
+    require_physical_modal_rollout(settings, supervised_confirmed=cfg.policy.supervised_confirmed,
+                                   mapping_accepted=cfg.policy.mapping_accepted)
 
 
 class _StoppableRobot(ThreadSafeRobot):
@@ -339,17 +408,23 @@ class _StoppableRobot(ThreadSafeRobot):
         self.on_action = None
         self.action_deadline = None
         self.on_fault = None
+        self.on_dispatch = None
 
     def send_action(self, action):
         with self._lock:
             if self.shutdown_event.is_set():
                 raise RemoteFault("Local execution stopped before action dispatch")
             deadline = self.action_deadline() if self.action_deadline is not None else None
-            if deadline is not None and time.monotonic() >= deadline:
+            margin_s = deadline - time.monotonic() if deadline is not None else None
+            if margin_s is not None and margin_s <= 0:
+                if self.on_dispatch is not None:
+                    self.on_dispatch(margin_s)
                 if self.on_fault is not None:
                     self.on_fault()
                 raise RemoteFault("Remote action expired before hardware dispatch")
             result = self.inner.send_action(action)
+            if self.on_dispatch is not None:
+                self.on_dispatch(margin_s)
             if self.on_action is not None:
                 self.on_action()
             return result
@@ -365,10 +440,14 @@ def run_remote_rollout(cfg, *, shutdown_event: Event | None = None):
         shutdown_event = signal_handler.shutdown_event
     ctx = None
     engine = None
+    fault = None
     cfg.policy._session_shutdown_event = shutdown_event
     cfg.robot._session_shutdown_event = shutdown_event
     try:
-        ctx = build_rollout_context(cfg, shutdown_event)
+        from yamkit.inference.qualification import validated_runner_context
+
+        with validated_runner_context():
+            ctx = build_rollout_context(cfg, shutdown_event)
         ctx.hardware.robot_wrapper = _StoppableRobot(ctx.hardware.robot_wrapper.inner, shutdown_event)
         engine = UnguidedRemoteInferenceEngine(
             policy=ctx.policy.policy, preprocessor=ctx.policy.preprocessor, postprocessor=ctx.policy.postprocessor,
@@ -377,6 +456,7 @@ def run_remote_rollout(cfg, *, shutdown_event: Event | None = None):
         ctx.hardware.robot_wrapper.on_action = engine.record_execution
         ctx.hardware.robot_wrapper.action_deadline = lambda: engine.action_queue.last_action_deadline
         ctx.hardware.robot_wrapper.on_fault = engine._fault
+        ctx.hardware.robot_wrapper.on_dispatch = engine.record_dispatch
         ctx.policy.inference = engine
         strategy = create_strategy(cfg.strategy)
         strategy.setup(ctx)
@@ -384,8 +464,7 @@ def run_remote_rollout(cfg, *, shutdown_event: Event | None = None):
         if engine.failed:
             raise RemoteFault("Remote rollout stopped after an inference fault")
     except RemoteFault as exc:
-        if engine is not None:
-            exc.metrics = _rollout_metrics(ctx, engine)
+        fault = exc
         raise
     finally:
         shutdown_event.set()
@@ -397,9 +476,14 @@ def run_remote_rollout(cfg, *, shutdown_event: Event | None = None):
         try:
             if robot is not None:
                 robot.disconnect_no_home()
+                if engine is not None:
+                    engine.robot_released_at = time.monotonic()
         finally:
             if engine is not None:
                 engine.stop()
+                if fault is not None:
+                    # Include cancelled in-flight attempts and final queue state.
+                    fault.metrics = _rollout_metrics(ctx, engine)
     return _rollout_metrics(ctx, engine)
 
 
@@ -409,9 +493,19 @@ def _rollout_metrics(ctx, engine):
             "last_queue_depth_before_stop": engine.last_queue_depth_before_stop,
             "executed_actions": engine.executed_actions,
             "dequeued_actions": engine.dequeued_actions,
-            "prediction_samples": list(engine.predictions),
+            "minimum_execution_queue_depth": engine.minimum_execution_queue_depth,
+            "minimum_dispatch_margin_s": engine.minimum_dispatch_margin_s,
+            "expired_before_dispatch": engine.expired_before_dispatch,
+            "expired_queued_actions": engine.action_queue.expired_queued_actions,
+            "stop_to_robot_release_s": (engine.robot_released_at - engine.stop_detected_at)
+            if engine.robot_released_at is not None and engine.stop_detected_at is not None else None,
+            "stop_timing_basis": "local stop/fault detection to completed no-home robot release",
+            "prediction_samples": [dict(event) for event in engine.predictions],
+            "readiness_s": ctx.policy.policy.readiness_s,
+            "readiness_model_warmup_s": ctx.policy.policy.warmup_s,
             "prefetch_threshold_steps": engine._rtc_queue_threshold,
             "expired_prefix_dropped": engine.action_queue.expired_prefix_dropped,
             "overlap_prefix_dropped": engine.action_queue.overlap_prefix_dropped,
             "expired_chunks": engine.action_queue.expired_chunks,
+            "redundant_chunks": engine.action_queue.redundant_chunks,
             **ctx.policy.policy.session.metrics()}

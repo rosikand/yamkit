@@ -703,13 +703,23 @@ def rollout(
     modal_app: str | None = None,
     center_crop: bool = False,
     async_chunks: Annotated[bool, typer.Option("--async/--no-async", help="unguided background chunks (Modal)")] = True,
+    image_encoding: str = "jpeg",
+    jpeg_quality: int = 85,
+    call_mode: str = "remote",
+    prediction_queue_threshold: int | None = None,
+    confirm_supervised: Annotated[bool, typer.Option("--confirm-supervised")] = False,
+    accept_mapping: Annotated[bool, typer.Option("--accept-mapping")] = False,
 ) -> None:
     """Run a policy/VLA on the follower arm(s) (`lerobot-rollout`)."""
     from .deployment import InferenceOptions
 
     options = InferenceOptions(policy=policy, task=task, backend=backend, device=device or "cpu", gpu=gpu,
                                modal_app=modal_app, center_crop=center_crop, rtc=rtc,
-                               async_chunks=async_chunks, duration=duration, fps=fps, arms=tuple(arms or ()))
+                               async_chunks=async_chunks, duration=duration, fps=fps, arms=tuple(arms or ()),
+                               image_encoding=image_encoding, jpeg_quality=jpeg_quality, call_mode=call_mode,
+                               prediction_queue_threshold=prediction_queue_threshold,
+                               supervised_confirmed=confirm_supervised, mapping_accepted=accept_mapping,
+                               rig_path=str(rig))
     try:
         options.validate(motion=True)
     except ValueError as exc:
@@ -740,7 +750,10 @@ def rollout(
         config = RolloutConfig(
             robot=BiYamFollowerConfig(rig=str(rig), left=by_side["left"], right=by_side["right"], id="yam"),
             policy=YamkitRemoteConfig(profile=get_profile(policy).id, modal_app=app_name,
-                                     center_crop=center_crop),
+                                     center_crop=center_crop, image_encoding=image_encoding,
+                                     jpeg_quality=jpeg_quality, call_mode=call_mode,
+                                     prediction_queue_threshold=prediction_queue_threshold,
+                                     supervised_confirmed=confirm_supervised, mapping_accepted=accept_mapping),
             task=task, duration=duration, fps=fps, device="cpu", play_sounds=False,
             use_torch_compile=False, return_to_initial_position=False,
         )
@@ -985,11 +998,31 @@ def policy_check(
 
 @app.command("modal-prepare")
 def modal_prepare(policy: str = "molmoact2", gpu: str = "L40S", development: bool = False,
-                  cache_volume: str = "yamkit-policy-weights") -> None:
+                  cache_volume: str = "yamkit-policy-weights", region: str = "us-west",
+                  routing_region: str = "us-west", memory_mib: int = 65536) -> None:
     """Explicitly deploy and warm this workspace's dedicated cloud pool; never activate hardware."""
     from .modal_ops import prepare
 
-    _print_inference_result(prepare(policy, gpu=gpu, development=development, cache_volume_name=cache_volume))
+    _print_inference_result(prepare(policy, gpu=gpu, development=development, cache_volume_name=cache_volume,
+                                   region=region, routing_region=routing_region, memory_mib=memory_mib))
+
+
+@app.command("modal-qualify")
+def modal_qualify(policy: str = "molmoact2", requests: int = 50, modal_app: str | None = None,
+                  rig: RigOpt = DEFAULT_RIG, image_encoding: str = "jpeg", jpeg_quality: int = 85,
+                  call_mode: str = "remote", center_crop: bool = False,
+                  prediction_queue_threshold: int | None = None) -> None:
+    """Measure this host's existing Modal service with generated frames and fake arms only."""
+    from .modal_qualification import collect_qualification
+
+    try:
+        result = collect_qualification(policy, requests=requests, modal_app=modal_app, rig_path=rig,
+                                       image_encoding=image_encoding, jpeg_quality=jpeg_quality,
+                                       call_mode=call_mode, center_crop=center_crop,
+                                       prediction_queue_threshold=prediction_queue_threshold)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    _print_inference_result(result)
 
 
 @app.command("modal-shutdown")

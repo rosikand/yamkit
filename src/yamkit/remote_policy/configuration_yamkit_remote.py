@@ -14,6 +14,13 @@ class YamkitRemoteConfig(PreTrainedConfig):
     readiness_timeout_s: float = 120.0
     max_observation_age_s: float = 2.0
     center_crop: bool = False
+    image_encoding: str = "jpeg"
+    jpeg_quality: int = 85
+    call_mode: str = "remote"
+    prediction_queue_threshold: int | None = None
+    supervised_confirmed: bool = False
+    mapping_accepted: bool = False
+    image_hw: tuple[int, int] = (480, 640)
     device: str = "cpu"
     action_feature_names: list[str] = field(default_factory=list)
 
@@ -30,14 +37,34 @@ class YamkitRemoteConfig(PreTrainedConfig):
         if not 0 < self.max_observation_age_s <= 120:
             raise ValueError("Maximum observation age must be in (0, 120] seconds")
         profile = get_profile(self.profile)
+        if self.image_encoding not in ("jpeg", "rgb8"):
+            raise ValueError("Remote images require jpeg or rgb8 encoding")
+        if type(self.jpeg_quality) is not int or not 1 <= self.jpeg_quality <= 100:
+            raise ValueError("JPEG quality must be an integer from 1 to 100")
+        if self.call_mode not in ("remote", "spawn"):
+            raise ValueError("Remote call_mode must be remote or spawn")
+        if self.prediction_queue_threshold is not None and (
+                type(self.prediction_queue_threshold) is not int
+                or not 0 <= self.prediction_queue_threshold <= profile.chunk_size):
+            raise ValueError("Prediction queue threshold must be between zero and the chunk size")
         self.profile = profile.id
         self.action_feature_names = list(profile.action_names)
         self.input_features = {
             "observation.state": PolicyFeature(FeatureType.STATE, (len(profile.state_names),)),
-            **{f"observation.images.{name}": PolicyFeature(FeatureType.VISUAL, (3, 480, 640))
-               for name in profile.image_keys},
         }
+        self.set_image_shape(self.image_hw)
         self.output_features = {"action": PolicyFeature(FeatureType.ACTION, (len(profile.action_names),))}
+
+    def set_image_shape(self, image_hw):
+        from yamkit.inference.profiles import get_profile
+        from yamkit.inference.protocol import MAX_IMAGE_HEIGHT, MAX_IMAGE_WIDTH
+
+        if (len(image_hw) != 2 or any(type(value) is not int for value in image_hw)
+                or not 1 <= image_hw[0] <= MAX_IMAGE_HEIGHT or not 1 <= image_hw[1] <= MAX_IMAGE_WIDTH):
+            raise ValueError("Remote image dimensions exceed the protocol bounds")
+        self.image_hw = tuple(image_hw)
+        for name in get_profile(self.profile).image_keys:
+            self.input_features[f"observation.images.{name}"] = PolicyFeature(FeatureType.VISUAL, (3, *image_hw))
 
     @property
     def observation_delta_indices(self):

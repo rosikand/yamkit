@@ -170,9 +170,13 @@ integration HEAD; the source commit above identifies the exact executable code t
   `camera.read_latest()` do not expose sufficient acquisition evidence to prove every state/image
   was acquired after a physical action completed. Fixture tests reject stale feedback and stop
   further decisions/actions; they do not establish physical sensor freshness.
-- Physical Modal rollout is unconditionally blocked in shared CLI/UI validation, the runner and
+- At the recorded integration commit, physical Modal rollout was unconditionally blocked in
+  shared CLI/UI validation, the runner and
   direct remote-policy construction. Readiness, a successful probe or operator confirmation
-  cannot override it. Real integrated warm tail latency and sustained queue supply remain unmeasured.
+  could not override it. Real integrated warm tail latency and sustained queue supply were unmeasured.
+  The later [latency investigation](MODAL_LATENCY.md) adds conditional robot-host qualification,
+  mapping acceptance and supervised confirmation; it has not demonstrated a passing qualification.
+  Cloud workspaces and browser Modal Start remain blocked. This report's historical counts are unchanged.
 - No rig passed physical mapping/calibration/camera or operator acceptance during this task.
   MolmoAct2's source mapping is reviewed and its local sync implementation remains available;
   local Molmo compute and physical behavior still require separate acceptance. SmolVLA/pi05 base

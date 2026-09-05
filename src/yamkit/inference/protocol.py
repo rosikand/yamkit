@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 import time
 import uuid
+import warnings
+from io import BytesIO
 from typing import Any
 
 import numpy as np
@@ -20,6 +22,9 @@ MAX_PAYLOAD_BYTES = MAX_IMAGES * MAX_IMAGE_WIDTH * MAX_IMAGE_HEIGHT * 3
 MAX_TIMEOUT_S = 120.0
 MAX_OBSERVATION_AGE_S = 2.0
 MAX_TASK_CHARS = 2048
+DEFAULT_IMAGE_ENCODING = "jpeg"
+DEFAULT_JPEG_QUALITY = 85
+IMAGE_ENCODINGS = ("jpeg", "rgb8")
 
 
 class ProtocolError(ValueError):
@@ -34,25 +39,75 @@ def _number(value: Any, name: str, minimum: float = 0, maximum: float = float("i
     return float(value)
 
 
-def encode_image(image: np.ndarray) -> dict:
+def encode_image(image: np.ndarray, *, encoding: str = DEFAULT_IMAGE_ENCODING,
+                 quality: int = DEFAULT_JPEG_QUALITY) -> dict:
     if image.dtype != np.uint8 or image.ndim != 3 or image.shape[-1] != 3:
         raise ProtocolError("Expected HWC uint8 RGB image")
-    result = {"encoding": "rgb8", "height": int(image.shape[0]), "width": int(image.shape[1]),
-              "data": np.ascontiguousarray(image).tobytes()}
-    decode_image(result)
+    h, w = image.shape[:2]
+    if not 1 <= h <= MAX_IMAGE_HEIGHT or not 1 <= w <= MAX_IMAGE_WIDTH:
+        raise ProtocolError("RGB dimensions exceed protocol limits")
+    if encoding not in IMAGE_ENCODINGS:
+        raise ProtocolError("Unsupported image encoding")
+    result = {"encoding": encoding, "height": int(h), "width": int(w)}
+    if encoding == "rgb8":
+        result["data"] = np.ascontiguousarray(image).tobytes()
+    else:
+        from PIL import Image
+
+        if type(quality) is not int or not 1 <= quality <= 100:
+            raise ProtocolError("JPEG quality must be an integer from 1 to 100")
+        buffer = BytesIO()
+        Image.fromarray(image).save(buffer, format="JPEG", quality=quality, subsampling=2)
+        result.update(data=buffer.getvalue(), quality=quality)
+    _validate_image(result)
     return result
 
 
-def decode_image(payload: dict) -> np.ndarray:
-    if not isinstance(payload, dict) or set(payload) != {"encoding", "height", "width", "data"}:
+def _validate_image(payload: dict) -> None:
+    """Validate the envelope and JPEG header without decoding the pixels twice."""
+    if not isinstance(payload, dict):
         raise ProtocolError("Malformed RGB payload")
+    encoding = payload.get("encoding")
+    expected = {"encoding", "height", "width", "data"}
+    if encoding == "jpeg":
+        expected.add("quality")
+    if set(payload) != expected or encoding not in IMAGE_ENCODINGS:
+        raise ProtocolError("Malformed image payload or unsupported encoding")
     h, w = payload["height"], payload["width"]
     if type(h) is not int or type(w) is not int or not 1 <= h <= MAX_IMAGE_HEIGHT or not 1 <= w <= MAX_IMAGE_WIDTH:
         raise ProtocolError("RGB dimensions exceed protocol limits")
     data = payload["data"]
-    if payload["encoding"] != "rgb8" or not isinstance(data, bytes) or len(data) != h * w * 3:
-        raise ProtocolError("RGB encoding or byte count mismatch")
-    return np.frombuffer(data, dtype=np.uint8).reshape(h, w, 3)
+    if not isinstance(data, bytes) or not 1 <= len(data) <= MAX_PAYLOAD_BYTES:
+        raise ProtocolError("Image byte count exceeds protocol limits")
+    if encoding == "rgb8":
+        if len(data) != h * w * 3:
+            raise ProtocolError("RGB encoding or byte count mismatch")
+        return
+    if type(payload["quality"]) is not int or not 1 <= payload["quality"] <= 100:
+        raise ProtocolError("JPEG quality must be an integer from 1 to 100")
+    from PIL import Image
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(data)) as image:
+                if image.format != "JPEG" or image.mode != "RGB" or image.size != (w, h):
+                    raise ProtocolError("JPEG format or dimensions do not match its envelope")
+    except (OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+        raise ProtocolError("Invalid JPEG image") from exc
+
+
+def decode_image(payload: dict) -> np.ndarray:
+    _validate_image(payload)
+    if payload["encoding"] == "rgb8":
+        return np.frombuffer(payload["data"], dtype=np.uint8).reshape(payload["height"], payload["width"], 3)
+    from PIL import Image
+
+    try:
+        with Image.open(BytesIO(payload["data"])) as image:
+            return np.array(image, dtype=np.uint8)
+    except (OSError, ValueError) as exc:
+        raise ProtocolError("Invalid JPEG image") from exc
 
 
 def validate_request(request: dict, profile: ModelProfile) -> None:
@@ -93,7 +148,7 @@ def validate_request(request: dict, profile: ModelProfile) -> None:
         raise ProtocolError(f"Image names must be exactly {keys}")
     payload_bytes = 0
     for image in images.values():
-        decode_image(image)
+        _validate_image(image)
         payload_bytes += len(image["data"])
     if payload_bytes > MAX_PAYLOAD_BYTES:
         raise ProtocolError("Image payload exceeds request bound")
@@ -102,6 +157,10 @@ def validate_request(request: dict, profile: ModelProfile) -> None:
     # Raw/relative/normalized prefixes and anchor conversion have not been qualified for v0.
     if request.get("continuation") is not None:
         raise ProtocolError("Guided RTC/prefix continuation is unsupported; use unguided async")
+    if request.get("diagnostic_seed") is not None:
+        seed = request["diagnostic_seed"]
+        if mode != "native_fixture" or profile.id != "molmoact2" or type(seed) is not int or not 0 <= seed < 2**32:
+            raise ProtocolError("diagnostic_seed is a uint32 available only for Molmo native fixtures")
 
 
 def validate_response(response: dict, request: dict, profile: ModelProfile) -> None:
@@ -110,6 +169,8 @@ def validate_response(response: dict, request: dict, profile: ModelProfile) -> N
     for key in ("protocol_version", "profile", "model_revision", "session_id", "sequence_id", "observation_time"):
         if response.get(key) != request[key]:
             raise ProtocolError(f"Response {key} mismatch")
+    if request.get("diagnostic_seed") is not None and response.get("diagnostic_seed") != request["diagnostic_seed"]:
+        raise ProtocolError("Response diagnostic seed mismatch")
     units = "checkpoint_native" if request.get("mode", "robot") == "native_fixture" else "robot"
     if response.get("action_units") != units:
         raise ProtocolError("Action units mismatch; numerical processing must occur exactly once")
@@ -133,7 +194,9 @@ def validate_response(response: dict, request: dict, profile: ModelProfile) -> N
 
 
 def native_fixture_request(profile: str | ModelProfile, *, sequence_id: int = 0,
-                           session_id: str | None = None, crop: str = "none") -> dict:
+                           session_id: str | None = None, crop: str = "none",
+                           encoding: str = DEFAULT_IMAGE_ENCODING, quality: int = DEFAULT_JPEG_QUALITY,
+                           diagnostic_seed: int | None = None) -> dict:
     """A diagnostic fixture, never a robot observation and never executable as a rollout chunk."""
     profile = get_profile(profile)
     h, w = profile.native_image_hw
@@ -144,6 +207,7 @@ def native_fixture_request(profile: str | ModelProfile, *, sequence_id: int = 0,
         "observation_time": time.monotonic(), "observation_age_s": 0.0, "timeout_s": MAX_TIMEOUT_S,
         "task": "pick up the red cube", "state": [0.0] * len(profile.state_names),
         "state_names": list(profile.state_names), "images": {
-            key: encode_image(rng.integers(0, 256, (h, w, 3), dtype=np.uint8)) for key in profile.native_image_keys
-        }, "mode": "native_fixture", "crop": crop, "continuation": None,
+            key: encode_image(rng.integers(0, 256, (h, w, 3), dtype=np.uint8), encoding=encoding, quality=quality)
+            for key in profile.native_image_keys
+        }, "mode": "native_fixture", "crop": crop, "continuation": None, "diagnostic_seed": diagnostic_seed,
     }

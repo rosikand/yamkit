@@ -26,6 +26,13 @@ class InferenceOptions:
     duration: float = 60.0
     fps: float = 30.0
     arms: tuple[str, ...] = ()
+    image_encoding: str = "jpeg"
+    jpeg_quality: int = 85
+    call_mode: str = "remote"
+    prediction_queue_threshold: int | None = None
+    supervised_confirmed: bool = False
+    mapping_accepted: bool = False
+    rig_path: str | None = None
 
     def validate(self, *, motion: bool = False) -> InferenceOptions:
         if not self.policy.strip() or len(self.policy) > 512 or self.policy.startswith("-"):
@@ -48,6 +55,14 @@ class InferenceOptions:
             from .inference.profiles import get_profile
 
             profile = get_profile(self.policy)
+            if self.image_encoding not in ("jpeg", "rgb8") or self.call_mode not in ("remote", "spawn"):
+                raise ValueError("Choose jpeg/rgb8 encoding and remote/spawn call mode")
+            if type(self.jpeg_quality) is not int or not 1 <= self.jpeg_quality <= 100:
+                raise ValueError("JPEG quality must be an integer from 1 to 100")
+            if self.prediction_queue_threshold is not None and (
+                    type(self.prediction_queue_threshold) is not int
+                    or not 0 <= self.prediction_queue_threshold <= profile.chunk_size):
+                raise ValueError("Prediction queue threshold must be between zero and the chunk size")
             if not 0 < self.duration <= 3600:
                 raise ValueError("Modal duration must be between 0 and 3600 seconds")
             if self.gpu != "L40S":
@@ -64,8 +79,11 @@ class InferenceOptions:
                 if self.arms and len(self.arms) != 2:
                     raise ValueError("this profile requires both follower arms")
                 from .inference.performance import require_physical_modal_rollout
+                from .inference.qualification import settings_from_rig
 
-                require_physical_modal_rollout()
+                require_physical_modal_rollout(lambda: settings_from_rig(self),
+                                               supervised_confirmed=self.supervised_confirmed,
+                                               mapping_accepted=self.mapping_accepted)
         else:
             if self.center_crop:
                 raise ValueError("center crop is only available through the profiled Modal policy boundary")
@@ -95,6 +113,14 @@ class InferenceOptions:
                 "--device", self.device]
         if self.backend == "modal":
             args += ["--gpu", self.gpu]
+            args += ["--image-encoding", self.image_encoding, "--jpeg-quality", str(self.jpeg_quality),
+                     "--call-mode", self.call_mode]
+            if self.prediction_queue_threshold is not None:
+                args += ["--prediction-queue-threshold", str(self.prediction_queue_threshold)]
+            if self.supervised_confirmed:
+                args.append("--confirm-supervised")
+            if self.mapping_accepted:
+                args.append("--accept-mapping")
             if self.modal_app:
                 args += ["--modal-app", self.modal_app]
         if self.center_crop:
