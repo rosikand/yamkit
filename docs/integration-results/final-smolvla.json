@@ -1,0 +1,270 @@
+{
+  "profile_id": "smolvla",
+  "revision": "c83c3163b8ca9b7e67c509fffd9121e66cb96205",
+  "backend": "local",
+  "source": "checkpoint-native synthetic fixture; no physical YAM compatibility implied",
+  "action_units": "checkpoint_native",
+  "mapping_verified": false,
+  "mapping_note": "Six native dimensions have no published YAM joint/gripper mapping; forward-pass fixtures only.",
+  "readiness_s": 23.151332621000165,
+  "metadata": {
+    "id": "smolvla",
+    "repo_id": "lerobot/smolvla_base",
+    "revision": "c83c3163b8ca9b7e67c509fffd9121e66cb96205",
+    "policy_type": "smolvla",
+    "state_names": [
+      "native_state_0",
+      "native_state_1",
+      "native_state_2",
+      "native_state_3",
+      "native_state_4",
+      "native_state_5"
+    ],
+    "action_names": [
+      "native_action_0",
+      "native_action_1",
+      "native_action_2",
+      "native_action_3",
+      "native_action_4",
+      "native_action_5"
+    ],
+    "image_keys": [
+      "camera1",
+      "camera2",
+      "camera3"
+    ],
+    "native_image_keys": [
+      "camera1",
+      "camera2",
+      "camera3"
+    ],
+    "chunk_size": 50,
+    "fps": 30,
+    "mapping_verified": false,
+    "mapping_note": "Six native dimensions have no published YAM joint/gripper mapping; forward-pass fixtures only.",
+    "dependency_repo": "HuggingFaceTB/SmolVLM2-500M-Video-Instruct",
+    "dependency_revision": "7b375e1b73b11138ff12fe22c8f2822d8fe03467",
+    "native_image_hw": [
+      256,
+      256
+    ],
+    "supports_rtc": false,
+    "profile": "smolvla",
+    "profile_id": "smolvla",
+    "model_revision": "c83c3163b8ca9b7e67c509fffd9121e66cb96205",
+    "model": "lerobot/smolvla_base",
+    "action_units": "checkpoint_native",
+    "max_chunk_steps": 50,
+    "lerobot_version": "0.6.1",
+    "physical_validation": "not performed",
+    "mapping_validation": "source conventions only; physical calibration/alignment and cameras unvalidated",
+    "physical_modal_rollout_allowed": false,
+    "physical_modal_rollout_reason": "Physical Modal rollout BLOCKED: integrated real-service queue performance is unvalidated. Recorded Molmo warm RPC (~1.48 s) exceeds its 1 s action horizon; saved-observation inference and fake-robot diagnostics remain available.",
+    "ready": true,
+    "instance_id": "d1b85d18-2796-43a3-a1e0-edf424c2ec63",
+    "device": "cpu",
+    "load_s": 18.4216483539999,
+    "fresh_chunk": true,
+    "continuation": "unsupported",
+    "image_encoding": "rgb8",
+    "saved_processors": true,
+    "session_state": "reset for every fresh chunk"
+  },
+  "fresh_chunks": [
+    {
+      "sequence_id": 0,
+      "round_trip_s": 3.834507288000168,
+      "encoding_s": 0.0009967649998543493,
+      "payload_bytes": 589824,
+      "shape": [
+        50,
+        6
+      ],
+      "finite": true,
+      "min": -0.570270299911499,
+      "max": 3.054697036743164,
+      "server": {
+        "queue_wait_s": 3.4269996831426397e-06,
+        "modal_queue_s": null,
+        "image_decode_transform_s": 0.00040184299996326445,
+        "state_reset_s": 6.571800031451858e-05,
+        "preprocess_s": 0.0013751530000263301,
+        "inference_s": 3.8321975469998506,
+        "postprocess_s": 6.533099985972513e-05,
+        "response_conversion_s": 3.93959999200888e-05,
+        "total_s": 3.834150349999618
+      },
+      "transforms": {
+        "camera1": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        },
+        "camera2": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        },
+        "camera3": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        }
+      },
+      "observation_age_s": 3.8355040530000224
+    },
+    {
+      "sequence_id": 1,
+      "round_trip_s": 3.762292110999624,
+      "encoding_s": 0.0008694530001776002,
+      "payload_bytes": 589824,
+      "shape": [
+        50,
+        6
+      ],
+      "finite": true,
+      "min": -0.6654878258705139,
+      "max": 0.510413408279419,
+      "server": {
+        "queue_wait_s": 3.388999630260514e-06,
+        "modal_queue_s": null,
+        "image_decode_transform_s": 0.00029268800017234753,
+        "state_reset_s": 6.9705999976577e-05,
+        "preprocess_s": 0.0004627090002031764,
+        "inference_s": 3.7610931209997034,
+        "postprocess_s": 6.101700000726851e-05,
+        "response_conversion_s": 3.732699997271993e-05,
+        "total_s": 3.7620223429998987
+      },
+      "transforms": {
+        "camera1": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        },
+        "camera2": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        },
+        "camera3": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        }
+      },
+      "observation_age_s": 3.7631615639998017
+    },
+    {
+      "sequence_id": 2,
+      "round_trip_s": 3.83279007200008,
+      "encoding_s": 0.0008676339998601179,
+      "payload_bytes": 589824,
+      "shape": [
+        50,
+        6
+      ],
+      "finite": true,
+      "min": -0.5183690190315247,
+      "max": 1.1620979309082031,
+      "server": {
+        "queue_wait_s": 3.6730002648255322e-06,
+        "modal_queue_s": null,
+        "image_decode_transform_s": 0.00036245599994799704,
+        "state_reset_s": 6.760799988114741e-05,
+        "preprocess_s": 0.00045707699973718263,
+        "inference_s": 3.831537340000068,
+        "postprocess_s": 5.205100023886189e-05,
+        "response_conversion_s": 4.235000005792244e-05,
+        "total_s": 3.8325246740000694
+      },
+      "transforms": {
+        "camera1": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        },
+        "camera2": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        },
+        "camera3": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        }
+      },
+      "observation_age_s": 3.83365770599994
+    }
+  ],
+  "readiness_and_first_call": {
+    "sample_count": 1,
+    "p50_s": 26.985839909000333,
+    "p95_s": 26.985839909000333,
+    "p99_s": 26.985839909000333
+  },
+  "warm": {
+    "sample_count": 2,
+    "p50_s": 3.797541091499852,
+    "p95_s": 3.829265173950057,
+    "p99_s": 3.8320850923900753
+  },
+  "queue_depth": null,
+  "underruns": null,
+  "measurement_note": "Small diagnostic sample. Readiness may reuse a warm pool; this is not a cold-container latency measurement. No hardware queue exercised."
+}

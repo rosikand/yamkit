@@ -97,9 +97,10 @@ OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 yamkit policy-check --policy smolvla --backe
 
 Require three distinct fresh `predict_action_chunk` calls, each finite with shape
 `50 x 6`, saved preprocessing/postprocessing, pinned revision and an explicitly
-synthetic source. Do not count cached action pops as fresh inference. The integrated
-baseline artifact is `docs/integration-results/baseline-smolvla.json`: all three calls
-passed; observed RTTs were about 3.784, 3.677 and 4.497 seconds on the cloud VM.
+synthetic source. Do not count cached action pops as fresh inference. Both integrated
+baseline and final checks passed. The [final CPU artifact](integration-results/final-smolvla.json)
+records 23.15 seconds of readiness and fresh-call RTTs of 3.835, 3.762 and 3.833 seconds
+on the cloud VM; the baseline results remain in the integration record.
 These results do not establish local continuous-control speed or a 14-dimensional
 YAM mapping. Local fake-robot rollout coverage is in A.
 
@@ -451,9 +452,9 @@ be interpreted as this rig having passed physical validation.
 
 | Model | Local inference tested? | Modal inference tested? | Physical YAM mapping validated on a rig? | Async | Guided RTC | Physical rollout status/reason |
 |---|---|---|---|---|---|---|
-| SmolVLA base | Yes: real CPU, three fresh 50×6 chunks | Yes: standalone L40S, three fresh chunks | No; native six-dimensional base profile has no reviewed YAM mapping | Hardware-free transport/worker tests only; no approved physical async path for this base profile | Unsupported for this physical profile; remote RTC unsupported | Blocked locally and remotely: missing physical YAM mapping; Modal additionally performance-gated |
+| SmolVLA base | Yes: real CPU, three fresh 50×6 chunks | Yes: standalone L40S, three fresh chunks | No; native six-dimensional base profile has no reviewed YAM mapping | Native-fixture inference only; YAM async rollout rejected for missing mapping | Unsupported for this physical profile; remote RTC unsupported | Blocked locally and remotely: missing physical YAM mapping; Modal additionally performance-gated |
 | MolmoAct2-BimanualYAM | Local synchronous code path exists; no real local Molmo forward pass established by this integration | Yes: standalone L40S, three fresh 30×14 chunks and saved probes | No; source-defined 14-dimensional convention only, individual calibration/camera/frame acceptance absent | Unguided async implemented/tested with fake robot; physical Modal use blocked by performance gate | Local Molmo guidance unqualified/rejected; remote guided RTC unsupported | Modal BLOCKED for queue/performance qualification; local sync is a software path requiring separate rig/compute acceptance, not approved by these results |
-| pi05 base | No real local pi05 forward pass established by this integration | Yes: standalone L40S, three fresh 50×32 chunks | No; native 32-dimensional base profile lacks YAM mapping/statistics | Hardware-free transport/worker tests only; no approved physical async path for this base profile | Unsupported for this physical profile; remote RTC unsupported | Blocked locally and remotely: missing physical mapping/statistics; Modal additionally performance-gated |
+| pi05 base | No real local pi05 forward pass established by this integration | Yes: standalone L40S, three fresh 50×32 chunks | No; native 32-dimensional base profile lacks YAM mapping/statistics | Native-fixture inference only; YAM async rollout rejected for missing mapping | Unsupported for this physical profile; remote RTC unsupported | Blocked locally and remotely: missing physical mapping/statistics; Modal additionally performance-gated |
 
 Compatible custom local checkpoints retain the existing LeRobot rollout path. Their
 own saved feature/statistics/mapping and RTC support must be checked independently;

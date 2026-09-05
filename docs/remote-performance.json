@@ -17,19 +17,19 @@
       "injected_delay_cycle_s": [
         0.05
       ],
-      "elapsed_s": 32.43152050599997,
+      "elapsed_s": 32.42894416399986,
       "sample_count": 69,
       "warm_sample_count": 68,
       "warm_round_trip_s": {
-        "p50": 0.050132029999986116,
-        "p95": 0.050337932549939526,
-        "p99": 0.05050935851993927
+        "p50": 0.050126185499948406,
+        "p95": 0.05025306584998361,
+        "p99": 0.05041249072995015
       },
       "failed": false,
       "underruns": 0,
       "executed_actions": 955,
-      "expired_prefix_dropped": 198,
-      "overlap_prefix_dropped": 896,
+      "expired_prefix_dropped": 197,
+      "overlap_prefix_dropped": 901,
       "expired_chunks": 0,
       "peak_queue_depth": 28,
       "all_fake_robots_released": true,
@@ -47,8 +47,8 @@
         2
       ],
       "valid_horizon_s_range": [
-        0.9198433159999695,
-        0.9363533580001331
+        0.9251559620001899,
+        0.9373278389998632
       ],
       "raw_rgb_payload_bytes": 2764800,
       "overlapping_completed_predictions": 68
@@ -65,19 +65,19 @@
         0.09,
         0.25
       ],
-      "elapsed_s": 32.432812543999944,
+      "elapsed_s": 32.42637465200005,
       "sample_count": 69,
       "warm_sample_count": 68,
       "warm_round_trip_s": {
-        "p50": 0.10513875599997391,
-        "p95": 0.2501322698998479,
-        "p99": 0.2504409971399696
+        "p50": 0.1051374334999764,
+        "p95": 0.2501448122003012,
+        "p99": 0.2501661939001815
       },
       "failed": false,
       "underruns": 0,
       "executed_actions": 955,
-      "expired_prefix_dropped": 342,
-      "overlap_prefix_dropped": 752,
+      "expired_prefix_dropped": 336,
+      "overlap_prefix_dropped": 757,
       "expired_chunks": 0,
       "peak_queue_depth": 28,
       "all_fake_robots_released": true,
@@ -95,8 +95,8 @@
         8
       ],
       "valid_horizon_s_range": [
-        0.7267122169998856,
-        0.9355311890001303
+        0.7288342860001649,
+        0.9338717850000648
       ],
       "raw_rgb_payload_bytes": 2764800,
       "overlapping_completed_predictions": 68
@@ -109,21 +109,21 @@
         0.05,
         0.7
       ],
-      "elapsed_s": 2.4565186509998966,
+      "elapsed_s": 2.4223871119997966,
       "sample_count": 3,
       "warm_sample_count": 2,
       "warm_round_trip_s": {
-        "p50": 0.050189009999940026,
-        "p95": 0.050233784099964394,
-        "p99": 0.05023776401996656
+        "p50": 0.05014635249995081,
+        "p95": 0.05015886204985236,
+        "p99": 0.05015997400984361
       },
       "failed": true,
       "underruns": 1,
-      "executed_actions": 55,
-      "expired_prefix_dropped": 9,
-      "overlap_prefix_dropped": 26,
+      "executed_actions": 54,
+      "expired_prefix_dropped": 8,
+      "overlap_prefix_dropped": 28,
       "expired_chunks": 0,
-      "peak_queue_depth": 27,
+      "peak_queue_depth": 28,
       "all_fake_robots_released": true,
       "error": "Remote action queue underrun; no replay or CPU takeover",
       "warm_start_depth_range": [
@@ -132,15 +132,15 @@
       ],
       "warm_return_depth_range": [
         0,
-        13
+        14
       ],
       "actions_executed_during_prediction_range": [
         0,
         15
       ],
       "valid_horizon_s_range": [
-        0.9239476049999666,
-        0.9310679940001592
+        0.46494263700014926,
+        0.9346914910001942
       ],
       "raw_rgb_payload_bytes": 2764800,
       "overlapping_completed_predictions": 2
@@ -150,7 +150,7 @@
       "injected_delay_cycle_s": [
         1.48
       ],
-      "elapsed_s": 2.0163849299999583,
+      "elapsed_s": 2.023411543000293,
       "sample_count": 1,
       "warm_sample_count": 0,
       "warm_round_trip_s": {},
@@ -181,7 +181,7 @@
       "injected_delay_cycle_s": [
         2.378
       ],
-      "elapsed_s": 2.9134470540000166,
+      "elapsed_s": 2.9150464429999374,
       "sample_count": 0,
       "warm_sample_count": 0,
       "warm_round_trip_s": {},
@@ -200,7 +200,10 @@
         0,
         0
       ],
-      "valid_horizon_s_range": null,
+      "valid_horizon_s_range": [
+        0.0,
+        0.0
+      ],
       "raw_rgb_payload_bytes": 2764800,
       "overlapping_completed_predictions": 0
     },
@@ -209,7 +212,7 @@
       "injected_delay_cycle_s": [
         3.166
       ],
-      "elapsed_s": 3.7030888470001173,
+      "elapsed_s": 3.706523715000003,
       "sample_count": 0,
       "warm_sample_count": 0,
       "warm_round_trip_s": {},
@@ -228,7 +231,10 @@
         0,
         0
       ],
-      "valid_horizon_s_range": null,
+      "valid_horizon_s_range": [
+        0.0,
+        0.0
+      ],
       "raw_rgb_payload_bytes": 2764800,
       "overlapping_completed_predictions": 0
     }

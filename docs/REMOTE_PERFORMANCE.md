@@ -17,12 +17,13 @@ objects, cameras and remote RPC are fake. It retains 30 Hz, 30-step chunks, the
 fault cleanup. Every reported execution is a successful `Robot.send_action`,
 independently checked against fake SDK command timestamps.
 
-Measured on 2026-09-05 in this cloud workspace:
+Measured on 2026-09-05 in this cloud workspace after source freeze at
+`6a076005250354d75f5452eadf020a0085afd07c`:
 
 | Injected fake RPC delay | Successful requests / warm n | Warm RPC p50 / p95 / p99 | Actual queue outcome |
 |---|---:|---|---|
-| 50 ms, 32 seconds | 69 / 68 | 50.13 / 50.34 / 50.51 ms | 955 bimanual sends, zero underruns |
-| Repeated 50–250 ms jitter, 32 seconds | 69 / 68 | 105.14 / 250.13 / 250.44 ms | 955 bimanual sends, zero underruns |
+| 50 ms, 32 seconds | 69 / 68 | 50.13 / 50.25 / 50.41 ms | 955 bimanual sends, zero underruns |
+| Repeated 50–250 ms jitter, 32 seconds | 69 / 68 | 105.14 / 250.14 / 250.17 ms | 955 bimanual sends, zero underruns |
 | Three 50 ms requests then a 700 ms spike | 3 / 2 | Diagnostic only | One underrun after 55 sends; released without replay |
 | Historical Molmo warm latency represented by 1.48 s | 1 / 0 | No warm sequence possible | Entire 30-step chunk expired; zero sends |
 | Historical rig-resolution latency represented by 2.378 / 3.166 s | 0 / 0 each | No warm sequence possible | Observation expired before queue merge; zero sends |

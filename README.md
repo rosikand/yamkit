@@ -308,7 +308,7 @@ a safety-rated emergency stop. Cooperative locks do not protect against unrelate
 | `yamkit env` | Print the environment variables that keep everything inside this repo (for `eval`). |
 
 Every command accepts `--help`. Local `record`/`teleoperate`/`rollout`/`train` pass extra
-`--flags` to LeRobot, subject to wrapper validation; `--dry-run` prints the validated command.
+`--flags` to LeRobot, subject to wrapper validation; `--dry-run` prints the command without running it.
 Modal rollout rejects extra LeRobot flags and remains blocked, including with `--dry-run`.
 
 ## How it fits together
