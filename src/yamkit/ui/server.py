@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -21,9 +22,11 @@ from .. import hub
 from ..can import bringup_commands, list_can_interfaces
 from ..config import RigConfig
 from ..paths import DATASETS_DIR, DEFAULT_RIG, OUTPUT_DIR, ROOT
+from ..preview import MJPEG_MEDIA_TYPE, STALE_S
 from . import catalog
 from .camstream import CameraHub
-from .sessions import CAMERA_MODES, DeploymentLog, SessionManager
+from .preview_proxy import PreviewStreamingResponse, PreviewUnavailable, fetch_status, open_stream
+from .sessions import DeploymentLog, SessionManager
 
 FRONTEND_DIR = ROOT / "ui"
 
@@ -104,7 +107,17 @@ def create_app(
     frontend_dir = Path(frontend_dir or FRONTEND_DIR)
     deployments = DeploymentLog(outputs_dir / "ui" / "deployments")
 
-    app = FastAPI(title="yamkit ui", docs_url=None, redoc_url=None)
+    @asynccontextmanager
+    async def lifespan(app):
+        import asyncio
+
+        try:
+            yield
+        finally:
+            await asyncio.to_thread(sessions.close)
+            await asyncio.to_thread(cameras.close)
+
+    app = FastAPI(title="yamkit ui", docs_url=None, redoc_url=None, lifespan=lifespan)
 
     def load_rig() -> RigConfig | None:
         try:
@@ -116,26 +129,50 @@ def create_app(
     cameras = CameraHub(rig0.cameras if rig0 else {})
     run_dir_box: dict[str, Path | None] = {"dir": None}
 
-    def on_start(mode: str) -> None:
-        if mode in CAMERA_MODES:
-            cameras.suspend(mode)  # the LeRobot child owns the V4L2 devices while it runs
-
-    def on_phase(mode: str, phase: str) -> None:
-        if mode == "record" and phase == "upload":
-            cameras.resume()  # the recorder has exited; the live feeds can come back while the upload runs
-
     def on_exit(status: dict[str, Any]) -> None:
-        cameras.resume()
         if status.get("mode") in ("push", "pull", "record"):
             hub.clear_cache()  # what is on the Hub may just have changed
         if run_dir_box["dir"] is not None:
             deployments.finalize(run_dir_box["dir"], status)
             run_dir_box["dir"] = None
 
-    sessions = session_manager or SessionManager(on_start=on_start, on_exit=on_exit, on_phase=on_phase)
-    if session_manager is not None:  # injected (tests): still wire the camera/deployment hooks
-        sessions.on_start = on_start
-        sessions.on_exit = on_exit
+    sessions = session_manager or SessionManager()
+    sessions.on_camera_acquire = cameras.suspend
+    sessions.on_camera_release = cameras.resume
+    sessions.on_exit = on_exit
+
+    def camera_statuses() -> list[dict[str, Any]]:
+        statuses = cameras.statuses()
+        owned = cameras.suspended_by is not None
+        reg = sessions.preview_registration()
+        preview_status = {}
+        unavailable = False
+        if reg is not None:
+            try:
+                preview_status = fetch_status(reg, sessions.preview_is_current)
+            except PreviewUnavailable:
+                unavailable = True
+        # A release/acquire can happen while the status request is in flight.
+        if owned != (cameras.suspended_by is not None) or (reg and not sessions.preview_is_current(reg)):
+            return [{**s, "preview_state": "waiting", "preview_source": "session" if cameras.suspended_by else "direct",
+                     "preview_generation": sessions.preview_generation, "frame_age_s": None} for s in cameras.statuses()]
+        for status in statuses:
+            status["preview_source"] = "session" if owned else "direct"
+            status["preview_generation"] = sessions.preview_generation
+            if owned:
+                child = preview_status.get(status["name"], {})
+                status["preview_state"] = child.get("state", "unavailable" if unavailable or reg or not sessions.preview_starting else "waiting")
+                status["frame_age_s"] = child.get("age_s")
+                status["source_seq"] = child.get("source_seq")
+                status["preview_seq"] = child.get("seq")
+                status["streaming"] = status["preview_state"] == "live"
+                status["error"] = "preview unavailable" if status["preview_state"] == "unavailable" else None
+                status["suspended_by"] = sessions.mode or "session"
+            else:
+                age = status["frame_age_s"]
+                status["preview_state"] = ("unavailable" if status["error"] else "waiting" if age is None
+                                           else "stale" if age > STALE_S else "live")
+        return statuses
 
     def require_rig() -> RigConfig:
         rig = load_rig()
@@ -194,7 +231,7 @@ def create_app(
             ],
             "can_bringup": bringup_commands([i.name for i in ifaces if not i.up]),
             "video_devices": sorted(p.name for p in Path("/dev").glob("video*")),
-            "cameras": cameras.statuses(),
+            "cameras": camera_statuses(),
             "session": {"active": sessions.active, "mode": sessions.mode if sessions.active else None},
             "hub": {"logged_in": bool(hub.get_token()), **(dataclasses.asdict(rig.hub) if rig else {})},
         }
@@ -202,23 +239,30 @@ def create_app(
     # ----------------------------------------------------------------------------- cameras --
     @app.get("/api/cameras")
     def camera_list() -> list[dict[str, Any]]:
-        return cameras.statuses()
+        return camera_statuses()
 
     @app.get("/api/cameras/{name}/stream")
     def camera_stream(name: str) -> StreamingResponse:
-        """MJPEG preview of one camera. 409 while a record / teleoperate / rollout session owns the
-        devices (V4L2 is exclusive); the tiles show a placeholder and reconnect when it is over."""
+        """Use the active owner's authenticated preview while it holds the devices."""
         cam = cameras.get(name)
         if cam is None:
             raise HTTPException(404, f"no camera {name!r} in the rig")
-        if cameras.suspended_by:
-            raise HTTPException(409, f"cameras are in use by the {cameras.suspended_by} session")
         from starlette.background import BackgroundTask
 
+        if cameras.suspended_by:
+            reg = sessions.preview_registration(name)
+            if reg is None:
+                raise HTTPException(409, "waiting for session camera preview")
+            try:
+                stream = open_stream(reg, name, sessions.preview_is_current)
+            except PreviewUnavailable:
+                raise HTTPException(503, "session camera preview unavailable") from None
+            return PreviewStreamingResponse(stream)
         stop = threading.Event()
         return StreamingResponse(
             cam.frames(stop),
-            media_type="multipart/x-mixed-replace; boundary=yamkitframe",
+            media_type=MJPEG_MEDIA_TYPE,
+            headers={"Cache-Control": "no-store"},
             background=BackgroundTask(stop.set),
         )
 

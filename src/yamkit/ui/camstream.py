@@ -36,27 +36,38 @@ class _Camera:
         self.last_client_t = 0.0
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._allowed = True
 
     @property
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def ensure_running(self) -> None:
+    def ensure_running(self) -> bool:
         with self.lock:
+            if not self._allowed:
+                return False
             if not self.running:
                 self._stop.clear()
                 self.error = None
                 self._thread = threading.Thread(target=self._loop, daemon=True, name=f"cam-{self.name}")
                 self._thread.start()
+            return True
 
-    def stop(self, join: bool = False) -> None:
-        self._stop.set()
+    def stop(self, join: bool = False, *, disable: bool = False, timeout: float = STOP_JOIN_S) -> bool:
         with self.cond:
+            if disable:
+                self._allowed = False
+            self._stop.set()
             self.cond.notify_all()
         if join and self._thread is not None:
-            self._thread.join(timeout=STOP_JOIN_S)
+            self._thread.join(timeout=timeout)
             if self._thread.is_alive():
                 log.warning("camera %s: capture thread did not stop in %.0fs — the device may still be busy", self.name, STOP_JOIN_S)
+        return not self.running
+
+    def allow(self) -> None:
+        with self.lock:
+            self._allowed = True
 
     def _loop(self) -> None:
         try:
@@ -109,9 +120,10 @@ class _Camera:
         self.clients += 1
         self.last_client_t = time.time()
         try:
-            self.ensure_running()
+            if stop_flag.is_set() or not self.ensure_running():
+                return
             last_sent = 0.0
-            while not stop_flag.is_set():
+            while not stop_flag.is_set() and not self._stop.is_set():
                 with self.cond:
                     if self.frame is None or self.frame_t <= last_sent:
                         self.cond.wait(timeout=1.0)
@@ -153,6 +165,8 @@ class CameraHub:
     def __init__(self, cameras: dict[str, dict[str, Any]]) -> None:
         self.cams = {name: _Camera(name, dict(cfg)) for name, cfg in (cameras or {}).items()}
         self.suspended_by: str | None = None
+        self._lock = threading.RLock()
+        self._closing = False
 
     def get(self, name: str) -> _Camera | None:
         return self.cams.get(name)
@@ -161,23 +175,62 @@ class CameraHub:
         """Apply a new `cameras:` section (after the rig file was saved): unchanged entries keep
         streaming, changed/removed ones are stopped, new ones are added."""
         cameras = cameras or {}
-        for name, cam in list(self.cams.items()):
-            if cameras.get(name) != cam.cfg:
-                cam.stop(join=True)
-                del self.cams[name]
-        for name, cfg in cameras.items():
-            if name not in self.cams:
-                self.cams[name] = _Camera(name, dict(cfg))
+        with self._lock:
+            if self._closing:
+                raise RuntimeError("camera hub is closing")
+            for name, cam in list(self.cams.items()):
+                if cameras.get(name) != cam.cfg:
+                    if not cam.stop(join=True, disable=True):
+                        raise RuntimeError(f"camera {name} has not released its device")
+                    del self.cams[name]
+            for name, cfg in cameras.items():
+                if name not in self.cams:
+                    cam = _Camera(name, dict(cfg))
+                    if self.suspended_by is not None:
+                        cam.stop(disable=True)
+                    self.cams[name] = cam
         log.info("camera list reloaded: %s", ", ".join(self.cams) or "none")
 
-    def suspend(self, reason: str) -> None:
-        self.suspended_by = reason
-        for c in self.cams.values():
-            c.stop(join=True)
-        log.info("camera streams suspended (%s)", reason)
+    def suspend(self, reason: str) -> bool:
+        """Disable all starts before joining; success confirms every device was released."""
+        with self._lock:
+            if self._closing:
+                return False
+            if self.suspended_by not in (None, reason):
+                return False
+            self.suspended_by = reason
+            for c in self.cams.values():
+                c.stop(disable=True)
+            deadline = time.monotonic() + STOP_JOIN_S
+            released = True
+            for c in self.cams.values():
+                if not c.stop(join=True, disable=True, timeout=max(0.0, deadline - time.monotonic())):
+                    released = False
+            log.info("camera streams suspended (%s); released=%s", reason, released)
+            return released
 
-    def resume(self) -> None:
-        self.suspended_by = None  # streams restart lazily on the next client
+    def resume(self, owner: str | None = None) -> bool:
+        with self._lock:
+            if self._closing or self.suspended_by != owner:
+                return False
+            self.suspended_by = None
+            for c in self.cams.values():
+                c.allow()  # streams restart lazily on the next client
+            return True
+
+    def close(self) -> bool:
+        """Permanently block direct capture, including delayed session release callbacks."""
+        with self._lock:
+            self._closing = True
+            for c in self.cams.values():
+                c.stop(disable=True)
+            deadline = time.monotonic() + STOP_JOIN_S
+            released = True
+            for c in self.cams.values():
+                if not c.stop(join=True, disable=True, timeout=max(0.0, deadline - time.monotonic())):
+                    released = False
+            return released
 
     def statuses(self) -> list[dict[str, Any]]:
-        return [{**c.status(), "suspended_by": self.suspended_by} for c in self.cams.values()]
+        with self._lock:
+            return [{**c.status(), "suspended_by": self.suspended_by} for c in self.cams.values()]

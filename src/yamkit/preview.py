@@ -101,6 +101,7 @@ class _Slot:
         self.last_accept = -1e9
         self.last_seen: weakref.ReferenceType | None = None
         self.last_seen_t = 0.0
+        self.last_seen_source_time: float | None = None
         self.last_accepted_ref: weakref.ReferenceType | None = None
         self.last_accepted_t: float | None = None
         self.source_seq = 0
@@ -125,19 +126,6 @@ class _Slot:
         self.last_encode_ms: float | None = None
         self.seq = 0
         self.closed = False
-
-    # -- observation thread -> worker (never blocks)
-    def publish(self, p: _Pending) -> bool:
-        if not self._lock.acquire(blocking=False):
-            self.dropped_busy += 1
-            return False
-        try:
-            if self._pending is not None:
-                self.dropped_pending += 1  # the worker is behind: keep only the newest frame
-            self._pending = p
-        finally:
-            self._lock.release()
-        return True
 
     def take(self) -> _Pending | None:
         with self._lock:
@@ -182,19 +170,20 @@ class _Slot:
         age = round(now - enc.t_src, 3) if enc is not None else None
         if self.last_error and (enc is None or self.encode_errors_since_ok):
             state = "unavailable"
+        elif age is not None and age > STALE_S:
+            state = "stale"
         elif self.viewers <= 0:
             state = "idle"  # nobody watching → nothing is published (by design)
         elif enc is None:
             state = "waiting"
-        elif age is not None and age > STALE_S:
-            state = "stale"
         else:
             state = "live"
         return {
             "state": state,
             "viewers": self.viewers,
-            "seq": self.seq,
-            "source_seq": self.source_seq,
+            "seq": enc.seq if enc is not None else 0,
+            "source_seq": enc.source_seq if enc is not None else None,
+            "observed_source_seq": self.source_seq,
             "age_s": age,
             "offered": self.offered,
             "accepted": self.accepted,
@@ -361,14 +350,21 @@ class PreviewPublisher:
             same_source = (
                 slot.last_seen is not None
                 and frame is slot.last_seen()
-                and (source_time is None or source_time == slot.last_seen_t)
+                and (
+                    source_time is None
+                    or source_time == slot.last_seen_source_time
+                    or (slot.last_seen_source_time is None and source_time <= slot.last_seen_t)
+                )
             )
             if same_source:
                 t_src = slot.last_seen_t  # the camera had nothing new: keep the frame's original time
+                if source_time is not None:
+                    slot.last_seen_source_time = source_time
                 replay = True
             else:
                 t_src = now if source_time is None else source_time
                 slot.last_seen, slot.last_seen_t, replay = weakref.ref(frame), t_src, False
+                slot.last_seen_source_time = source_time
                 slot.source_seq += 1
             slot.offered += 1
             if now - slot.last_accept < self._min_interval:

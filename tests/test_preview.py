@@ -16,6 +16,16 @@ import pytest
 from yamkit import preview
 
 
+def test_stale_image_stays_stale_when_viewer_reconnects():
+    slot = preview._Slot("top", "rgb")
+    slot.set_latest(preview.Encoded(1, 3, b"jpeg", 10.0, 10.1, (2, 2, 3)))
+    slot.viewers = 1
+    assert slot.status(12.0)["state"] == "stale"
+    slot.viewers = 0
+    assert slot.status(13.0)["state"] == "stale"
+    assert slot.status(13.0)["age_s"] == 3.0
+
+
 def wait_until(predicate, timeout=3.0):
     deadline = time.monotonic() + timeout
     while not predicate():
@@ -75,6 +85,17 @@ def test_demand_and_rate_precede_copy_or_pixel_access(monkeypatch):
     pub.offer("top", forbidden)
     assert slot.accepted == slot.copied == slot.rate_skipped == 1
     assert slot.offer_errors == 0
+
+
+def test_thirty_hz_observations_target_ten_hz_preview(monkeypatch):
+    pub, slot, now = manual_publisher(monkeypatch)
+    assert pub.acquire_viewer(slot)
+    for index in range(30):
+        now[0] = 10.0 + index / 30.0
+        pub.offer("top", np.full((8, 8, 3), index, dtype=np.uint8))
+        slot.take()
+    assert slot.accepted == slot.copied == 10
+    assert slot.rate_skipped == 20
 
 
 @pytest.mark.parametrize("kind", ["owning", "view", "strided"])
@@ -168,6 +189,43 @@ def test_replay_and_acquisition_pause_keep_source_age(monkeypatch):
     assert pending.source_seq == 2
     assert pending.t_src == 11.9
     assert slot.accepted == 2
+
+
+def test_timestamp_becoming_available_does_not_republish_a_replay(monkeypatch):
+    pub, slot, now = manual_publisher(monkeypatch)
+    assert pub.acquire_viewer(slot)
+    frame = np.zeros((12, 12, 3), dtype=np.uint8)
+    pub.offer("top", frame)  # camera's metadata lock was briefly busy
+    assert slot.take().t_src == 10.0
+    now[0] = 10.2
+    pub.offer("top", frame, source_time=9.8)
+    now[0] = 10.4
+    pub.offer("top", frame, source_time=9.8)
+    assert slot.source_seq == slot.accepted == 1
+    assert slot.take() is None
+    # A later acquisition into that same ndarray is still recognized as new.
+    pub.offer("top", frame, source_time=10.3)
+    assert slot.take().source_seq == 2
+
+
+def test_status_source_sequence_and_age_describe_displayed_frame(monkeypatch):
+    pub, slot, now = manual_publisher(monkeypatch)
+    assert pub.acquire_viewer(slot)
+    assert slot.status(now[0])["source_seq"] is None
+    pub.offer("top", np.zeros((12, 12, 3), dtype=np.uint8), source_time=9.8)
+    pending = slot.take()
+    slot.set_latest(preview.Encoded(1, pending.source_seq, b"jpeg", pending.t_src, now[0], (12, 12, 3)))
+    # New observations replace the pending slot while the worker is behind. Viewers still
+    # see the first JPEG, whose acquisition identity and age must remain paired in status.
+    for index in range(3):
+        now[0] += 0.11
+        pub.offer("top", np.full((12, 12, 3), index + 1, dtype=np.uint8), source_time=now[0] - 0.01)
+    status = slot.status(now[0])
+    assert status["seq"] == 1
+    assert status["source_seq"] == 1
+    assert status["age_s"] == 0.53
+    assert status["observed_source_seq"] == 4
+    assert status["dropped"] == 2
 
 
 @pytest.mark.parametrize("mode,color", [("rgb", (255, 0, 0)), ("bgr", (0, 0, 255))])
@@ -278,6 +336,32 @@ def test_connection_limit_applies_before_header_read_and_cleanup(monkeypatch):
                 sock.close()
 
 
+def test_stalled_viewer_is_dropped_without_holding_up_offer(monkeypatch):
+    monkeypatch.setattr(preview, "SEND_TIMEOUT_S", 0.15)
+    monkeypatch.setattr(preview, "SOCKET_BUFFER_BYTES", 4096)
+    with publisher(fps=30) as pub:
+        client = socket.create_connection(("127.0.0.1", pub.port), timeout=2)
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        client.sendall(
+            b"GET /cameras/top/stream HTTP/1.0\r\n"
+            b"X-Yamkit-Preview-Token: test-secret\r\n\r\n"
+        )
+        try:
+            wait_until(lambda: pub.viewers == 1)
+            random = np.random.default_rng(0)
+            frame = random.integers(0, 256, (480, 640, 3), dtype=np.uint8)
+            pub.offer("top", frame)
+            # The peer reads nothing. A JPEG exceeds both deliberately small socket buffers;
+            # the serving thread times out while acquisition can keep offering new frames.
+            time.sleep(0.04)
+            pub.offer("top", frame.copy())
+            assert pub.slot("top").accepted == 2
+            wait_until(lambda: pub.viewers == 0)
+            assert pub.slot("top").offer_errors == 0
+        finally:
+            client.close()
+
+
 def test_encoder_failure_does_not_break_offer_and_recovers(monkeypatch):
     with publisher() as pub:
         connection, response = connect(pub)
@@ -350,3 +434,21 @@ def test_environment_activation_failure_cleans_up(monkeypatch):
     assert publishers[0].port is None
     assert not publishers[0]._worker.is_alive()
     assert not publishers[0]._server_thread.is_alive()
+
+
+def test_partial_startup_thread_failure_closes_listener(monkeypatch):
+    publishers = []
+    original_start = preview.PreviewPublisher.start
+
+    def remember_start(pub):
+        publishers.append(pub)
+        return original_start(pub)
+
+    def fail_thread_start(thread):
+        raise RuntimeError("thread limit")
+
+    monkeypatch.setattr(preview.PreviewPublisher, "start", remember_start)
+    monkeypatch.setattr(threading.Thread, "start", fail_thread_start)
+    env = {preview.ENV_SESSION: "s", preview.ENV_TOKEN: "t"}
+    assert isinstance(preview.start_from_env({"top": "rgb"}, env), preview.NullPreview)
+    assert publishers[0].port is None

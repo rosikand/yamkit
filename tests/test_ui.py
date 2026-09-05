@@ -386,7 +386,7 @@ def test_cameras_come_back_when_the_upload_phase_starts(rig, tmp_path, monkeypat
     rig.cameras = {"top": {"type": "opencv", "index_or_path": "/dev/video99", "width": 640, "height": 480, "fps": 30}}
     rig.save()
     app = create_app(rig.path, datasets_dir=ROOT / "data" / "datasets", outputs_dir=tmp_path, frontend_dir=ROOT / "ui")
-    child = "print('Recording episode 0'); print('[yamkit] recording finished — uploading x to the Hub'); import time; time.sleep(30)"
+    child = "from yamkit.camera_ownership import claim_from_env; lease = claim_from_env(['top']); print('Recording episode 0'); lease.release(); print('[yamkit] recording finished — uploading x to the Hub'); import time; time.sleep(30)"
     monkeypatch.setattr(SessionManager, "yamkit_argv", lambda self, *args: [sys.executable, "-u", "-c", child])
     with TestClient(app) as client:
         assert client.post("/api/session/record", json={"name": "x", "task": "y", "to": "hub"}).status_code == 200
@@ -435,21 +435,27 @@ def test_phase_timer_is_reported(rig, tmp_path, monkeypatch):
 
 
 def test_camera_stream_is_refused_while_a_session_owns_the_cameras(rig, tmp_path, monkeypatch):
-    """LeRobot has exclusive V4L2 ownership during record/teleoperate/rollout: the UI stops its streams
-    and /stream answers 409 until the session is over (the tiles then reconnect by themselves)."""
+    """A camera owner without a publisher cannot fall back to direct capture."""
     from yamkit import arm as arm_mod
 
     monkeypatch.setattr(arm_mod.YamArm, "connect", staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError("no arms"))))
     rig.cameras = {"top": {"type": "opencv", "index_or_path": "/dev/video99", "width": 640, "height": 480, "fps": 30}}
     rig.save()
     app = create_app(rig.path, datasets_dir=ROOT / "data" / "datasets", outputs_dir=tmp_path, frontend_dir=ROOT / "ui")
-    monkeypatch.setattr(SessionManager, "yamkit_argv", lambda self, *args: [sys.executable, "-u", "-c", "import time; time.sleep(30)"])
+    child = "from yamkit.camera_ownership import claim_from_env; claim_from_env(['top']); import time; time.sleep(30)"
+    monkeypatch.setattr(SessionManager, "yamkit_argv", lambda self, *args: [sys.executable, "-u", "-c", child])
     with TestClient(app) as client:
         assert client.get("/api/cameras/nope/stream").status_code == 404
         assert client.post("/api/session/record", json={"name": "x", "task": "y"}).status_code == 200
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not client.get("/api/session").json()["cameras_owned"]:
+            time.sleep(0.02)
         assert client.get("/api/cameras").json()[0]["suspended_by"] == "record"
+        assert client.get("/api/cameras").json()[0]["preview_state"] == "waiting"
+        monkeypatch.setattr("yamkit.ui.sessions.PREVIEW_START_TIMEOUT_S", 0)
+        assert client.get("/api/cameras").json()[0]["preview_state"] == "unavailable"
         r = client.get("/api/cameras/top/stream")
-        assert r.status_code == 409 and "record" in r.json()["detail"]
+        assert r.status_code == 409 and "preview" in r.json()["detail"]
         assert not [r for r in app.routes if getattr(r, "path", "").endswith("/frame")]  # no snapshot-polling endpoint
         client.post("/api/session/stop")
         deadline = time.monotonic() + 5
