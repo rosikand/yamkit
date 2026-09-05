@@ -245,9 +245,11 @@ and pi05 base profiles support native checks and are blocked from physical rollo
 lack a reviewed YAM mapping. Guided remote RTC and local Molmo guidance are unsupported. See
 [remote performance and its measurement limits](docs/REMOTE_PERFORMANCE.md).
 
-Modal now defaults to JPEG quality 85, cached `.remote` calls and `us-west` placement,
-with earlier requests through the same LeRobot async worker. Collect evidence on the
-robot host without opening its arms or cameras:
+Modal defaults to raw RGB, cached `.remote` calls and `us-west` placement, with earlier
+requests through the same LeRobot async worker. JPEG qualities 85, 90 and 95 all exceeded
+the gripper-difference limit in paired H100 fixture tests; raw RGB preserves the image
+values. JPEG remains selectable for diagnostics. See [the H100 investigation](docs/MOLMO_H100.md).
+Collect evidence on the robot host without opening its arms or cameras:
 
 ```bash
 yamkit modal-prepare --policy molmoact2 --region us-west --routing-region us-west
@@ -260,9 +262,9 @@ with the real service; its record stays under `data/qualifications/`, applies on
 the measured host/settings and expires after 24 hours. It requires healthy queue execution,
 Stop rejection of late actions, and warm p95 within 80% of the remaining usable action
 horizon. Mapping acceptance and supervised confirmation remain separate. Cloud results
-cannot qualify the Lenovo, and failed or expired records keep physical rollout blocked. Raw RGB,
+cannot qualify the Lenovo, and failed or expired records keep physical rollout blocked. Image,
 transport and scheduling options are described in [the Modal guide](docs/MODAL.md);
-see [the latency investigation](docs/MODAL_LATENCY.md) for evidence and limits.
+see [the earlier latency investigation](docs/MODAL_LATENCY.md) for its measured settings and limits.
 
 For a small multimodal LLM controller, see [the agent guide](docs/AGENT.md). `yamkit agent` offers
 an offline fixture mode and paid OpenAI calls with fixtures; live execution is disabled pending

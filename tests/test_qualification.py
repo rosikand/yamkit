@@ -12,7 +12,8 @@ from yamkit.inference import qualification as q
 def evidence(monkeypatch):
     monkeypatch.setattr(q, "host_identity", lambda: {"hostname": "lenovo", "machine_fingerprint": "test-host"})
     monkeypatch.setattr(q, "is_cloud_host", lambda: False)
-    settings = q.qualification_settings("molmoact2", modal_app="yamkit-vla-test", observed_region="us-west-1")
+    settings = q.qualification_settings("molmoact2", modal_app="yamkit-vla-test", observed_region="us-west-1",
+                                        image_encoding="jpeg")
     metadata = {"profile": settings["profile"], "model_revision": settings["model_revision"],
                 "requested_compute_region": "us-west", "compute_region": "us-west-1",
                 "routing_region": "us-west", "instance_id": "same-container"}
@@ -194,3 +195,35 @@ def test_imported_cloud_measurements_cannot_be_reissued_as_local_qualification(e
     value = record(evidence)
     assert value["host"]["hostname"] == "lenovo"
     assert not value["assessment"]["qualified"]
+
+
+@pytest.mark.parametrize("location", ["direct", "sample", "integrated"])
+@pytest.mark.parametrize("experiment", [
+    {"diagnostic_num_inference_steps": 5},
+    {"diagnostic_num_inference_steps": 10},
+    {"diagnostic_cuda_graph": True},
+    {"experiment_only": True},
+    {"model_execution": {"default_num_inference_steps": 10, "effective_num_inference_steps": 5}},
+    {"model_execution": {"default_num_inference_steps": 5, "effective_num_inference_steps": 5}},
+    {"model_execution": {"cuda_graph_used": True}},
+])
+def test_inference_experiments_cannot_qualify_default_policy(evidence, tmp_path, location, experiment):
+    target = {"direct": evidence[1], "sample": evidence[1]["samples"][4],
+              "integrated": evidence[2]["prediction_samples"][4]}[location]
+    target.update(experiment)
+    value = record(evidence)
+    assert not value["assessment"]["qualified"]
+    assert any("inference experiments" in reason for reason in value["assessment"]["reasons"])
+    value["assessment"]["qualified"] = True
+    path = q.save_qualification(value, tmp_path / "experiment.json")
+    with pytest.raises(q.QualificationError, match="inference experiments"):
+        q.validate_qualification(evidence[0], path=path)
+
+
+def test_default_execution_metadata_remains_qualifiable(evidence):
+    evidence[1].update(diagnostic_num_inference_steps=None, diagnostic_cuda_graph=None, experiment_only=False)
+    for sample in evidence[1]["samples"]:
+        sample["model_execution"] = {"default_num_inference_steps": 10, "effective_num_inference_steps": 10,
+                                     "cuda_graph_enabled": False, "cuda_graph_used": False,
+                                     "cuda_graph_supported": True, "cuda_graph_cache_populated_before": True}
+    assert record(evidence)["assessment"]["qualified"]

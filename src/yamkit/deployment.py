@@ -26,7 +26,7 @@ class InferenceOptions:
     duration: float = 60.0
     fps: float = 30.0
     arms: tuple[str, ...] = ()
-    image_encoding: str = "jpeg"
+    image_encoding: str = "rgb8"
     jpeg_quality: int = 85
     call_mode: str = "remote"
     prediction_queue_threshold: int | None = None

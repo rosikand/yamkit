@@ -22,7 +22,7 @@ MAX_PAYLOAD_BYTES = MAX_IMAGES * MAX_IMAGE_WIDTH * MAX_IMAGE_HEIGHT * 3
 MAX_TIMEOUT_S = 120.0
 MAX_OBSERVATION_AGE_S = 2.0
 MAX_TASK_CHARS = 2048
-DEFAULT_IMAGE_ENCODING = "jpeg"
+DEFAULT_IMAGE_ENCODING = "rgb8"
 DEFAULT_JPEG_QUALITY = 85
 IMAGE_ENCODINGS = ("jpeg", "rgb8")
 
@@ -161,6 +161,16 @@ def validate_request(request: dict, profile: ModelProfile) -> None:
         seed = request["diagnostic_seed"]
         if mode != "native_fixture" or profile.id != "molmoact2" or type(seed) is not int or not 0 <= seed < 2**32:
             raise ProtocolError("diagnostic_seed is a uint32 available only for Molmo native fixtures")
+    for key in ("diagnostic_num_inference_steps", "diagnostic_cuda_graph"):
+        value = request.get(key)
+        if value is None:
+            continue
+        if mode != "native_fixture" or profile.id != "molmoact2":
+            raise ProtocolError(f"{key} is available only for Molmo native fixtures")
+        if key == "diagnostic_num_inference_steps" and (type(value) is not int or value not in (5, 10)):
+            raise ProtocolError("Diagnostic Molmo denoising must use the pinned default 10 or experimental half 5")
+        if key == "diagnostic_cuda_graph" and type(value) is not bool:
+            raise ProtocolError("diagnostic_cuda_graph must be a boolean")
 
 
 def validate_response(response: dict, request: dict, profile: ModelProfile) -> None:
@@ -171,6 +181,10 @@ def validate_response(response: dict, request: dict, profile: ModelProfile) -> N
             raise ProtocolError(f"Response {key} mismatch")
     if request.get("diagnostic_seed") is not None and response.get("diagnostic_seed") != request["diagnostic_seed"]:
         raise ProtocolError("Response diagnostic seed mismatch")
+    for key in ("diagnostic_num_inference_steps", "diagnostic_cuda_graph"):
+        if request.get(key) is not None and (type(response.get(key)) is not type(request[key])
+                                             or response.get(key) != request[key]):
+            raise ProtocolError(f"Response {key} mismatch")
     units = "checkpoint_native" if request.get("mode", "robot") == "native_fixture" else "robot"
     if response.get("action_units") != units:
         raise ProtocolError("Action units mismatch; numerical processing must occur exactly once")
@@ -196,7 +210,8 @@ def validate_response(response: dict, request: dict, profile: ModelProfile) -> N
 def native_fixture_request(profile: str | ModelProfile, *, sequence_id: int = 0,
                            session_id: str | None = None, crop: str = "none",
                            encoding: str = DEFAULT_IMAGE_ENCODING, quality: int = DEFAULT_JPEG_QUALITY,
-                           diagnostic_seed: int | None = None) -> dict:
+                           diagnostic_seed: int | None = None, diagnostic_num_inference_steps: int | None = None,
+                           diagnostic_cuda_graph: bool | None = None) -> dict:
     """A diagnostic fixture, never a robot observation and never executable as a rollout chunk."""
     profile = get_profile(profile)
     h, w = profile.native_image_hw
@@ -210,4 +225,6 @@ def native_fixture_request(profile: str | ModelProfile, *, sequence_id: int = 0,
             key: encode_image(rng.integers(0, 256, (h, w, 3), dtype=np.uint8), encoding=encoding, quality=quality)
             for key in profile.native_image_keys
         }, "mode": "native_fixture", "crop": crop, "continuation": None, "diagnostic_seed": diagnostic_seed,
+        "diagnostic_num_inference_steps": diagnostic_num_inference_steps,
+        "diagnostic_cuda_graph": diagnostic_cuda_graph,
     }

@@ -133,10 +133,11 @@ def _prepare_locked(profile_name: str, *, gpu: str, development: bool, cache_vol
             raise ValueError("shut down the owned cloud service before preparing a different model")
         if prior.get("status") != "ready":
             raise ValueError("previous preparation is incomplete; shut down the owned service before retrying")
-        if (prior.get("region") != region or prior.get("routing_region", "us-east") != routing_region
+        if (prior.get("gpu", "L40S") != gpu
+                or prior.get("region") != region or prior.get("routing_region", "us-east") != routing_region
                 or prior.get("cache_volume_name", "yamkit-policy-weights") != cache_volume_name
                 or prior.get("memory_mib", 65536) != memory_mib):
-            raise ValueError("shut down the owned cloud service before changing placement or its weight cache")
+            raise ValueError("shut down the owned cloud service before changing its GPU, placement or weight cache")
         metadata = call(service_handle(prior["app_name"], profile.id).ready, timeout=300)
         _validate_ready(metadata, profile)
         return {**prior, "metadata": metadata}

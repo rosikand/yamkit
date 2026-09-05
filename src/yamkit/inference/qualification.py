@@ -62,7 +62,7 @@ def is_cloud_host() -> bool:
 
 
 def qualification_settings(profile, *, modal_app: str, call_mode: str = "remote",
-                           image_encoding: str = "jpeg", jpeg_quality: int = 85,
+                           image_encoding: str = "rgb8", jpeg_quality: int = 85,
                            image_hw=(480, 640), crop: str = "none", requested_region: str = "us-west",
                            observed_region: str, routing_region: str = "us-west",
                            prediction_queue_threshold: int | None = None,
@@ -146,10 +146,34 @@ def _number(value, field):
     return value
 
 
+def _has_inference_experiment(value, profile):
+    """Reject diagnostic overrides wherever the collector preserved their evidence."""
+    if isinstance(value, list):
+        return any(_has_inference_experiment(item, profile) for item in value)
+    if not isinstance(value, dict):
+        return False
+    if any(value.get(key) is not None for key in ("diagnostic_num_inference_steps", "diagnostic_cuda_graph")):
+        return True
+    if any(value.get(key) not in (None, False) for key in ("experiment_only", "experimental")):
+        return True
+    # Graphs remain disabled in the qualified production runtime. A diagnostic
+    # request can leave its graph cache populated, which alone does not mean use.
+    if any(value.get(key) not in (None, False) for key in ("cuda_graph_enabled", "cuda_graph_used")):
+        return True
+    effective = value.get("effective_num_inference_steps")
+    if effective is not None:
+        expected = 10 if profile == "molmoact2" else value.get("default_num_inference_steps")
+        if type(effective) is not int or effective != expected:
+            return True
+    return any(_has_inference_experiment(item, profile) for item in value.values())
+
+
 def _assess(settings, direct, integrated, requested):
     if type(requested) is not int or not MIN_WARM_SAMPLES <= requested <= 500:
         raise QualificationError("Qualification requires 50–500 warm requests")
     reasons = []
+    if any(_has_inference_experiment(report, settings["profile"]) for report in (direct, integrated)):
+        reasons.append("Diagnostic inference experiments cannot qualify the unchanged production policy")
 
     def counter(value, name, *, minimum=0):
         if type(value) is not int or value < minimum:

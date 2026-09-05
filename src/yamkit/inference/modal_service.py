@@ -31,8 +31,8 @@ def create_app(profile_id: str = "smolvla", *, gpu: str = DEFAULT_GPU, developme
     Modal authentication stays in the calling SDK; there are no web endpoints.
     """
     profile = get_profile(profile_id)
-    if gpu != DEFAULT_GPU:
-        raise ValueError("This development version is qualified for one L40S only")
+    if gpu not in (DEFAULT_GPU, "H100!"):
+        raise ValueError("Use one L40S or an exact H100! for explicit diagnostics")
     if type(memory_mib) is not int or not 49152 <= memory_mib <= MEMORY_MIB:
         raise ValueError("Host memory must be 49152–65536 MiB; lower loading peaks are unmeasured")
     if not 1 <= timeout <= 120 or not 1 <= startup_timeout <= 900:

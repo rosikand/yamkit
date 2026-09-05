@@ -1,5 +1,10 @@
 # Modal latency investigation, 2026-09-05
 
+This is the earlier transport investigation. The later [H100 and JPEG fidelity
+follow-up](MOLMO_H100.md) supersedes its JPEG-default recommendation: the current
+production default is raw RGB after q85/q90/q95 failed the tested fidelity limit.
+The measurements below are unchanged.
+
 The original raw transport cannot supply Molmo's one-second action horizon. A
 100-warm-request baseline separates about 0.364 s of server work from 1.358 s of
 median client/transport overhead. The first cached-handle experiment saves about

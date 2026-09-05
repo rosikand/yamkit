@@ -194,7 +194,11 @@ def test_other_hardware_geometry_rejected_before_loading(calibrated_rig, runtime
 
 def test_modal_uses_outbound_service_only_and_transforms_once(tmp_path, observation, runtime, monkeypatch):
     from yamkit import modal_ops
+    from yamkit.inference.protocol import decode_image
 
+    rng = np.random.default_rng(4310)
+    observation.images = {name: rng.integers(0, 256, frame.shape, dtype=np.uint8)
+                          for name, frame in observation.images.items()}
     monkeypatch.setattr(ModelRuntime, "load", lambda *a, **k: pytest.fail("loaded weights locally"))
     monkeypatch.setattr(modal_ops, "owned_service", lambda: {"app_name": "yamkit-vla-test"})
     monkeypatch.setattr(modal_ops, "service_handle", lambda *a: runtime)
@@ -212,6 +216,9 @@ def test_modal_uses_outbound_service_only_and_transforms_once(tmp_path, observat
     assert runtime.requests[0]["images"]["left_wrist"]["height"] == 6
     assert runtime.requests[0]["crop"] == "center_16_9"
     assert result["image_transforms"] == {"left_wrist": {"crop": "center_16_9"}}
+    assert result["image_encoding"] == "rgb8" and result["jpeg_quality"] is None
+    for name, encoded in runtime.requests[0]["images"].items():
+        np.testing.assert_array_equal(decode_image(encoded), observation.images[name])
 
 
 def test_missing_preclipping_robot_units_fails_honestly_and_retires(tmp_path, observation, runtime):
@@ -258,7 +265,9 @@ def test_local_probe_keeps_original_rgb_pixels_and_dimensions(tmp_path, observat
     assert result["jpeg_quality"] is None
 
 
-def test_local_policy_check_keeps_exact_rgb_fixtures(runtime, monkeypatch):
+@pytest.mark.parametrize("backend", ["local", "modal"])
+def test_policy_check_keeps_exact_rgb_fixtures(runtime, monkeypatch, backend):
+    from yamkit import modal_ops
     from yamkit.inference.protocol import decode_image
     from yamkit.inference_check import run_check
 
@@ -270,7 +279,10 @@ def test_local_policy_check_keeps_exact_rgb_fixtures(runtime, monkeypatch):
         return response
 
     monkeypatch.setattr(runtime, "predict_chunk", predict_native)
-    result = run_check("molmoact2", backend="local")
+    monkeypatch.setattr(modal_ops, "owned_service", lambda: {"app_name": "yamkit-vla-test"})
+    monkeypatch.setattr(modal_ops, "service_handle", lambda *a: runtime)
+    monkeypatch.setattr(modal_ops, "call", lambda method, *a, **k: method(*a))
+    result = run_check("molmoact2", backend=backend)
     for sequence, request in enumerate(runtime.requests):
         rng = np.random.default_rng(sequence)
         for name in runtime.profile.native_image_keys:

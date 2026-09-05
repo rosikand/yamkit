@@ -7,7 +7,8 @@ without hardware; failed, expired or foreign-host records cannot authorize motio
 CLI validation and the integrated runner enforce these conditions before activation;
 direct raw LeRobot rollout cannot bypass that runner. Cloud workspaces cannot activate
 physical Modal rollout, and browser Modal Start remains disabled.
-See [the latency investigation](MODAL_LATENCY.md),
+See [the H100 and image-fidelity investigation](MOLMO_H100.md),
+[the earlier latency investigation](MODAL_LATENCY.md),
 [the performance gate](REMOTE_PERFORMANCE.md) and [staged acceptance](acceptance-test.md).
 
 Local inference remains the default. Install the optional client with
@@ -112,7 +113,8 @@ Preparation reserves 65,536 MiB of host memory by default. `--memory-mib` accept
 49,152–65,536 MiB for bounded diagnostic comparisons; it does not change model dtype,
 weights or GPU count.
 
-The service has one fixed profile and one L40S maximum, zero minimum/buffer containers,
+The service has one fixed profile and at most one GPU (L40S by default, or explicit
+`--gpu H100` for a prepared H100 service), zero minimum/buffer containers,
 serialized model state, finite startup/request timeouts, and no permanent heartbeat.
 Ordinary requests retain warmth; production idle scale-down defaults to 300 seconds
 (configurable to 300–600 through the app factory). Idle warm time is billable.
@@ -121,13 +123,18 @@ validation ledger and overall deadline are separate from these production comman
 
 ### Transport and qualification
 
-Modal images default to JPEG quality 85, with RGB dimensions preserved. Three images,
-ordered state and task travel in one request. Encoding happens once per camera;
-recording resolution, the optional center crop and the model's saved preprocessing
-remain unchanged. JPEG is lossy: paired seeded fixture comparisons quantify numerical
-changes, but do not establish physical policy fidelity. `--image-encoding rgb8`
-retains raw RGB for qualification and rollout comparisons; `--jpeg-quality` selects
-the JPEG quality explicitly.
+Modal images default to raw RGB (`--image-encoding rgb8`). Three images, ordered state
+and task travel in one request. Encoding happens once per camera; recording resolution,
+the optional center crop and the model's saved preprocessing remain unchanged.
+
+JPEG qualities 85, 90 and 95 all exceeded the maximum gripper-difference limit of 0.02
+in paired H100 tests with fixed images and model noise; repeated raw requests matched
+exactly. The fixture selector also requires maximum joint difference no greater than
+0.01 rad. Raw RGB is therefore the production fallback. `--image-encoding jpeg
+--jpeg-quality 85` (or quality 90/95) remains available for explicit comparisons;
+these settings have not established acceptable policy fidelity. See
+[the H100 investigation](MOLMO_H100.md). Changing the codec requires new qualification
+evidence and cannot reuse an earlier record.
 
 The client reuses its service handle and calls Modal `.remote` from its request
 worker. LeRobot's existing background inference overlaps local action execution.
@@ -149,7 +156,7 @@ and intended transport settings:
 
 ```bash
 yamkit modal-qualify --policy molmoact2 --requests 50 --rig configs/rig.yaml \
-  --image-encoding jpeg --jpeg-quality 85 --call-mode remote \
+  --image-encoding rgb8 --call-mode remote \
   --prediction-queue-threshold 30
 ```
 

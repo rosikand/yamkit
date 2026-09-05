@@ -65,8 +65,9 @@ def test_crop_explicit_without_renaming_or_mutating():
 
 
 def test_payload_rejects_shape_byte_and_encoding_mismatches():
-    image = np.zeros((360, 640, 3), np.uint8)
-    encoded = encode_image(image, encoding="rgb8")
+    image = np.arange(360 * 640 * 3, dtype=np.uint8).reshape(360, 640, 3)
+    encoded = encode_image(image)
+    assert encoded["encoding"] == "rgb8" and len(encoded["data"]) == image.nbytes
     np.testing.assert_array_equal(decode_image(encoded), image)
     for bad in ({**encoded, "width": 10}, {**encoded, "encoding": "pickle"},
                 {**encoded, "height": 100000}, {**encoded, "data": "untrusted"}):
@@ -74,13 +75,14 @@ def test_payload_rejects_shape_byte_and_encoding_mismatches():
             decode_image(bad)
 
 
-def test_jpeg_default_preserves_rgb_order_dimensions_and_bounds():
+@pytest.mark.parametrize("quality", [85, 90, 95])
+def test_explicit_jpeg_preserves_rgb_order_dimensions_and_bounds(quality):
     pixels = np.zeros((48, 64, 3), np.uint8)
     pixels[:, :32, 0] = 220
     pixels[:, 32:, 2] = 220
-    encoded = encode_image(pixels)
+    encoded = encode_image(pixels, encoding="jpeg", quality=quality)
     decoded = decode_image(encoded)
-    assert encoded["encoding"] == "jpeg" and encoded["quality"] == 85
+    assert encoded["encoding"] == "jpeg" and encoded["quality"] == quality
     assert decoded.shape == pixels.shape and decoded.dtype == pixels.dtype
     assert decoded[24, 8, 0] > 200 and decoded[24, 8, 2] < 10
     assert decoded[24, 56, 2] > 200 and decoded[24, 56, 0] < 10
@@ -95,6 +97,8 @@ def test_jpeg_request_validation_does_not_decode_pixels(monkeypatch):
     from PIL import JpegImagePlugin
 
     request = robot_request()
+    request["images"] = {name: encode_image(decode_image(value), encoding="jpeg")
+                         for name, value in request["images"].items()}
     monkeypatch.setattr(JpegImagePlugin.JpegImageFile, "load",
                         lambda *a, **kw: (_ for _ in ()).throw(AssertionError("Unexpected pixel decode")))
     validate_request(request, get_profile("molmoact2"))
@@ -403,6 +407,12 @@ def test_modal_factory_bounds_and_no_parameterized_pool(monkeypatch):
     for invalid in (32768, 65537, True):
         with pytest.raises(ValueError, match="Host memory"):
             create_app(memory_mib=invalid)
+    create_app(gpu="H100!")
+    assert captured["config"]["gpu"] == "H100!"
+    assert captured["config"]["max_containers"] == 1
+    for invalid in ("H100", "H100:2", "H200", "L40S:2"):
+        with pytest.raises(ValueError, match="exact H100"):
+            create_app(gpu=invalid)
 
 
 def test_runtime_reports_measured_host_memory_separately_from_gpu():
@@ -410,3 +420,119 @@ def test_runtime_reports_measured_host_memory_separately_from_gpu():
     assert memory["process_peak_rss_bytes"] > 0
     assert "cuda_peak_allocated_bytes" not in memory
     assert "cgroup_memory_peak_bytes" in memory
+
+
+def test_runtime_reports_actual_cuda_device_identity_without_gpu(monkeypatch):
+    import torch
+
+    from yamkit.inference.service import _memory_metadata
+
+    seen = []
+
+    def device_name(device):
+        seen.append(device)
+        return "NVIDIA H100 80GB HBM3"
+
+    monkeypatch.setattr(torch.cuda, "get_device_name", device_name)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: (9, 0))
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda device: 1024)
+    monkeypatch.setattr(torch.cuda, "max_memory_reserved", lambda device: 2048)
+    memory = _memory_metadata("cuda:0")
+    assert memory["cuda_device_name"] == "NVIDIA H100 80GB HBM3"
+    assert memory["cuda_compute_capability"] == [9, 0]
+    assert memory["cuda_peak_allocated_bytes"] == 1024
+    assert memory["cuda_peak_reserved_bytes"] == 2048
+    assert seen == ["cuda:0"]
+
+
+@pytest.mark.parametrize("key,value", [("diagnostic_num_inference_steps", 5),
+                                        ("diagnostic_cuda_graph", True), ("diagnostic_cuda_graph", False)])
+def test_model_experiments_cannot_enter_robot_requests(key, value):
+    request = robot_request()
+    request[key] = value
+    with pytest.raises(ValueError, match="only for Molmo native fixtures"):
+        validate_request(request, get_profile("molmoact2"))
+
+
+@pytest.mark.parametrize("key,value", [("diagnostic_num_inference_steps", 0),
+                                        ("diagnostic_num_inference_steps", 6),
+                                        ("diagnostic_num_inference_steps", True),
+                                        ("diagnostic_cuda_graph", 1)])
+def test_model_experiment_values_are_bounded(key, value):
+    request = native_fixture_request("molmoact2")
+    request[key] = value
+    with pytest.raises(ValueError):
+        validate_request(request, get_profile("molmoact2"))
+
+
+def experimental_runtime():
+    policy = FakePolicy()
+    policy.config = SimpleNamespace(model_dtype="bfloat16", num_inference_steps=None,
+                                    enable_inference_cuda_graph=False)
+    embedding = torch.nn.Linear(14, 14, dtype=torch.bfloat16)
+    expert = SimpleNamespace(action_embed=embedding, parameters=embedding.parameters)
+    graph = SimpleNamespace(enabled=False, action_flow_graph=None)
+    graph.set_enabled = lambda enabled: setattr(graph, "enabled", enabled)
+
+    def run_action_flow():
+        graph.action_flow_graph = object()
+        return "replayed"
+
+    graph.run_action_flow = run_action_flow
+    backbone = SimpleNamespace(config=SimpleNamespace(flow_matching_num_steps=10,
+                               action_expert_config=SimpleNamespace(num_layers=36)),
+                               action_expert=expert, action_cuda_graph_manager=graph)
+    policy._backbone = lambda: backbone
+    policy.parameters = embedding.parameters
+    policy.buffers = lambda: iter([torch.tensor([1], dtype=torch.int64)])
+    return ModelRuntime(get_profile("molmoact2"), policy, lambda frame: frame, lambda action: action, device="cpu")
+
+
+def test_half_step_fixture_leaves_default_unchanged_and_observes_real_dtypes():
+    service = experimental_runtime()
+    steps = []
+
+    def predict(batch, **kwargs):
+        steps.append(kwargs.get("num_steps"))
+        return service._action_expert.action_embed(torch.ones(1, 2, 14, dtype=torch.bfloat16)).float()
+
+    service.policy.predict_action_chunk = predict
+    first = service.predict_chunk(native_fixture_request("molmoact2", diagnostic_num_inference_steps=5))
+    second = service.predict_chunk(native_fixture_request("molmoact2"))
+    assert steps == [5, None]
+    assert service.policy.config.num_inference_steps is None
+    assert first["model_execution"]["effective_num_inference_steps"] == 5
+    assert second["model_execution"]["effective_num_inference_steps"] == 10
+    metadata = second["model_execution"]
+    assert metadata["parameter_dtype_numel"] == {"torch.bfloat16": 210}
+    assert metadata["buffer_dtype_numel"] == {"torch.int64": 1}
+    assert metadata["raw_output_dtype"] == "torch.float32"
+    assert metadata["observed_activation_dtypes"]["action_embedding"]["output_dtype"] == "torch.bfloat16"
+    assert not service._action_expert.action_embed._forward_hooks
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_graph_experiment_restores_disabled_manager_and_hooks_even_on_failure(fail):
+    service = experimental_runtime()
+    service.device = "cuda"  # Test only the context manager; no CUDA operation is invoked.
+    graph = service._action_graph
+    original = graph.run_action_flow
+    request = native_fixture_request("molmoact2", diagnostic_cuda_graph=True)
+
+    def run():
+        with service._observe_execution(request) as metadata:
+            assert graph.enabled
+            assert graph.run_action_flow() == "replayed"
+            if fail:
+                raise RuntimeError("model failure")
+        assert metadata["cuda_graph_enabled"] is metadata["cuda_graph_used"] is True
+        assert metadata["cuda_graph_cache_populated_after"] is True
+
+    if fail:
+        with pytest.raises(RuntimeError, match="model failure"):
+            run()
+    else:
+        run()
+    assert graph.enabled is False
+    assert graph.run_action_flow is original
+    assert not service._action_expert.action_embed._forward_hooks

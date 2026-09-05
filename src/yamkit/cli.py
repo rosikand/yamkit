@@ -703,7 +703,7 @@ def rollout(
     modal_app: str | None = None,
     center_crop: bool = False,
     async_chunks: Annotated[bool, typer.Option("--async/--no-async", help="unguided background chunks (Modal)")] = True,
-    image_encoding: str = "jpeg",
+    image_encoding: str = "rgb8",
     jpeg_quality: int = 85,
     call_mode: str = "remote",
     prediction_queue_threshold: int | None = None,
@@ -1009,7 +1009,7 @@ def modal_prepare(policy: str = "molmoact2", gpu: str = "L40S", development: boo
 
 @app.command("modal-qualify")
 def modal_qualify(policy: str = "molmoact2", requests: int = 50, modal_app: str | None = None,
-                  rig: RigOpt = DEFAULT_RIG, image_encoding: str = "jpeg", jpeg_quality: int = 85,
+                  rig: RigOpt = DEFAULT_RIG, image_encoding: str = "rgb8", jpeg_quality: int = 85,
                   call_mode: str = "remote", center_crop: bool = False,
                   prediction_queue_threshold: int | None = None) -> None:
     """Measure this host's existing Modal service with generated frames and fake arms only."""

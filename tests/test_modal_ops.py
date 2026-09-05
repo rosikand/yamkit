@@ -166,6 +166,8 @@ def test_competing_process_prepares_and_shutdown_cannot_create_second_pool(monke
         assert results.get(timeout=2) == ("ok", "ap-only-one")
         monkeypatch.setattr(modal_service, "create_app", lambda **kwargs: pytest.fail("second pool created"))
         assert modal_ops.prepare("smolvla")["app_id"] == "ap-only-one"
+        with pytest.raises(ValueError, match="changing its GPU"):
+            modal_ops.prepare("smolvla", gpu="H100!")
         with pytest.raises(ValueError, match="different model"):
             modal_ops.prepare("pi05")
     finally:

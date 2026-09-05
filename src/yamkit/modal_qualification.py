@@ -22,7 +22,7 @@ def _benchmark_module():
 
 
 def collect_qualification(policy="molmoact2", *, requests=50, modal_app=None, rig_path=DEFAULT_RIG,
-                          image_encoding="jpeg", jpeg_quality=85, call_mode="remote", center_crop=False,
+                          image_encoding="rgb8", jpeg_quality=85, call_mode="remote", center_crop=False,
                           prediction_queue_threshold=None) -> dict:
     from .config import RigConfig
     from .inference.profiles import get_profile
@@ -78,7 +78,8 @@ def collect_qualification(policy="molmoact2", *, requests=50, modal_app=None, ri
                   "hardware_tested": False,
                   "settings": {"profile": profile.id, "model_revision": profile.revision, "modal_app": app_name,
                                "call_mode": call_mode, "image_encoding": image_encoding,
-                               "jpeg_quality": jpeg_quality, "image_hw": list(image_hw),
+                               "jpeg_quality": jpeg_quality if image_encoding == "jpeg" else None,
+                               "image_hw": list(image_hw),
                                "crop": "center_16_9" if center_crop else "none",
                                "requested_region": readiness.get("requested_compute_region") or receipt.get("region"),
                                "observed_region": readiness.get("compute_region"),

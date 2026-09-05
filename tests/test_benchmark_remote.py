@@ -5,7 +5,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.benchmark_remote import compact_report, compare_encodings, modal_sdk_measurements, profile_modal
+from scripts.benchmark_remote import (
+    compact_report,
+    compare_denoising,
+    compare_encodings,
+    compare_quality_sweep,
+    modal_sdk_measurements,
+    profile_modal,
+)
 from yamkit.inference.performance import percentile_summary, summarize_measurements
 from yamkit.inference.profiles import get_profile
 
@@ -52,6 +59,11 @@ def fake_profile_transport(monkeypatch, *, changed_instance_at=None):
                     "instance_id": "other" if request["sequence_id"] == changed_instance_at else "same",
                     "action_units": "checkpoint_native", "action_names": list(profile.action_names),
                     "diagnostic_seed": request.get("diagnostic_seed"),
+                    "diagnostic_num_inference_steps": request.get("diagnostic_num_inference_steps"),
+                    "diagnostic_cuda_graph": request.get("diagnostic_cuda_graph"),
+                    "model_execution": {"default_num_inference_steps": 10,
+                                        "effective_num_inference_steps": request.get("diagnostic_num_inference_steps", 10),
+                                        "cuda_graph_enabled": request.get("diagnostic_cuda_graph", False)},
                     "chunk": [[0.0] * len(profile.action_names) for _ in range(profile.chunk_size)],
                     "timing": {"preprocess_s": 0.02, "inference_s": 0.2, "postprocess_s": 0.02, "total_s": 0.24},
                     "lifecycle": {"prediction_count": request["sequence_id"] + 1,
@@ -88,6 +100,104 @@ def test_paired_encoding_comparison_uses_identical_fixtures_and_seed(monkeypatch
     assert transport.requests[1]["images"]["top"]["data"] == transport.requests[3]["images"]["top"]["data"]
     assert all(pair["action_max_absolute_delta"] == 0 for pair in report["pairs"])
     assert transport.cancelled
+
+
+def test_quality_sweep_uses_common_noise_all_cameras_and_smallest_passing_payload(monkeypatch):
+    transport = fake_profile_transport(monkeypatch)
+    predict = transport.predict_chunk
+
+    def response_with_codec_delta(request, timeout_s):
+        response = predict(request, timeout_s)
+        quality = request["images"]["top"].get("quality")
+        for row in response["chunk"]:
+            row[6] = {85: 0.03, 90: 0.015, 95: 0.005}.get(quality, 0)
+            row[0] = 0.005 if quality is not None else 0
+        return response
+
+    transport.predict_chunk = response_with_codec_delta
+    report = compare_quality_sweep(transport, pairs=2, image_hw=(64, 64))
+    assert report["selected_encoding"] == "jpeg" and report["selected_jpeg_quality"] == 90
+    assert report["raw_repeat_deterministic"] and report["experiment_only"]
+    assert report["gripper_delta_limit"] == 0.02 and report["joint_delta_limit_rad"] == 0.01
+    assert [request["diagnostic_seed"] for request in transport.requests] == [0] * 5 + [1] * 5
+    for request in transport.requests:
+        assert len(request["images"]) == 3
+        assert len({(frame["encoding"], frame.get("quality")) for frame in request["images"].values()}) == 1
+        assert "diagnostic_num_inference_steps" not in request and "diagnostic_cuda_graph" not in request
+    assert transport.requests[0]["images"] == transport.requests[1]["images"] == transport.requests[5]["images"]
+    sample = report["pairs"][0]["variants"]["jpeg_q90"]
+    assert sample["gripper_max_absolute_delta"] == 0.015
+    assert sample["joint_max_absolute_delta_rad"] == 0.005
+    assert all("encode_s" in camera and "diagnostic_decode_s" in camera and camera["payload_bytes"] > 0
+               for camera in sample["per_camera"].values())
+    assert transport.cancelled
+
+
+@pytest.mark.parametrize("rejection", ["gripper", "joint", "nondeterministic_raw"])
+def test_quality_selection_falls_back_to_raw_when_output_limits_fail(monkeypatch, rejection):
+    transport = fake_profile_transport(monkeypatch)
+    predict = transport.predict_chunk
+
+    def divergent(request, timeout_s):
+        response = predict(request, timeout_s)
+        if request["images"]["top"]["encoding"] == "jpeg":
+            response["chunk"][0][6 if rejection == "gripper" else 0] = 0.03 if rejection != "nondeterministic_raw" else 0
+        elif rejection == "nondeterministic_raw" and request["sequence_id"] % 5 == 1:
+            response["chunk"][0][0] = 0.001
+        return response
+
+    transport.predict_chunk = divergent
+    report = compare_quality_sweep(transport, pairs=1, image_hw=(8, 8))
+    assert report["selected_encoding"] == "rgb8" and report["selected_jpeg_quality"] is None
+
+
+def test_denoising_compares_fixed_noise_separates_first_forward_and_keeps_overrides_diagnostic(monkeypatch):
+    transport = fake_profile_transport(monkeypatch)
+    predict = transport.predict_chunk
+
+    def measured(request, timeout_s):
+        response = predict(request, timeout_s)
+        response["timing"]["inference_s"] = 0.1 if request.get("diagnostic_num_inference_steps") == 5 else 0.2
+        return response
+
+    transport.predict_chunk = measured
+    report = compare_denoising(transport, pairs=11, image_hw=(8, 8), include_graph=True)
+    assert len(transport.requests) == 33 and report["experiment_only"]
+    for seed in range(11):
+        default, half, graph = transport.requests[seed * 3:seed * 3 + 3]
+        assert [request["diagnostic_seed"] for request in (default, half, graph)] == [seed] * 3
+        assert default["images"] == half["images"] == graph["images"]
+        assert all(image["encoding"] == "rgb8" for image in default["images"].values())
+        assert "diagnostic_num_inference_steps" not in default and "diagnostic_cuda_graph" not in default
+        assert half["diagnostic_num_inference_steps"] == 5 and "diagnostic_cuda_graph" not in half
+        assert graph["diagnostic_cuda_graph"] is True and "diagnostic_num_inference_steps" not in graph
+    assert all(variant["warm_sample_count"] == 10 for variant in report["variants"].values())
+    assert report["variants"]["raw_default_steps"]["warm_model_forward_s"]["p50"] == 0.2
+    assert report["variants"]["raw_half_steps"]["warm_model_forward_s"]["p95"] == 0.1
+
+
+def test_explicit_profile_experiments_are_reported_and_default_requests_have_no_override(monkeypatch):
+    transport = fake_profile_transport(monkeypatch)
+    report = profile_modal(transport, warm_samples=1, image_hw=(8, 8),
+                           diagnostic_num_inference_steps=5, diagnostic_cuda_graph=True)
+    assert report["experiment_only"] and report["sample_count"] == 2
+    assert all(request["diagnostic_num_inference_steps"] == 5 and request["diagnostic_cuda_graph"] is True
+               for request in transport.requests)
+    assert all(sample["model_execution"]["effective_num_inference_steps"] == 5 for sample in report["samples"])
+    default = fake_profile_transport(monkeypatch)
+    report = profile_modal(default, warm_samples=1, image_hw=(8, 8))
+    assert not report["experiment_only"]
+    assert report["image_encoding"] == "rgb8" and report["jpeg_quality"] is None
+    assert all(image["encoding"] == "rgb8" for request in default.requests for image in request["images"].values())
+    assert all("diagnostic_num_inference_steps" not in request and "diagnostic_cuda_graph" not in request
+               for request in default.requests)
+
+
+def test_paired_sweep_wall_budget_retains_partial_evidence_and_does_not_select_jpeg(monkeypatch):
+    transport = fake_profile_transport(monkeypatch)
+    report = compare_quality_sweep(transport, pairs=4, image_hw=(8, 8), max_wall_s=1.5)
+    assert report["terminated"] == "wall_budget" and len(transport.requests) == 1
+    assert report["selected_encoding"] == "rgb8" and transport.cancelled
 
 
 def test_modal_profile_excludes_container_change_and_retains_bounded_partial_results(monkeypatch):

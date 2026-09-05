@@ -14,7 +14,7 @@ class YamkitRemoteConfig(PreTrainedConfig):
     readiness_timeout_s: float = 120.0
     max_observation_age_s: float = 2.0
     center_crop: bool = False
-    image_encoding: str = "jpeg"
+    image_encoding: str = "rgb8"
     jpeg_quality: int = 85
     call_mode: str = "remote"
     prediction_queue_threshold: int | None = None

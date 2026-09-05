@@ -26,9 +26,13 @@ def test_failed_direct_collection_saves_invalid_record_without_more_remote_reque
         calls.append(kwargs)
         return object()
 
-    benchmark = SimpleNamespace(make_benchmark_transport=transport,
-                                profile_modal=lambda *a, **k: {"terminated": "failure", "warm_sample_count": 0,
-                                                              "readiness": {}},
+    profile_requests = []
+
+    def profile_modal(*args, **kwargs):
+        profile_requests.append(kwargs)
+        return {"terminated": "failure", "warm_sample_count": 0, "readiness": {}}
+
+    benchmark = SimpleNamespace(make_benchmark_transport=transport, profile_modal=profile_modal,
                                 run_scenario=lambda *a, **k: pytest.fail("Failed profile must not dispatch again"))
     monkeypatch.setattr("yamkit.modal_qualification._benchmark_module", lambda: benchmark)
     monkeypatch.setattr("yamkit.modal_ops.owned_service", lambda: {
@@ -40,6 +44,8 @@ def test_failed_direct_collection_saves_invalid_record_without_more_remote_reque
     saved = json.loads(prior_path.read_text())
     assert saved["assessment"]["qualified"] is False and "old_record" not in saved
     assert saved["settings"]["image_hw"] == [480, 640]
+    assert saved["settings"]["image_encoding"] == profile_requests[0]["image_encoding"] == "rgb8"
+    assert saved["settings"]["jpeg_quality"] is None
     assert saved["settings"]["requested_region"] == saved["settings"]["routing_region"] == "us-west"
     assert saved["settings"]["observed_region"] is None
     assert saved["direct"]["readiness"] == {} and saved["integrated"] == {}

@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from typing import Any
 
 from .mapping import CAMERA_RENAME_MAP, center_crop_rgb
@@ -41,9 +42,20 @@ def _memory_metadata(device: str) -> dict:
     if device.startswith("cuda"):
         import torch
 
+        result["cuda_device_name"] = torch.cuda.get_device_name(device)
+        result["cuda_compute_capability"] = list(torch.cuda.get_device_capability(device))
         result["cuda_peak_allocated_bytes"] = torch.cuda.max_memory_allocated(device)
         result["cuda_peak_reserved_bytes"] = torch.cuda.max_memory_reserved(device)
     return result
+
+
+def _dtype_counts(module: Any, method: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    tensors = getattr(module, method, lambda: ())()
+    for tensor in tensors:
+        name = str(tensor.dtype)
+        counts[name] = counts.get(name, 0) + tensor.numel()
+    return counts
 
 
 def _run_processor(processor: Any, value: Any) -> tuple[Any, dict[str, float]]:
@@ -87,6 +99,23 @@ class ModelRuntime:
         self._lock = threading.Lock()
         self._sequences: dict[str, int] = {}
         self._closed: set[str] = set()
+        self._model_backbone = getattr(policy, "_backbone", lambda: None)() if profile.id == "molmoact2" else None
+        self._action_expert = getattr(self._model_backbone, "action_expert", None)
+        self._action_graph = getattr(self._model_backbone, "action_cuda_graph_manager", None)
+        self._observed_activation_dtypes: dict[str, dict] = {}
+        config = getattr(policy, "config", None)
+        backbone_config = getattr(self._model_backbone, "config", None)
+        self._model_metadata = {
+            "configured_model_dtype": getattr(config, "model_dtype", None),
+            "parameter_dtype_numel": _dtype_counts(policy, "parameters"),
+            "buffer_dtype_numel": _dtype_counts(policy, "buffers"),
+            "action_expert_parameter_dtype_numel": _dtype_counts(self._action_expert, "parameters"),
+            "action_expert_layers": getattr(getattr(backbone_config, "action_expert_config", None), "num_layers", None),
+            "default_num_inference_steps": getattr(config, "num_inference_steps", None)
+            or getattr(backbone_config, "flow_matching_num_steps", None),
+            "cuda_graph_supported": self._action_graph is not None,
+            "production_cuda_graph_configured": getattr(config, "enable_inference_cuda_graph", None),
+        }
         self.unclipped_post = post
         if profile.id == "molmoact2" and hasattr(post, "steps"):
             from lerobot.policies.molmoact2.processor_molmoact2 import MolmoAct2ClampActionProcessorStep
@@ -174,7 +203,71 @@ class ModelRuntime:
                 "preferred_image_encoding": DEFAULT_IMAGE_ENCODING, "supported_image_encodings": list(IMAGE_ENCODINGS),
                 "jpeg_quality": DEFAULT_JPEG_QUALITY,
                 "memory": _memory_metadata(self.device),
+                "model_execution": {**self._model_metadata,
+                                    "observed_activation_dtypes": dict(self._observed_activation_dtypes),
+                                    "cuda_graph_enabled": bool(getattr(self._action_graph, "enabled", False)),
+                                    "cuda_graph_cache_populated": getattr(self._action_graph, "action_flow_graph", None)
+                                    is not None},
                 "saved_processors": True, "session_state": "reset for every fresh chunk"}
+
+    @contextmanager
+    def _observe_execution(self, request: dict):
+        """Pinned Molmo experiments are non-executable fixtures and never persist settings."""
+        graph = self._action_graph
+        requested_graph = request.get("diagnostic_cuda_graph")
+        requested_steps = request.get("diagnostic_num_inference_steps")
+        default_steps = self._model_metadata["default_num_inference_steps"]
+        if requested_steps is not None and (default_steps != 10 or requested_steps not in (5, 10)):
+            raise ValueError("Diagnostic denoising requires the unchanged pinned 10-step Molmo configuration")
+        if requested_graph is not None and (graph is None or not self.device.startswith("cuda")):
+            raise ValueError("Diagnostic CUDA graphs require a CUDA Molmo action graph manager")
+        previous_enabled = bool(getattr(graph, "enabled", False))
+        original_run = getattr(graph, "run_action_flow", None)
+        metadata = {**self._model_metadata, "effective_num_inference_steps": requested_steps or default_steps,
+                    "cuda_graph_used": False,
+                    "cuda_graph_cache_populated_before": getattr(graph, "action_flow_graph", None) is not None}
+        hooks = []
+
+        def observe_once(label, module):
+            if module is None or label in self._observed_activation_dtypes:
+                return
+            handle = None
+
+            def observe(module, args, output):
+                self._observed_activation_dtypes[label] = {
+                    "input_dtypes": [str(value.dtype) for value in args if hasattr(value, "dtype")],
+                    "output_dtype": str(output.dtype) if hasattr(output, "dtype") else None,
+                    "basis": "first observed module call; not a claim about every model operation",
+                }
+                handle.remove()
+
+            handle = module.register_forward_hook(observe)
+            hooks.append(handle)
+
+        def run_flow(*args, **kwargs):
+            metadata["cuda_graph_used"] = True
+            return original_run(*args, **kwargs)
+
+        try:
+            observe_once("action_embedding", getattr(self._action_expert, "action_embed", None))
+            blocks = getattr(getattr(self._model_backbone, "transformer", None), "blocks", ())
+            if len(blocks):
+                observe_once("attention_projection", getattr(getattr(blocks[0], "self_attn", None), "att_proj", None))
+            if requested_graph is not None:
+                graph.set_enabled(requested_graph)
+            if original_run is not None:
+                graph.run_action_flow = run_flow
+            metadata["cuda_graph_enabled"] = bool(getattr(graph, "enabled", False))
+            yield metadata
+        finally:
+            for hook in hooks:
+                hook.remove()
+            metadata["observed_activation_dtypes"] = dict(self._observed_activation_dtypes)
+            metadata["cuda_graph_cache_populated_after"] = getattr(graph, "action_flow_graph", None) is not None
+            if original_run is not None:
+                graph.run_action_flow = original_run
+            if requested_graph is not None:
+                graph.set_enabled(previous_enabled)
 
     def reset(self, session_id: str) -> None:
         """Retire a session. The client must create a new ID and reject any late response."""
@@ -239,13 +332,17 @@ class ModelRuntime:
             # future version, needs torch.enable_grad inside its denoising loop.
             seed = request.get("diagnostic_seed")
             prediction_kwargs = {}
+            if request.get("diagnostic_num_inference_steps") is not None:
+                prediction_kwargs["num_steps"] = request["diagnostic_num_inference_steps"]
             if seed is not None:
                 prediction_kwargs["generator"] = torch.Generator(device=self.device).manual_seed(seed)
             rng_devices = [torch.device(self.device)] if self.device.startswith("cuda") else []
-            with torch.no_grad(), torch.random.fork_rng(devices=rng_devices, enabled=seed is not None):
+            with self._observe_execution(request) as model_execution, torch.no_grad(), \
+                    torch.random.fork_rng(devices=rng_devices, enabled=seed is not None):
                 if seed is not None:
                     torch.manual_seed(seed)
                 raw = self.policy.predict_action_chunk(prepared, **prediction_kwargs)
+                model_execution["raw_output_dtype"] = str(raw.dtype)
                 if self.device.startswith("cuda"):
                     torch.cuda.synchronize()
                 infer_end = time.monotonic()
@@ -255,6 +352,7 @@ class ModelRuntime:
                     unclipped, diagnostic_steps = _run_processor(self.unclipped_post, raw.clone())
                 diagnostic_end = time.monotonic()
                 processed, postprocess_steps = _run_processor(self.post, raw)
+                model_execution["processed_output_dtype"] = str(processed.dtype)
                 if self.device.startswith("cuda"):
                     torch.cuda.synchronize()
             post_end = time.monotonic()
@@ -288,6 +386,8 @@ class ModelRuntime:
                         "total_s": decode_end - started},
                 transforms=transforms, instance_id=self.instance_id,
                 diagnostic_seed=seed,
+                diagnostic_num_inference_steps=request.get("diagnostic_num_inference_steps"),
+                diagnostic_cuda_graph=request.get("diagnostic_cuda_graph"), model_execution=model_execution,
                 lifecycle={"first_prediction": first_prediction, "prediction_count": self._prediction_count,
                            "idle_s": idle_s, "runtime_age_s": acquired - self._created_at,
                            "load_s": self.load_s},

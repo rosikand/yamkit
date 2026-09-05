@@ -138,7 +138,7 @@ def run_profile_probe(
             "session_id": session_id, "sequence_id": 0, "observation_time": time.monotonic(),
             "observation_age_s": current.age_s(), "timeout_s": MAX_TIMEOUT_S,
             "task": task, "state": current.state.tolist(), "state_names": list(current.state_names),
-            "images": {name: encode_image(frame, encoding="jpeg" if backend == "modal" else "rgb8")
+            "images": {name: encode_image(frame, encoding=options.image_encoding if backend == "modal" else "rgb8")
                        for name, frame in current.images.items()},
             "mode": "live_probe" if live else "saved_probe", "crop": "center_16_9" if center_crop else "none",
             "continuation": None,
@@ -156,8 +156,8 @@ def run_profile_probe(
         response_metadata.update(
             server_timing=response["timing"], round_trip_s=elapsed,
             encoding_s=encoding_s, payload_bytes=sum(len(image["data"]) for image in request["images"].values()),
-            image_encoding="jpeg" if backend == "modal" else "rgb8",
-            jpeg_quality=85 if backend == "modal" else None,
+            image_encoding=next(iter(request["images"].values()))["encoding"],
+            jpeg_quality=next(iter(request["images"].values())).get("quality"),
             image_transforms=response.get("transforms", {}),
             saved_postprocessor_clamp=bool(response.get("saved_postprocessor_clamp")),
         )

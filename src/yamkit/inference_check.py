@@ -8,7 +8,7 @@ import uuid
 import numpy as np
 
 from .inference.profiles import get_profile
-from .inference.protocol import native_fixture_request, validate_response
+from .inference.protocol import DEFAULT_IMAGE_ENCODING, native_fixture_request, validate_response
 
 
 def percentiles(samples: list[float]) -> dict:
@@ -48,7 +48,7 @@ def run_check(policy: str, *, backend: str = "local", device: str = "cpu", task:
         encoded_at = time.monotonic()
         request = native_fixture_request(profile, sequence_id=sequence, session_id=session_id,
                                          crop="center_16_9" if center_crop else "none",
-                                         encoding="jpeg" if backend == "modal" else "rgb8")
+                                         encoding=DEFAULT_IMAGE_ENCODING if backend == "modal" else "rgb8")
         request["task"] = task
         encoding_s = time.monotonic() - encoded_at
         sent = time.monotonic()
@@ -57,8 +57,8 @@ def run_check(policy: str, *, backend: str = "local", device: str = "cpu", task:
         validate_response(response, request, profile)
         chunk = np.asarray(response["chunk"])
         samples.append({"sequence_id": sequence, "round_trip_s": elapsed, "encoding_s": encoding_s,
-                        "image_encoding": "jpeg" if backend == "modal" else "rgb8",
-                        "jpeg_quality": 85 if backend == "modal" else None,
+                        "image_encoding": next(iter(request["images"].values()))["encoding"],
+                        "jpeg_quality": next(iter(request["images"].values())).get("quality"),
                         "payload_bytes": sum(len(i["data"]) for i in request["images"].values()),
                         "shape": list(chunk.shape), "finite": bool(np.isfinite(chunk).all()),
                         "min": float(chunk.min()), "max": float(chunk.max()), "server": response["timing"],

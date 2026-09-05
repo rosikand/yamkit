@@ -162,8 +162,8 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
 
         def ready(self, timeout_s):
             return {**profile.metadata(), "ready": True, "instance_id": "synthetic-benchmark",
-                    "fresh_chunk": True, "saved_processors": True, "image_encoding": "jpeg",
-                    "supported_image_encodings": ["jpeg", "rgb8"], "preferred_image_encoding": "jpeg",
+                    "fresh_chunk": True, "saved_processors": True, "image_encoding": "rgb8",
+                    "supported_image_encodings": ["jpeg", "rgb8"], "preferred_image_encoding": "rgb8",
                     "jpeg_quality": 85, "prediction_count": 1}
 
         def cancel(self):
@@ -307,7 +307,8 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
 
 def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
                   max_wall_s=600.0, image_hw=(480, 640), on_sample=None,
-                  image_encoding="jpeg", jpeg_quality=85, center_crop=False) -> dict:
+                  image_encoding="rgb8", jpeg_quality=85, center_crop=False,
+                  diagnostic_num_inference_steps=None, diagnostic_cuda_graph=None) -> dict:
     """Bounded direct protocol profiling; generated fixture results never enter a queue.
 
     In contrast to rollout, non-executable native fixtures can be measured after
@@ -330,6 +331,11 @@ def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
         raise ValueError("Use 1–500 warm requests and a wall budget of at most 1800 seconds")
     if image_encoding not in ("jpeg", "rgb8") or type(jpeg_quality) is not int or not 1 <= jpeg_quality <= 100:
         raise ValueError("Use jpeg or rgb8 and an integer JPEG quality in 1–100")
+    if diagnostic_num_inference_steps is not None and (
+            type(diagnostic_num_inference_steps) is not int or diagnostic_num_inference_steps not in (5, 10)):
+        raise ValueError("Molmo diagnostic inference steps must be 5 or 10; production defaults are unchanged")
+    if diagnostic_cuda_graph is not None and type(diagnostic_cuda_graph) is not bool:
+        raise ValueError("diagnostic_cuda_graph must be a boolean")
     height, width = image_hw
     if not 1 <= height <= MAX_IMAGE_HEIGHT or not 1 <= width <= MAX_IMAGE_WIDTH:
         raise ValueError("Fixture dimensions exceed the unchanged protocol bounds")
@@ -380,6 +386,10 @@ def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
                        "state": [0.0] * len(profile.state_names), "state_names": list(profile.state_names),
                        "images": images, "mode": "native_fixture",
                        "crop": "center_16_9" if center_crop else "none", "continuation": None}
+            if diagnostic_num_inference_steps is not None:
+                request["diagnostic_num_inference_steps"] = diagnostic_num_inference_steps
+            if diagnostic_cuda_graph is not None:
+                request["diagnostic_cuda_graph"] = diagnostic_cuda_graph
             validation_started = time.monotonic()
             validate_request(request, profile)
             request_validation_s = time.monotonic() - validation_started
@@ -410,6 +420,9 @@ def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
                       "response_validation_s": response_validation_s,
                       "transport_timing": dict(getattr(transport, "last_timing", {})),
                       "server_timing": server_timing, "lifecycle": response.get("lifecycle"),
+                      "model_execution": response.get("model_execution"),
+                      "diagnostic_num_inference_steps": diagnostic_num_inference_steps,
+                      "diagnostic_cuda_graph": diagnostic_cuda_graph,
                       "rpc_minus_server_s": max(0.0, elapsed - server_timing["total_s"]),
                       "rpc_residual_note": "Includes SDK serialization, dispatch, routing and network; not network-only",
                       "shape": [len(response["chunk"]), len(response["chunk"][0])]}
@@ -432,6 +445,9 @@ def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
             "call_mode": getattr(transport, "call_mode", None),
             "image_encoding": image_encoding, "jpeg_quality": jpeg_quality if image_encoding == "jpeg" else None,
             "crop": "center_16_9" if center_crop else "none",
+            "diagnostic_num_inference_steps": diagnostic_num_inference_steps,
+            "diagnostic_cuda_graph": diagnostic_cuda_graph,
+            "experiment_only": diagnostic_num_inference_steps is not None or diagnostic_cuda_graph is True,
             "requested_warm_samples": warm_samples, "max_wall_s": max_wall_s,
             "readiness_s": readiness_s, "readiness": metadata,
             "readiness_transport_timing": readiness_transport_timing,
@@ -514,6 +530,184 @@ def compare_encodings(transport, *, pairs=4, image_hw=(480, 640), jpeg_quality=8
             "instance_id": instance_id, "note": "Numerical sensitivity diagnostic, not physical policy fidelity validation."}
 
 
+def _compare_variants(transport, variants, *, pairs, image_hw, center_crop=False, max_wall_s=600) -> dict:
+    """Bounded native-fixture experiments with common images, state, task and model noise."""
+    from yamkit.inference.performance import percentile_summary
+    from yamkit.inference.profiles import get_profile
+    from yamkit.inference.protocol import (
+        MAX_IMAGE_HEIGHT,
+        MAX_IMAGE_WIDTH,
+        PROTOCOL_VERSION,
+        decode_image,
+        encode_image,
+        validate_request,
+        validate_response,
+    )
+
+    if type(pairs) is not int or not 1 <= pairs <= 25 or not 0 < max_wall_s <= 1800:
+        raise ValueError("Use 1–25 paired seeds and at most 1800 seconds")
+    height, width = image_hw
+    if (type(height) is not int or type(width) is not int
+            or not 1 <= height <= MAX_IMAGE_HEIGHT or not 1 <= width <= MAX_IMAGE_WIDTH):
+        raise ValueError("Fixture dimensions exceed the unchanged protocol bounds")
+    profile = get_profile("molmoact2")
+    frames = {key: np.random.default_rng(index).integers(0, 256, (height, width, 3), dtype=np.uint8)
+              for index, key in enumerate(profile.native_image_keys)}
+    gripper_indices = [index for index, name in enumerate(profile.action_names) if "gripper" in name]
+    joint_indices = [index for index in range(len(profile.action_names)) if index not in gripper_indices]
+    started = time.monotonic()
+    deadline = started + max_wall_s
+    results = []
+    instance_id = None
+    failures = []
+    terminated = "request_limit"
+    session_id = uuid.uuid4().hex
+    try:
+        for pair in range(pairs):
+            reference = None
+            paired = {"diagnostic_seed": pair, "variants": {}}
+            results.append(paired)
+            for variant_index, variant in enumerate(variants):
+                observation_time = time.monotonic()
+                images = {}
+                cameras = {}
+                for key, frame in frames.items():
+                    encoded_at = time.monotonic()
+                    images[key] = encode_image(frame, encoding=variant["image_encoding"],
+                                               quality=variant.get("jpeg_quality", 85))
+                    encode_s = time.monotonic() - encoded_at
+                    decoded_at = time.monotonic()
+                    decoded = decode_image(images[key])
+                    decode_s = time.monotonic() - decoded_at
+                    cameras[key] = {"encode_s": encode_s, "diagnostic_decode_s": decode_s,
+                                    "payload_bytes": len(images[key]["data"]),
+                                    "pixel_mean_absolute_delta": float(np.abs(decoded.astype(float) - frame).mean())}
+                remaining = deadline - time.monotonic()
+                if remaining < 0.01:
+                    raise TimeoutError("Paired diagnostic wall budget reached")
+                request = {"protocol_version": PROTOCOL_VERSION, "profile": profile.id,
+                           "model_revision": profile.revision, "session_id": session_id,
+                           "sequence_id": pair * len(variants) + variant_index,
+                           "observation_time": observation_time,
+                           "observation_age_s": time.monotonic() - observation_time,
+                           "timeout_s": min(30.0, remaining), "task": "pick up the red cube",
+                           "state": [0.0] * len(profile.state_names), "state_names": list(profile.state_names),
+                           "images": images, "mode": "native_fixture", "diagnostic_seed": pair,
+                           "crop": "center_16_9" if center_crop else "none", "continuation": None}
+                steps = variant.get("diagnostic_num_inference_steps")
+                if steps is not None:
+                    request["diagnostic_num_inference_steps"] = steps
+                if "diagnostic_cuda_graph" in variant:
+                    request["diagnostic_cuda_graph"] = variant["diagnostic_cuda_graph"]
+                validate_request(request, profile)
+                dispatched = time.monotonic()
+                response = transport.predict_chunk(request, request["timeout_s"])
+                elapsed = time.monotonic() - dispatched
+                validate_response(response, request, profile)
+                if not isinstance(response.get("instance_id"), str) or not response["instance_id"]:
+                    raise ValueError("Paired diagnostics require a container identity")
+                if instance_id is not None and response.get("instance_id") != instance_id:
+                    raise ValueError("Container changed during paired diagnostic")
+                instance_id = response.get("instance_id")
+                actions = np.asarray(response["chunk"], dtype=np.float64)
+                if reference is None:
+                    reference = actions
+                if actions.shape != reference.shape:
+                    raise ValueError("Paired variants returned different action chunk shapes")
+                delta = np.abs(actions - reference)
+                paired["variants"][variant["name"]] = {
+                    **variant, "round_trip_s": elapsed, "server_timing": response["timing"],
+                    "transport_timing": dict(getattr(transport, "last_timing", {})),
+                    "model_execution": response.get("model_execution"), "per_camera": cameras,
+                    "payload_bytes": sum(camera["payload_bytes"] for camera in cameras.values()),
+                    "image_encode_s": sum(camera["encode_s"] for camera in cameras.values()),
+                    "diagnostic_image_decode_s": sum(camera["diagnostic_decode_s"] for camera in cameras.values()),
+                    "shape": list(delta.shape), "action_max_absolute_delta": float(delta.max()),
+                    "joint_max_absolute_delta_rad": float(delta[:, joint_indices].max()),
+                    "gripper_max_absolute_delta": float(delta[:, gripper_indices].max()),
+                    "per_action_max_absolute_delta": dict(zip(profile.action_names, delta.max(axis=0).tolist()))}
+    except TimeoutError:
+        terminated = "wall_budget"
+    except Exception as exc:  # noqa: BLE001 — retain partial diagnostics without SDK data or credentials
+        failures.append({"reason": type(exc).__name__, "elapsed_s": time.monotonic() - started})
+        terminated = "failure"
+    except KeyboardInterrupt:
+        terminated = "interrupted"
+    finally:
+        transport.cancel()
+
+    def _variant_report():
+        summaries = {}
+        for variant in variants:
+            samples = [pair["variants"][variant["name"]] for pair in results if variant["name"] in pair["variants"]]
+            summaries[variant["name"]] = {
+                **variant, "sample_count": len(samples), "first_sample": samples[0] if samples else None,
+                "warm_sample_count": max(0, len(samples) - 1),
+                "warm_round_trip_s": percentile_summary(sample["round_trip_s"] for sample in samples[1:]),
+                "warm_model_forward_s": percentile_summary(sample["server_timing"]["inference_s"] for sample in samples[1:]),
+                "payload_bytes": percentile_summary(sample["payload_bytes"] for sample in samples),
+                "image_encode_s": percentile_summary(sample["image_encode_s"] for sample in samples),
+                "diagnostic_image_decode_s": percentile_summary(sample["diagnostic_image_decode_s"] for sample in samples),
+                "action_max_absolute_delta": max((sample["action_max_absolute_delta"] for sample in samples), default=None),
+                "joint_max_absolute_delta_rad": max((sample["joint_max_absolute_delta_rad"] for sample in samples), default=None),
+                "gripper_max_absolute_delta": max((sample["gripper_max_absolute_delta"] for sample in samples), default=None)}
+        return {"measurement": "native-fixture experiment; fixed images/state/task and identical paired model seeds",
+                "experiment_only": True, "physical_modal_rollout_allowed": False,
+                "image_hw": [height, width], "requested_pairs": pairs, "pairs": results,
+                "variants": summaries, "instance_id": instance_id, "terminated": terminated,
+                "elapsed_s": time.monotonic() - started, "failures": failures,
+                "note": "Per-variant first requests are separated; small paired samples are not robust network tail estimates."}
+
+    return _variant_report()
+
+
+def compare_quality_sweep(transport, *, pairs=4, jpeg_qualities=(85, 90, 95), image_hw=(480, 640),
+                          center_crop=False, max_wall_s=600) -> dict:
+    """Compare all three cameras together and select the smallest qualifying fixture payload."""
+    if (not 1 <= len(jpeg_qualities) <= 3 or len(set(jpeg_qualities)) != len(jpeg_qualities)
+            or any(type(quality) is not int or quality not in (85, 90, 95) for quality in jpeg_qualities)):
+        raise ValueError("Quality diagnostics support unique JPEG qualities from 85, 90 and 95")
+    variants = [{"name": "raw_reference", "image_encoding": "rgb8"},
+                {"name": "raw_repeat", "image_encoding": "rgb8"},
+                *({"name": f"jpeg_q{quality}", "image_encoding": "jpeg", "jpeg_quality": quality}
+                  for quality in jpeg_qualities)]
+    report = _compare_variants(transport, variants, pairs=pairs, image_hw=image_hw,
+                               center_crop=center_crop, max_wall_s=max_wall_s)
+    repeat = report["variants"]["raw_repeat"]
+    deterministic = (repeat["sample_count"] == pairs and repeat["action_max_absolute_delta"] is not None
+                     and repeat["action_max_absolute_delta"] <= 1e-6)
+    candidates = [summary for summary in report["variants"].values()
+                  if summary["image_encoding"] == "jpeg" and summary["sample_count"] == pairs
+                  and summary["gripper_max_absolute_delta"] is not None
+                  and summary["gripper_max_absolute_delta"] < 0.02
+                  and summary["joint_max_absolute_delta_rad"] <= 0.01]
+    complete = report["terminated"] == "request_limit"
+    chosen = (min(candidates, key=lambda sample: sample["payload_bytes"]["p50"])
+              if candidates and deterministic and complete else None)
+    report.update(raw_repeat_deterministic=deterministic, gripper_delta_limit=0.02,
+                  joint_delta_limit_rad=0.01,
+                  selected_encoding=chosen["image_encoding"] if chosen else "rgb8",
+                  selected_jpeg_quality=chosen["jpeg_quality"] if chosen else None,
+                  selection_basis="Complete sweep: smallest payload with max gripper delta <0.02, "
+                                  "max joint delta <=0.01 rad and deterministic raw repeats; "
+                                  "raw fallback otherwise. Fixture evidence only; no physical fidelity claim.")
+    return report
+
+
+def compare_denoising(transport, *, half_steps=5, pairs=11, image_hw=(480, 640), center_crop=False,
+                      max_wall_s=600, include_graph=False) -> dict:
+    """Compare default denoising and explicit half steps with raw images and the same model noise."""
+    if type(half_steps) is not int or half_steps != 5:
+        raise ValueError("The pinned Molmo default is 10 inference steps; this diagnostic compares 5")
+    variants = [{"name": "raw_default_steps", "image_encoding": "rgb8"},
+                {"name": "raw_half_steps", "image_encoding": "rgb8", "diagnostic_num_inference_steps": half_steps}]
+    if include_graph:
+        variants.append({"name": "raw_default_steps_cuda_graph", "image_encoding": "rgb8",
+                         "diagnostic_cuda_graph": True})
+    return _compare_variants(transport, variants, pairs=pairs, image_hw=image_hw,
+                             center_crop=center_crop, max_wall_s=max_wall_s)
+
+
 def compact_report(report: dict) -> dict:
     """Small reviewable artifact; raw per-request timings remain in the full report."""
     result = {"measured_on": datetime.now(UTC).date().isoformat(), "source": report["measurement"],
@@ -561,7 +755,7 @@ def main():
                         help="maximum seconds per integrated healthy scenario")
     parser.add_argument("--modal-app", help="explicit existing Modal service; no deployment or shutdown")
     parser.add_argument("--warm-samples", type=int, default=100,
-                        help="target warm requests, excluding first request (100–500)")
+                        help="target warm requests, excluding first request (50–500)")
     parser.add_argument("--max-wall-s", type=float, default=600,
                         help="direct Modal profile wall budget including readiness (at most 1800)")
     parser.add_argument("--integrated-modal", action="store_true",
@@ -574,20 +768,39 @@ def main():
                         help="measure actual pinned SDK serialization, byte size and blob transfer")
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--width", type=int, default=640)
-    parser.add_argument("--image-encoding", choices=("jpeg", "rgb8"), default="jpeg")
+    parser.add_argument("--image-encoding", choices=("jpeg", "rgb8"), default="rgb8")
     parser.add_argument("--jpeg-quality", type=int, default=85)
     parser.add_argument("--call-mode", choices=("remote", "spawn"), default="remote")
     parser.add_argument("--center-crop", action="store_true")
     parser.add_argument("--encoding-pairs", type=int, default=0,
                         help="optional 1–6 seeded raw/JPEG pairs before warm profiling")
+    parser.add_argument("--quality-pairs", type=int, default=0,
+                        help="optional 1–25 paired raw repeats and JPEG q85/q90/q95; reports a fixture-only codec choice")
+    parser.add_argument("--denoising-pairs", type=int, default=0,
+                        help="optional 1–25 paired raw default/half-step experiments; 11 gives 10 warm each")
+    parser.add_argument("--denoising-graphs", action="store_true",
+                        help="include default-step CUDA graphs in the paired denoising diagnostic")
+    parser.add_argument("--diagnostic-num-inference-steps", type=int, choices=(5, 10),
+                        help="native-fixture profile experiment only; never changes rollout defaults")
+    parser.add_argument("--diagnostic-cuda-graph", action="store_true", default=None,
+                        help="native-fixture profile experiment only; enable supported CUDA graphs")
     args = parser.parse_args()
-    if not 100 <= args.warm_samples <= 500:
-        parser.error("--warm-samples must be 100–500; interrupted runs are marked incomplete")
+    if not 50 <= args.warm_samples <= 500:
+        parser.error("--warm-samples must be 50–500; interrupted runs are marked incomplete")
     if not 0 < args.duration <= 1800 or not 0 < args.max_wall_s <= 1800:
         parser.error("duration and wall budget must be in (0, 1800] seconds")
     if not args.modal_app and any((args.integrated_modal, args.integrated_only,
-                                   args.uncached_handles, args.sdk_profile)):
+                                   args.uncached_handles, args.sdk_profile, args.encoding_pairs,
+                                   args.quality_pairs, args.denoising_pairs, args.denoising_graphs,
+                                   args.diagnostic_num_inference_steps, args.diagnostic_cuda_graph)):
         parser.error("Modal options require an explicit --modal-app")
+    if not 0 <= args.quality_pairs <= 25 or not 0 <= args.denoising_pairs <= 25:
+        parser.error("--quality-pairs and --denoising-pairs must be 0–25")
+    if args.denoising_graphs and not args.denoising_pairs:
+        parser.error("--denoising-graphs requires --denoising-pairs")
+    if (args.integrated_modal or args.integrated_only) and (
+            args.diagnostic_num_inference_steps is not None or args.diagnostic_cuda_graph is not None):
+        parser.error("Model overrides are restricted to native-fixture profiling; use a separate integrated run")
     if args.modal_app:
         with ExitStack() as stack:
             sdk_metrics = stack.enter_context(modal_sdk_measurements()) if args.sdk_profile else None
@@ -605,17 +818,33 @@ def main():
 
             report = {"measurement": "real Modal through final LeRobot worker; fake hardware only"}
             comparison = None
+            quality_comparison = None
+            denoising_comparison = None
             if args.encoding_pairs:
                 comparison = compare_encodings(transport_factory(), pairs=args.encoding_pairs,
                                                image_hw=(args.height, args.width), jpeg_quality=args.jpeg_quality,
                                                center_crop=args.center_crop)
+            if args.quality_pairs:
+                quality_comparison = compare_quality_sweep(
+                    transport_factory(), pairs=args.quality_pairs, image_hw=(args.height, args.width),
+                    center_crop=args.center_crop, max_wall_s=args.max_wall_s)
+            if args.denoising_pairs:
+                denoising_comparison = compare_denoising(
+                    transport_factory(), pairs=args.denoising_pairs, image_hw=(args.height, args.width),
+                    center_crop=args.center_crop, max_wall_s=args.max_wall_s, include_graph=args.denoising_graphs)
             if not args.integrated_only:
                 report = profile_modal(transport_factory(), warm_samples=args.warm_samples,
                                        max_wall_s=args.max_wall_s, image_hw=(args.height, args.width),
                                        on_sample=progress, image_encoding=args.image_encoding,
-                                       jpeg_quality=args.jpeg_quality, center_crop=args.center_crop)
+                                       jpeg_quality=args.jpeg_quality, center_crop=args.center_crop,
+                                       diagnostic_num_inference_steps=args.diagnostic_num_inference_steps,
+                                       diagnostic_cuda_graph=args.diagnostic_cuda_graph)
             if comparison is not None:
                 report["encoding_comparison"] = comparison
+            if quality_comparison is not None:
+                report["quality_comparison"] = quality_comparison
+            if denoising_comparison is not None:
+                report["denoising_comparison"] = denoising_comparison
             if args.integrated_modal or args.integrated_only:
                 report["integrated_scenario"] = run_scenario(
                     "real_modal_fake_hardware", [0], duration=args.duration,

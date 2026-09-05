@@ -129,7 +129,7 @@ def test_actual_upstream_prediction_overlaps_canonical_fake_robot_execution():
     assert any(count > 0 for count in result["sdk_commands_during_completed_rpc"][1:])
     assert any(event["actions_executed_during_prediction"] > 0 for event in result["prediction_samples"])
     sample = result["samples"][0]
-    assert sample["image_encoding"] == "jpeg" and sample["jpeg_encoding_s"] > 0
+    assert sample["image_encoding"] == "rgb8" and sample["jpeg_encoding_s"] == 0
     assert sample["wire_payload_bytes"] is None and sample["camera_exposure_timestamp_s"] is None
     assert result["minimum_execution_queue_depth"] > 0
     assert result["minimum_dispatch_margin_s"] > 0
