@@ -146,6 +146,16 @@ def test_three_fresh_predictions_reset_and_session_isolation():
     assert service.policy.calls == 4
 
 
+def test_server_timing_separates_observable_stages_and_marks_modal_queue_unknown():
+    service = runtime()
+    timing = service.predict_chunk(robot_request())["timing"]
+    assert timing["modal_queue_s"] is None
+    names = ("queue_wait_s", "state_reset_s", "image_decode_transform_s", "preprocess_s",
+             "inference_s", "postprocess_s", "response_conversion_s")
+    assert all(timing[name] >= 0 for name in names)
+    assert sum(timing[name] for name in names) <= timing["total_s"]
+
+
 @pytest.mark.parametrize("field,value", [("session_id", "another"), ("sequence_id", 100),
                                         ("action_units", "normalized"), ("chunk", [[float("inf")] * 14]),
                                         ("chunk", [["0.5"] * 14]), ("chunk", [[False] * 14]),
@@ -172,8 +182,15 @@ def test_no_robot_requests_to_base_models():
 def test_expired_inference_result_discarded(monkeypatch):
     service = runtime()
     request = robot_request()
-    clock = iter((1.0, 1.0, 2.0, 3.0, 4.0, 200.0))
-    monkeypatch.setattr("yamkit.inference.service.time", SimpleNamespace(monotonic=lambda: next(clock)))
+    clock = [1.0]
+    original = service.policy.predict_action_chunk
+
+    def expired(batch):
+        clock[0] = 200.0
+        return original(batch)
+
+    monkeypatch.setattr(service.policy, "predict_action_chunk", expired)
+    monkeypatch.setattr("yamkit.inference.service.time", SimpleNamespace(monotonic=lambda: clock[0]))
     with pytest.raises(TimeoutError, match="discarded"):
         service.predict_chunk(request)
 

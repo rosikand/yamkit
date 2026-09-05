@@ -48,6 +48,7 @@ def transport(monkeypatch):
     from yamkit.remote_policy import modeling_yamkit_remote
 
     value = FakeTransport()
+    monkeypatch.setattr("yamkit.inference.performance.require_physical_modal_rollout", lambda: None)
     monkeypatch.setattr(modeling_yamkit_remote, "make_transport", lambda cfg: value)
     return value
 
@@ -63,6 +64,10 @@ def rollout_config(rig, fake_connect, monkeypatch):
     from lerobot.cameras.opencv import OpenCVCameraConfig
     from lerobot.rollout.configs import RolloutConfig
     from lerobot_robot_yamkit import BiYamFollowerConfig, yam_follower
+
+    # This test fixture already substitutes every camera, motor and transport.
+    # Production has no switch that bypasses the independent performance gate.
+    monkeypatch.setattr("yamkit.inference.performance.require_physical_modal_rollout", lambda: None)
 
     class Camera:
         is_connected = False
@@ -285,7 +290,7 @@ def test_invalidated_queue_never_accepts_old_merge():
     chunk = torch.ones((2, 14))
     queue.merge(chunk, chunk, 0)
     with pytest.raises(RemoteFault, match="capacity"):
-        queue.merge(chunk, chunk, 0)
+        queue.merge(torch.ones((4, 14)), torch.ones((4, 14)), 0)
     queue.invalidate()
     queue.merge(chunk, chunk, 0)
     assert queue.get() is None and queue.qsize() == 0
@@ -296,9 +301,8 @@ def test_expired_queue_rejected():
 
     queue = InvalidatableActionQueue(max_steps=3, max_age_s=1, observation_time=lambda: time.monotonic() - 2)
     chunk = torch.ones((2, 14))
-    queue.merge(chunk, chunk, 0)
     with pytest.raises(RemoteFault, match="expired"):
-        queue.get()
+        queue.merge(chunk, chunk, 0)
 
 
 def test_underrun_stops_instead_of_replaying(transport):

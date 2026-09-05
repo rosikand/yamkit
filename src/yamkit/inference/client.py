@@ -36,6 +36,7 @@ class ModalTransport:
         self._shutdown_event = shutdown_event
         self._busy = threading.Lock()
         self._cancel = threading.Event()
+        self.last_timing: dict = {}
 
     def cancel(self) -> None:
         # Nonblocking: the caller may be the local Stop handler.
@@ -50,6 +51,10 @@ class ModalTransport:
         cancel = threading.Event()
         self._cancel = cancel
         result: dict[str, Any] = {}
+        timing: dict[str, Any] = {"network_only_s": None, "modal_queue_s": None,
+                                  "sdk_response_decode_s": None,
+                                  "note": "SDK dispatch/wait include serialization and network; separate internals unobservable"}
+        self.last_timing = timing  # clear prior request timings even if this request times out
         deadline = time.monotonic() + timeout_s
 
         def work():
@@ -57,16 +62,22 @@ class ModalTransport:
             try:
                 import modal
 
+                lookup_started = time.monotonic()
                 service = modal.Cls.from_name(self.app_name, "PolicyService")()
                 remote_method = getattr(service, method)
+                timing["handle_lookup_s"] = time.monotonic() - lookup_started
                 if cancel.is_set():
                     return
+                dispatch_started = time.monotonic()
                 call = remote_method.spawn() if payload is None else remote_method.spawn(payload)
+                timing["dispatch_s"] = time.monotonic() - dispatch_started
                 remaining = deadline - time.monotonic()
                 if cancel.is_set() or remaining <= 0:
                     call.cancel()
                     return
+                wait_started = time.monotonic()
                 result["value"] = call.get(timeout=remaining)
+                timing["response_wait_s"] = time.monotonic() - wait_started
             except Exception:  # noqa: BLE001 — SDK exceptions may contain credentials/payloads
                 # SDK exceptions may contain request details; keep secrets/payloads out of logs.
                 result["error"] = True
@@ -88,6 +99,7 @@ class ModalTransport:
             if time.monotonic() >= deadline:
                 cancel.set()
                 raise RemoteFault("Modal request deadline exceeded")
+        self.last_timing = timing
         if cancel.is_set():
             raise InvalidatedRequest("Modal request invalidated locally")
         if time.monotonic() >= deadline:
@@ -146,6 +158,9 @@ class RemoteSession:
         if not self._flight_lock.acquire(blocking=False):
             raise RemoteFault("Only one chunk request may be in flight per session")
         attempt_started = time.monotonic()
+        response = None
+        elapsed = None
+        dispatch_attempted = False
         self.request_count += 1
         try:
             with self._lock:
@@ -168,7 +183,9 @@ class RemoteSession:
                 "mode": mode, "crop": crop, "continuation": None,
             }
             validate_request(request, self.profile)
+            request_validation_s = time.monotonic() - now
             start = time.monotonic()
+            dispatch_attempted = True
             response = self.transport.predict_chunk(request, self.timeout_s)
             elapsed = time.monotonic() - start
             with self._lock:
@@ -176,17 +193,35 @@ class RemoteSession:
                     raise InvalidatedRequest("Late response rejected after pause/reset/stop")
             if elapsed >= self.timeout_s or time.monotonic() - observation_time > self.max_observation_age_s:
                 raise RemoteFault("Response expired before local execution")
+            decode_started = time.monotonic()
             validate_response(response, request, self.profile)
+            response_validation_s = time.monotonic() - decode_started
             if self.instance_id is not None and response.get("instance_id") != self.instance_id:
                 raise RemoteFault("Remote container restarted; stop and prepare the selected profile again")
-            self.samples.append({"round_trip_s": elapsed, "observation_age_s": time.monotonic() - observation_time,
+            self.samples.append({"round_trip_s": elapsed,
+                                 "observation_timestamp_monotonic_s": observation_time,
+                                 "observation_age_at_dispatch_s": start - observation_time,
+                                 "observation_age_s": time.monotonic() - observation_time,
+                                 "camera_exposure_timestamp_s": None,
+                                 "timestamp_basis": "local observation receipt; camera exposure is unobservable",
                                  "payload_bytes": sum(len(im["data"]) for im in images.values()),
+                                 "wire_payload_bytes": None,
+                                 "payload_size_basis": "raw RGB image bytes; SDK framing size unobservable",
+                                 "image_encoding": "rgb8", "jpeg_encoding_s": 0.0,
+                                 "request_validation_s": request_validation_s,
+                                 "response_validation_s": response_validation_s,
+                                 "transport_timing": dict(getattr(self.transport, "last_timing", {})),
                                  "server_timing": response.get("timing", {})})
             return response
         except Exception as exc:
             self.failed_request_count += 1
             self.failures.append({"elapsed_s": time.monotonic() - attempt_started,
-                                  "reason": type(exc).__name__})
+                                  "reason": type(exc).__name__, "round_trip_s": elapsed,
+                                  "observation_age_s": time.monotonic() - observation_time,
+                                  "payload_bytes": sum(len(im["data"]) for im in images.values()),
+                                  "server_timing": response.get("timing", {}) if isinstance(response, dict) else {},
+                                  "transport_timing": dict(getattr(self.transport, "last_timing", {}))
+                                  if dispatch_attempted else {}})
             raise
         finally:
             self._flight_lock.release()

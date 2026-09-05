@@ -63,6 +63,9 @@ class InferenceOptions:
                     raise ValueError(f"this profile requires {profile.fps:g} Hz actions")
                 if self.arms and len(self.arms) != 2:
                     raise ValueError("this profile requires both follower arms")
+                from .inference.performance import require_physical_modal_rollout
+
+                require_physical_modal_rollout()
         else:
             if self.center_crop:
                 raise ValueError("center crop is only available through the profiled Modal policy boundary")

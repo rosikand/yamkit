@@ -34,12 +34,16 @@ class ModelProfile:
             raise ValueError(f"{self.id}: no verified physical YAM mapping. {self.mapping_note}")
 
     def metadata(self) -> dict:
+        from .performance import physical_modal_status
+
         result = asdict(self)
         result.update(
             profile=self.id, profile_id=self.id, model_revision=self.revision, model=self.repo_id,
             action_units="robot" if self.mapping_verified
             else "checkpoint_native", max_chunk_steps=self.chunk_size, lerobot_version=LEROBOT_VERSION,
-            physical_validation="Operator calibration/alignment and supervised probe still required",
+            physical_validation="not performed",
+            mapping_validation="source conventions only; physical calibration/alignment and cameras unvalidated",
+            **physical_modal_status(),
         )
         return result
 

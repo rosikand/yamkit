@@ -130,6 +130,7 @@ class ModelRuntime:
         if not self._lock.acquire(timeout=timeout):
             raise TimeoutError("Inference queue deadline exceeded")
         try:
+            acquired = time.monotonic()
             session, sequence = request["session_id"], request["sequence_id"]
             if session in self._closed or sequence <= self._sequences.get(session, -1):
                 raise ValueError("Retired session or duplicate/out-of-order sequence")
@@ -146,10 +147,12 @@ class ModelRuntime:
             frame = {"observation.state": torch.tensor(request["state"], dtype=torch.float32),
                      "task": request["task"]}
             transforms = {}
+            image_started = time.monotonic()
             for name, encoded in request["images"].items():
                 pixels, transform = center_crop_rgb(decode_image(encoded), request.get("crop", "none"))
                 transforms[name] = transform
                 frame[f"observation.images.{name}"] = torch.from_numpy(pixels.copy()).permute(2, 0, 1).float() / 255
+            image_end = time.monotonic()
             pre = self.native_pre if request.get("mode", "robot") == "native_fixture" else self.pre
             prepared = pre(frame)
             pre_end = time.monotonic()
@@ -167,14 +170,23 @@ class ModelRuntime:
             post_end = time.monotonic()
             if processed.ndim != 3 or processed.shape[0] != 1:
                 raise ValueError("Policy must produce exactly one B×T×D action chunk")
+            decode_started = time.monotonic()
+            chunk = processed[0].detach().float().cpu().tolist()
+            decode_end = time.monotonic()
             response = {key: request[key] for key in (
                 "protocol_version", "profile", "model_revision", "session_id", "sequence_id", "observation_time",
             )}
             response.update(
                 action_units="checkpoint_native" if request.get("mode", "robot") == "native_fixture" else "robot",
-                action_names=list(self.profile.action_names), chunk=processed[0].detach().float().cpu().tolist(),
-                timing={"preprocess_s": pre_end - started, "inference_s": infer_end - pre_end,
-                        "postprocess_s": post_end - infer_end, "total_s": post_end - started},
+                action_names=list(self.profile.action_names), chunk=chunk,
+                timing={"queue_wait_s": acquired - started,
+                        "modal_queue_s": None,  # dispatch before entry is not visible to this runtime
+                        "image_decode_transform_s": image_end - image_started,
+                        "state_reset_s": image_started - acquired,
+                        "preprocess_s": pre_end - image_end, "inference_s": infer_end - pre_end,
+                        "postprocess_s": post_end - infer_end,
+                        "response_conversion_s": decode_end - decode_started,
+                        "total_s": decode_end - started},
                 transforms=transforms, instance_id=self.instance_id,
                 payload_bytes=sum(len(image["data"]) for image in request["images"].values()),
                 saved_postprocessor_clamp=self.profile.id == "molmoact2",

@@ -35,6 +35,27 @@ def test_native_forward_pass_does_not_authorize_physical_mapping(policy, backend
         InferenceOptions(policy=policy, backend=backend).validate(motion=True)
 
 
+def test_modal_performance_gate_is_independent_of_source_mapping_and_readiness(monkeypatch):
+    from yamkit.inference.profiles import get_profile
+    from yamkit.remote_policy import YamkitRemoteConfig
+    from yamkit.remote_policy.modeling_yamkit_remote import YamkitRemotePolicy
+
+    metadata = get_profile("molmoact2").metadata()
+    assert metadata["mapping_verified"]
+    assert metadata["physical_validation"] == "not performed"
+    assert metadata["physical_modal_rollout_allowed"] is False
+    InferenceOptions("molmoact2", backend="modal").validate()  # probes/checks still available
+    with pytest.raises(ValueError, match="performance is unvalidated"):
+        InferenceOptions("molmoact2", backend="modal").validate(motion=True)
+    monkeypatch.setattr("yamkit.remote_policy.modeling_yamkit_remote.make_transport",
+                        lambda cfg: pytest.fail("gate must run before readiness or paid transport"))
+    with pytest.raises(ValueError, match="performance is unvalidated"):
+        YamkitRemotePolicy(YamkitRemoteConfig(modal_app="fake-app"))
+    result = CliRunner().invoke(app, ["rollout", "--backend", "modal", "--policy", "molmoact2",
+                                     "--task", "pick cube", "--rig", "/missing"])
+    assert result.exit_code != 0 and "BLOCKED" in result.output
+
+
 def test_profile_id_changes_with_configuration():
     a = InferenceOptions("molmoact2", backend="modal")
     b = InferenceOptions("molmoact2", backend="modal", center_crop=True)

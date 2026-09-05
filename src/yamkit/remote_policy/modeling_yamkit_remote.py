@@ -23,14 +23,18 @@ class YamkitRemotePolicy(PreTrainedPolicy):
     name = "yamkit_remote"
 
     def __init__(self, config: YamkitRemoteConfig, **kwargs):
+        from yamkit.inference.performance import require_physical_modal_rollout
         from yamkit.inference.profiles import get_profile
 
+        require_physical_modal_rollout()  # also guards direct upstream proxy construction
         super().__init__(config)
         config.validate_features()
         self.profile = get_profile(config.profile)
         self.profile.require_robot_mapping()
         self.transport = make_transport(config)
         self.on_fault = None
+        self.on_prediction_start = None
+        self.on_prediction_end = None
         self.session = RemoteSession(self.transport, self.profile, timeout_s=config.request_timeout_s,
                                      max_observation_age_s=config.max_observation_age_s)
         self._actions = deque(maxlen=self.profile.chunk_size)
@@ -85,11 +89,19 @@ class YamkitRemotePolicy(PreTrainedPolicy):
         return False
 
     def predict_action_chunk(self, batch, *, inference_delay=0, prev_chunk_left_over=None, **kwargs):
+        event = self.on_prediction_start() if self.on_prediction_start is not None else None
         try:
-            return self._predict_chunk(batch, **kwargs)
+            result = self._predict_chunk(batch, **kwargs)
+            if self.on_prediction_end is not None:
+                self.on_prediction_end(event, None)
+            return result
         except InvalidatedRequest:
+            if self.on_prediction_end is not None:
+                self.on_prediction_end(event, "invalidated")
             raise
         except Exception:
+            if self.on_prediction_end is not None:
+                self.on_prediction_end(event, "prediction_failed")
             if self.on_fault is not None:
                 self.on_fault()
             raise
@@ -106,14 +118,20 @@ class YamkitRemotePolicy(PreTrainedPolicy):
         if state.shape != (1, len(self.profile.state_names)) or not torch.isfinite(state).all():
             raise RemoteFault("Remote state must have exactly one finite ordered observation")
         images = {}
+        transform_s = 0.0
+        serialization_s = 0.0
         for name in self.profile.image_keys:
+            transform_started = time.monotonic()
             value = batch[f"observation.images.{name}"].detach().cpu()
             if value.ndim != 4 or value.shape[0] != 1 or value.shape[1] != 3:
                 raise RemoteFault("Remote images must have shape [1, 3, height, width]")
             if not torch.isfinite(value).all() or value.min() < 0 or value.max() > 1:
                 raise RemoteFault("Remote images must be finite RGB in [0, 1]")
             rgb = (value[0].permute(1, 2, 0).numpy() * 255).round().astype(np.uint8)
+            encoded_at = time.monotonic()
+            transform_s += encoded_at - transform_started
             images[name] = encode_image(rgb)
+            serialization_s += time.monotonic() - encoded_at
         task = batch.get("task", [""])
         if not isinstance(task, (list, tuple)) or len(task) != 1 or not isinstance(task[0], str):
             raise RemoteFault("Remote inference requires exactly one task string")
@@ -123,8 +141,13 @@ class YamkitRemotePolicy(PreTrainedPolicy):
                                       observation_time=observation_time,
                                       crop="center_16_9" if self.config.center_crop else "none")
         self.session.samples[-1]["encoding_s"] = encoding_s
+        self.session.samples[-1]["image_tensor_transform_s"] = transform_s
+        self.session.samples[-1]["image_serialization_s"] = serialization_s
         self._actions_expire_at = observation_time + self.config.max_observation_age_s
-        return torch.tensor(result["chunk"], dtype=torch.float32).unsqueeze(0)
+        decoded_at = time.monotonic()
+        actions = torch.tensor(result["chunk"], dtype=torch.float32).unsqueeze(0)
+        self.session.samples[-1]["response_tensor_decode_s"] = time.monotonic() - decoded_at
+        return actions
 
     def select_action(self, batch, **kwargs):
         if self._actions and self._actions_expire_at is not None and time.monotonic() >= self._actions_expire_at:
