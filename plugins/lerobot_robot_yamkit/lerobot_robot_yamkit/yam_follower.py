@@ -9,6 +9,8 @@ is far from the follower produces a bounded-speed move instead of a jump.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
+from dataclasses import replace
 from functools import cached_property
 
 import numpy as np
@@ -16,15 +18,31 @@ from lerobot.cameras import make_cameras_from_configs
 from lerobot.lerobot_types import RobotAction, RobotObservation
 from lerobot.robots.robot import Robot
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
+from lerobot.utils.errors import DeviceNotConnectedError
 
 from yamkit.arm import YamArm, go_home_all, resolve_channel
 from yamkit.cameras import camera_configs_from_dicts
 from yamkit.config import N_JOINTS, RigConfig
+from yamkit.validation import finite_scalar
 
 from .config_yam_follower import BiYamFollowerConfig, YamFollowerConfig
 
 logger = logging.getLogger(__name__)
 JOINT_NAMES = [f"joint_{i}" for i in range(1, N_JOINTS + 1)]
+
+
+def _validate_rig(rig: RigConfig) -> None:
+    problems = rig.validate()
+    if problems:
+        raise ValueError("invalid rig: " + "; ".join(problems))
+
+
+def _validate_action_keys(action: Mapping, expected: Mapping) -> None:
+    if not isinstance(action, Mapping):
+        raise TypeError("action must be a mapping of named scalar targets")
+    missing, extra = set(expected) - set(action), set(action) - set(expected)
+    if missing or extra:
+        raise ValueError(f"action fields do not match: missing={sorted(missing, key=str)}, extra={sorted(extra, key=str)}")
 
 
 class _FollowerHandle:
@@ -35,8 +53,13 @@ class _FollowerHandle:
         if self.spec.role != "follower":
             raise ValueError(f"{arm_name!r} is a {self.spec.role}, expected a follower")
         self.names = JOINT_NAMES + (["gripper"] if self.spec.has_motor_gripper else [])
-        self.max_joint_speed = rig.control.max_joint_speed if max_joint_speed is None else max_joint_speed
-        self.max_gripper_speed = rig.control.max_gripper_speed if max_gripper_speed is None else max_gripper_speed
+        control = replace(
+            rig.control,
+            max_joint_speed=rig.control.max_joint_speed if max_joint_speed is None else max_joint_speed,
+            max_gripper_speed=rig.control.max_gripper_speed if max_gripper_speed is None else max_gripper_speed,
+        )
+        self.max_joint_speed = control.max_joint_speed
+        self.max_gripper_speed = control.max_gripper_speed
         self.home_speed = rig.control.home_speed  # arms park at home on connect/disconnect (0 = off)
         self.arm: YamArm | None = None
 
@@ -49,6 +72,8 @@ class _FollowerHandle:
         return (self.arm, {"speed": self.home_speed}) if self.arm is not None and self.home_speed > 0 else None
 
     def connect(self, home: bool = True) -> None:
+        if self.arm is not None:
+            raise RuntimeError(f"{self.spec.name}: already open")
         self.arm = YamArm.connect(self.spec, resolve_channel(self.spec), max_joint_speed=self.max_joint_speed, max_gripper_speed=self.max_gripper_speed)
         if home and self.home_job:
             self.arm.go_home(self.home_speed)
@@ -57,36 +82,71 @@ class _FollowerHandle:
         st = self.arm.read()
         obs = {f"{n}.pos": float(v) for n, v in zip(JOINT_NAMES, st.q)}
         if self.spec.has_motor_gripper:
-            obs["gripper.pos"] = float(st.gripper if st.gripper is not None else 1.0)
+            if st.gripper is None:
+                raise ValueError(f"{self.spec.name}: measured gripper is missing")
+            obs["gripper.pos"] = float(st.gripper)
         return obs
 
+    def target(self, action: dict[str, float]) -> tuple[np.ndarray, float | None]:
+        _validate_action_keys(action, self.features)
+        values = [finite_scalar(action[name], f"{name}: target") for name in self.features]
+        return np.asarray(values[:N_JOINTS]), values[-1] if self.spec.has_motor_gripper else None
+
     def send(self, action: dict[str, float]) -> dict[str, float]:
-        q = np.array([float(action[f"{n}.pos"]) for n in JOINT_NAMES], dtype=float)
-        g = action.get("gripper.pos")
-        sent = self.arm.command(q, None if g is None else float(g))
+        q, g = self.target(action)
+        sent = self.arm.command(q, g)
         return {f"{n}.pos": float(v) for n, v in zip(self.names, sent)}
 
     def disconnect(self, home: bool = True) -> None:
         if self.arm is None:
             return
+        arm = self.arm
         try:
-            if home and self.home_job:
-                self.arm.go_home(self.home_speed)
-        except KeyboardInterrupt:
-            logger.warning("%s: home move aborted — releasing here", self.spec.name)
+            if home and self.home_speed > 0:
+                arm.go_home(self.home_speed)
         finally:
-            self.arm.close()
-            self.arm = None
+            try:
+                arm.close()
+            finally:
+                if arm._closed:
+                    self.arm = None
 
 
 def _home_together(handles) -> None:
     """Park several arms at the same time (used by the bimanual robot/teleoperator)."""
     jobs = [h.home_job for h in handles if h.home_job]
     if jobs:
+        go_home_all(jobs)
+
+
+def _disconnect(handles, opened_cameras: list, *, home: bool) -> None:
+    """Attempt every resource even if homing, camera cleanup or cancellation fails."""
+    errors: list[BaseException] = []
+    failed_cameras = []
+    while opened_cameras:
+        cam = opened_cameras.pop()
         try:
-            go_home_all(jobs)
-        except KeyboardInterrupt:
-            logger.warning("home move aborted — releasing the arms where they are")
+            cam.disconnect()
+        except DeviceNotConnectedError:
+            pass  # LeRobot may already have cleaned up its own failed connect.
+        except BaseException as e:  # noqa: BLE001 — re-raised after every resource is attempted
+            errors.append(e)
+            failed_cameras.append(cam)
+    opened_cameras.extend(reversed(failed_cameras))  # retain failed resources so teardown can retry
+    if home and not errors:
+        try:
+            _home_together(handles)
+        except BaseException as e:  # noqa: BLE001 — re-raised after every resource is attempted
+            errors.append(e)
+    for h in handles:
+        try:
+            h.disconnect(home=False)
+        except BaseException as e:  # noqa: BLE001 — re-raised after every resource is attempted
+            errors.append(e)
+    if errors:
+        for e in errors[1:]:
+            logger.error("additional cleanup failure: %s", e, exc_info=(type(e), e, e.__traceback__))
+        raise errors[0]
 
 
 def _rig_cameras(rig: RigConfig, config) -> dict:
@@ -103,9 +163,11 @@ class YamFollower(Robot):
         super().__init__(config)
         self.config = config
         self.rig = RigConfig.load(config.rig)
+        _validate_rig(self.rig)
         self._h = _FollowerHandle(self.rig, config.arm, config.max_joint_speed, config.max_gripper_speed)
         self.camera_configs = _rig_cameras(self.rig, config)
         self.cameras = make_cameras_from_configs(self.camera_configs)
+        self._opened_cameras: list = []
 
     @property
     def _motors_ft(self) -> dict[str, type]:
@@ -129,12 +191,19 @@ class YamFollower(Robot):
 
     @check_if_already_connected
     def connect(self, calibrate: bool = True) -> None:
-        self._h.connect()
+        _validate_rig(self.rig)
+        if self._h.arm is not None or self._opened_cameras:
+            raise RuntimeError("previous resources remain open; call disconnect(home=False) before reconnecting")
         try:
+            self._h.connect()
             for cam in self.cameras.values():
+                self._opened_cameras.append(cam)  # include a camera whose connect fails partway
                 cam.connect()
-        except Exception:
-            self._h.disconnect()
+        except BaseException:
+            try:
+                self.disconnect(home=False)
+            except BaseException:
+                logger.exception("cleanup after follower startup failure")
             raise
         logger.info("%s connected on %s", self, self._h.arm.channel)
 
@@ -159,11 +228,9 @@ class YamFollower(Robot):
     def send_action(self, action: RobotAction) -> RobotAction:
         return self._h.send(action)
 
-    @check_if_not_connected
-    def disconnect(self) -> None:
-        for cam in self.cameras.values():
-            cam.disconnect()
-        self._h.disconnect()
+    def disconnect(self, *, home: bool = True) -> None:
+        """Release all resources; ``home=False`` skips the normal return-home move."""
+        _disconnect([self._h], self._opened_cameras, home=home)
         logger.info("%s disconnected", self)
 
 
@@ -177,12 +244,16 @@ class BiYamFollower(Robot):
         super().__init__(config)
         self.config = config
         self.rig = RigConfig.load(config.rig)
+        _validate_rig(self.rig)
+        if config.left == config.right:
+            raise ValueError("bimanual follower needs two different arms")
         self._sides = {
             "left": _FollowerHandle(self.rig, config.left, config.max_joint_speed, config.max_gripper_speed),
             "right": _FollowerHandle(self.rig, config.right, config.max_joint_speed, config.max_gripper_speed),
         }
         self.camera_configs = _rig_cameras(self.rig, config)
         self.cameras = make_cameras_from_configs(self.camera_configs)
+        self._opened_cameras: list = []
 
     @property
     def _motors_ft(self) -> dict[str, type]:
@@ -206,17 +277,21 @@ class BiYamFollower(Robot):
 
     @check_if_already_connected
     def connect(self, calibrate: bool = True) -> None:
-        connected = []
+        _validate_rig(self.rig)
+        if any(h.arm is not None for h in self._sides.values()) or self._opened_cameras:
+            raise RuntimeError("previous resources remain open; call disconnect(home=False) before reconnecting")
         try:
             for h in self._sides.values():
                 h.connect(home=False)
-                connected.append(h)
-            _home_together(connected)  # both arms park at the same time
+            _home_together(self._sides.values())  # both arms park at the same time
             for cam in self.cameras.values():
+                self._opened_cameras.append(cam)
                 cam.connect()
-        except Exception:
-            for h in connected:
-                h.disconnect(home=False)
+        except BaseException:
+            try:
+                self.disconnect(home=False)
+            except BaseException:
+                logger.exception("cleanup after bimanual follower startup failure")
             raise
         logger.info("%s connected (%s)", self, ", ".join(f"{s}={h.arm.channel}" for s, h in self._sides.items()))
 
@@ -241,17 +316,21 @@ class BiYamFollower(Robot):
 
     @check_if_not_connected
     def send_action(self, action: RobotAction) -> RobotAction:
+        _validate_action_keys(action, self.action_features)
+        actions = {
+            side: {k: action[f"{side}_{k}"] for k in h.features}
+            for side, h in self._sides.items()
+        }
+        # Check every target and every arm's measured/previous state before either can move.
+        # command() still revalidates its own state immediately before sending to the SDK.
+        for side, h in self._sides.items():
+            h.arm.validate_command(*h.target(actions[side]))
         out: dict = {}
         for side, h in self._sides.items():
-            sub = {k.removeprefix(f"{side}_"): v for k, v in action.items() if k.startswith(f"{side}_")}
-            out.update({f"{side}_{k}": v for k, v in h.send(sub).items()})
+            out.update({f"{side}_{k}": v for k, v in h.send(actions[side]).items()})
         return out
 
-    @check_if_not_connected
-    def disconnect(self) -> None:
-        for cam in self.cameras.values():
-            cam.disconnect()
-        _home_together(self._sides.values())  # both arms park at the same time
-        for h in self._sides.values():
-            h.disconnect(home=False)
+    def disconnect(self, *, home: bool = True) -> None:
+        """Release all resources; ``home=False`` skips the normal return-home move."""
+        _disconnect(self._sides.values(), self._opened_cameras, home=home)
         logger.info("%s disconnected", self)
