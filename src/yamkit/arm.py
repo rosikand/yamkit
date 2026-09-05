@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -19,10 +20,12 @@ from typing import Any, Self
 import numpy as np
 
 from .config import N_JOINTS, ArmSpec
+from .validation import finite_scalar, finite_vector, vendor_joint_limits
 
 log = logging.getLogger(__name__)
 
-STALE_COMMAND_S = 0.5  # after this long without commands, ramp restarts from the measured pose
+STALE_COMMAND_S = 0.5  # ramp reset only, NOT a watchdog: SDK threads can keep transmitting
+MAX_COMMAND_DT = 0.01  # never accumulate a backlog of movement during an application stall
 COMPLIANT_KP_SCALE = 0.15  # gains for moving a leader home: gentle enough that a hand on the handle wins
 COMPLIANT_KD_SCALE = 0.3
 HOME_MIN_S = 0.5  # shortest go_home move, so a tiny correction is still a visible glide
@@ -52,17 +55,27 @@ class YamArm:
         max_joint_speed: float = 3.0,
         max_gripper_speed: float = 3.0,
     ) -> None:
+        spec.validate()
         self.spec = spec
+        self._ownership = None
         self.channel = channel
         self._robot = robot
-        self.max_joint_speed = float(max_joint_speed)
-        self.max_gripper_speed = float(max_gripper_speed)
+        self.max_joint_speed = finite_scalar(max_joint_speed, "max_joint_speed", positive=True)
+        self.max_gripper_speed = finite_scalar(max_gripper_speed, "max_gripper_speed", positive=True)
         self._n_dofs = int(robot.num_dofs())
+        if self._n_dofs != spec.n_dofs:
+            raise ValueError(f"{spec.name}: SDK has {self._n_dofs} DOFs, expected {spec.n_dofs}")
         info = robot.get_robot_info()
-        self.default_kp = np.array(info["kp"], dtype=float)
-        self.default_kd = np.array(info["kd"], dtype=float)
+        self.default_kp = finite_vector(info["kp"], self.n_dofs, "SDK kp")
+        self.default_kd = finite_vector(info["kd"], self.n_dofs, "SDK kd")
+        if np.any(self.default_kp < 0) or np.any(self.default_kd < 0):
+            raise ValueError(f"{spec.name}: SDK gains must be nonnegative")
+        self._raw_limits = joint_limits(spec)
+        reported = info.get("joint_limits")
+        if reported is not None and not np.array_equal(reported, self._raw_limits):
+            raise ValueError(f"{spec.name}: SDK joint limits differ from the vendored configuration")
         self.gripper_limits = info.get("gripper_limits")
-        self._offsets = np.asarray(spec.joint_offsets, dtype=float) if spec.joint_offsets else None
+        self._offsets = np.asarray(spec.joint_offsets, dtype=float) if spec.joint_offsets is not None else None
         self._last_cmd: np.ndarray | None = None
         self._last_cmd_t: float | None = None
         self._gains_zeroed = False
@@ -88,24 +101,53 @@ class YamArm:
         from i2rt.robots.get_robot import get_yam_robot
         from i2rt.robots.utils import ArmType, GripperType
 
-        log.info("connecting %s (%s, %s) on %s", spec.name, spec.arm_type, spec.gripper, channel)
-        robot = get_yam_robot(
-            channel=channel,
-            arm_type=ArmType.from_string_name(spec.arm_type),
-            gripper_type=GripperType.from_string_name(spec.gripper),
-            zero_gravity_mode=zero_gravity,
-            gripper_limits_override=np.asarray(spec.gripper_limits, dtype=float) if spec.gripper_limits else None,
-        )
-        arm = cls(spec, channel, robot, max_joint_speed=max_joint_speed, max_gripper_speed=max_gripper_speed)
-        if spec.has_handle:
-            deadline = time.monotonic() + encoder_timeout_s
-            while robot.motor_chain.get_same_bus_device_states() is None:
-                if time.monotonic() > deadline:
+        from .ownership import ArmOwnership
+
+        spec.validate()
+        finite_scalar(max_joint_speed, "max_joint_speed", positive=True)
+        finite_scalar(max_gripper_speed, "max_gripper_speed", positive=True)
+        finite_scalar(encoder_timeout_s, "encoder_timeout_s", positive=True)
+        # Validate the home target and alignment before the SDK can activate motors.
+        limits = joint_limits(spec)
+        offsets = np.zeros(N_JOINTS) if spec.joint_offsets is None else np.asarray(spec.joint_offsets)
+        check_joint_bounds(np.asarray(spec.home_pose) - offsets, limits, f"{spec.name}: home pose")
+        lease = ArmOwnership.acquire(channel)
+        robot = arm = None
+        try:
+            log.info("connecting %s (%s, %s) on %s", spec.name, spec.arm_type, spec.gripper, channel)
+            robot = get_yam_robot(
+                channel=channel,
+                arm_type=ArmType.from_string_name(spec.arm_type),
+                gripper_type=GripperType.from_string_name(spec.gripper),
+                zero_gravity_mode=zero_gravity,
+                gripper_limits_override=np.asarray(spec.gripper_limits, dtype=float) if spec.gripper_limits is not None else None,
+            )
+            arm = cls(spec, channel, robot, max_joint_speed=max_joint_speed, max_gripper_speed=max_gripper_speed)
+            arm._ownership = lease
+            if spec.has_handle:
+                deadline = time.monotonic() + encoder_timeout_s
+                while robot.motor_chain.get_same_bus_device_states() is None:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError(f"{spec.name}: teaching-handle encoder never reported on {channel}")
+                    time.sleep(0.02)
+            state = arm.read()
+            arm._check_target(arm._measured_vector(state), "measured state; operator recovery required")
+            log.info("%s connected: q=%s", spec.name, np.round(state.q, 3))
+            return arm
+        except BaseException as error:
+            try:
+                if arm is not None:
                     arm.close()
-                    raise TimeoutError(f"{spec.name}: teaching-handle encoder never reported on {channel}")
-                time.sleep(0.02)
-        log.info("%s connected: q=%s", spec.name, np.round(arm.read().q, 3))
-        return arm
+                elif robot is not None:
+                    robot.close()
+                    lease.release()
+                else:
+                    # The SDK factory cleans its partially initialized resources before raising.
+                    if not getattr(error, "_yamkit_cleanup_failed", False):
+                        lease.release()
+            except BaseException:
+                log.exception("%s: startup cleanup failed; retaining ownership until process exit", spec.name)
+            raise
 
     # ----- properties -----------------------------------------------------------------------
     @property
@@ -118,137 +160,209 @@ class YamArm:
 
     @property
     def robot(self) -> Any:
+        self._ensure_open()
         return self._robot
 
     @property
     def home_pose(self) -> np.ndarray:
-        return np.asarray(self.spec.home_pose, dtype=float)
+        return finite_vector(self.spec.home_pose, N_JOINTS, f"{self.name}: home pose")
 
     # ----- reading --------------------------------------------------------------------------
+    def _ensure_open(self) -> None:
+        if self._ownership is not None:
+            self._ownership.check_owner()
+        if self._closed:
+            raise RuntimeError(f"{self.name}: arm is closed")
+
     def read(self) -> ArmState:
+        self._ensure_open()
         obs = self._robot.get_observations()
-        q = np.asarray(obs["joint_pos"], dtype=float)[:N_JOINTS]
+        q = finite_vector(obs["joint_pos"], N_JOINTS, f"{self.name}: measured joints")
         if self._offsets is not None:
             q = q + self._offsets
-        qd = np.asarray(obs["joint_vel"], dtype=float)[:N_JOINTS]
-        tau = np.asarray(obs["joint_eff"], dtype=float)[:N_JOINTS]
+        qd = finite_vector(obs["joint_vel"], N_JOINTS, f"{self.name}: measured velocities")
+        tau = finite_vector(obs["joint_eff"], N_JOINTS, f"{self.name}: measured efforts")
         gripper: float | None = None
         buttons: tuple[bool, ...] | None = None
-        if self.spec.has_motor_gripper and "gripper_pos" in obs:
-            gripper = float(np.clip(obs["gripper_pos"][0], 0.0, 1.0))
+        if self.spec.has_motor_gripper:
+            gripper = float(finite_vector(obs.get("gripper_pos"), 1, f"{self.name}: measured gripper")[0])
         elif self.spec.has_handle:
             enc = self._robot.motor_chain.get_same_bus_device_states()
             if enc:
-                gripper = float(np.clip(1.0 - enc[0].position, 0.0, 1.0))  # trigger released -> open (1)
+                position = finite_scalar(enc[0].position, f"{self.name}: handle position")
+                gripper = float(np.clip(1.0 - position, 0.0, 1.0))
                 buttons = tuple(bool(b) for b in enc[0].io_inputs)
         return ArmState(t=time.time(), q=q, qd=qd, tau=tau, gripper=gripper, buttons=buttons)
 
     # ----- commanding -----------------------------------------------------------------------
-    def _full_target(self, q: np.ndarray, gripper: float | None) -> np.ndarray:
-        q = np.asarray(q, dtype=float).reshape(-1)[:N_JOINTS]
-        if q.shape[0] != N_JOINTS:
-            raise ValueError(f"{self.name}: expected {N_JOINTS} joint values, got {q.shape[0]}")
+    def _to_raw(self, target: np.ndarray) -> np.ndarray:
+        raw = target.copy()
+        if self._offsets is not None:
+            raw[:N_JOINTS] -= self._offsets
+        return raw
+
+    def _measured_vector(self, state: ArmState) -> np.ndarray:
+        # A teaching handle is an input, not a seventh motor.
+        return np.concatenate([state.q, [state.gripper]]) if self.spec.has_motor_gripper else state.q.copy()
+
+    def _check_target(self, target, label: str) -> np.ndarray:
+        target = finite_vector(target, self.n_dofs, f"{self.name}: {label}")
+        check_joint_bounds(self._to_raw(target)[:N_JOINTS], self._raw_limits, f"{self.name}: {label}")
+        if self.spec.has_motor_gripper and not 0 <= target[-1] <= 1:
+            raise ValueError(f"{self.name}: {label}: gripper must be in [0, 1]; operator recovery required for measured state")
+        return target
+
+    def _full_target(self, q, gripper: float | None, measured: np.ndarray) -> np.ndarray:
+        q = finite_vector(q, N_JOINTS, f"{self.name}: joint target")
+        if gripper is not None:
+            gripper = finite_scalar(gripper, f"{self.name}: gripper target")
+            if not 0 <= gripper <= 1:
+                raise ValueError(f"{self.name}: gripper target must be in [0, 1]")
         if not self.spec.has_motor_gripper:
             return q
         if gripper is None:
-            cur = self._last_cmd[-1] if self._last_cmd is not None else self.read().gripper
-            gripper = 1.0 if cur is None else cur
-        return np.concatenate([q, [float(np.clip(gripper, 0.0, 1.0))]])
+            gripper = self._last_cmd[-1] if self._last_cmd is not None else measured[-1]
+        return np.concatenate([q, [gripper]])
 
-    def _to_raw(self, target: np.ndarray) -> np.ndarray:
-        """Aligned frame → the motors' own frame (undo `joint_offsets`)."""
-        if self._offsets is None:
-            return target
-        raw = target.copy()
-        raw[:N_JOINTS] -= self._offsets
-        return raw
+    def _prepare_command(self, q, gripper, limit_speed):
+        self._ensure_open()
+        if not isinstance(limit_speed, bool):
+            raise ValueError("limit_speed must be a bool")  # noqa: TRY004 — uniform command rejection API
+        finite_scalar(self.max_joint_speed, "max_joint_speed", positive=True)
+        finite_scalar(self.max_gripper_speed, "max_gripper_speed", positive=True)
+        if self._gains_zeroed:
+            for name, gains in (("default kp", self.default_kp), ("default kd", self.default_kd)):
+                if np.any(finite_vector(gains, self.n_dofs, name) < 0):
+                    raise ValueError(f"{name}: gains must be nonnegative")
+        # Always check measurements and previous targets, including unlimited commands.
+        measured = self._check_target(self._measured_vector(self.read()), "measured state; operator recovery required")
+        if self._last_cmd is not None:
+            self._check_target(self._last_cmd, "previous target")
+        if self._last_cmd_t is not None:
+            finite_scalar(self._last_cmd_t, "previous command time")
+            if self._last_cmd_t > time.monotonic():
+                raise ValueError(f"{self.name}: previous command time is in the future")
+        target = self._check_target(self._full_target(q, gripper, measured), "target")
+        return target, measured
+
+    def validate_command(self, q, gripper: float | None = None, *, limit_speed: bool = True) -> np.ndarray:
+        """Validate target, measurements and previous target without sending or changing gains.
+
+        Bimanual callers validate both arms before issuing either command. This is preflight,
+        not an atomic two-arm transaction: a hardware fault can still occur during execution.
+        """
+        return self._prepare_command(q, gripper, limit_speed)[0]
 
     def command(self, q: np.ndarray, gripper: float | None = None, *, limit_speed: bool = True) -> np.ndarray:
-        """Command joint targets (rad) and gripper (0..1). Returns the target actually sent."""
-        if self._gains_zeroed:
-            self.restore_gains()
-        target = self._full_target(q, gripper)
+        """Reject invalid/out-of-bounds values; return the (optionally speed-clamped) target sent."""
+        target, measured = self._prepare_command(q, gripper, limit_speed)
         now = time.monotonic()
         if limit_speed:
-            fresh = self._last_cmd is None or self._last_cmd_t is None or now - self._last_cmd_t > STALE_COMMAND_S
-            if fresh:
-                prev = self.read().vector()
-                dt = 0.01
-            else:
-                prev = self._last_cmd
-                dt = max(now - self._last_cmd_t, 1e-3)
+            age = None if self._last_cmd_t is None else now - self._last_cmd_t
+            if age is not None and age < 0:
+                raise ValueError(f"{self.name}: previous command time is in the future")
+            fresh = self._last_cmd is None or age is None or age > STALE_COMMAND_S
+            prev = measured if fresh else self._last_cmd
+            dt = MAX_COMMAND_DT if fresh else min(age, MAX_COMMAND_DT)
             step = np.full_like(target, self.max_joint_speed * dt)
             if self.spec.has_motor_gripper:
                 step[-1] = self.max_gripper_speed * dt
-            target = prev + np.clip(target - prev, -step, step)
+            target = self._check_target(prev + np.clip(target - prev, -step, step), "limited target")
+        # Replace any obsolete SDK target before restoring PD gains.
         self._robot.command_joint_pos(self._to_raw(target))
+        if self._gains_zeroed:
+            self.restore_gains()
+            self._robot.command_joint_pos(self._to_raw(target))
         self._last_cmd, self._last_cmd_t = target.copy(), now
         return target
 
     def move_to(self, q: np.ndarray, gripper: float | None = None, duration: float = 3.0, hz: float = 100.0, stop: threading.Event | None = None) -> None:
-        """Blocking linear interpolation from the measured pose to the target (`stop` ends it early)."""
-        start = self.read().vector()
-        target = self._full_target(q, gripper)
-        if start.shape != target.shape:  # arm without gripper
-            target = target[: start.shape[0]]
-        steps = max(int(duration * hz), 1)
-        for i in range(1, steps + 1):
+        """Move to a validated target; extend duration to respect configured target speeds.
+
+        Each interpolation step earns at most one period of elapsed time. A late wakeup
+        cannot trigger a catch-up jump. A stop event ends the move before the next command.
+        """
+        duration = finite_scalar(duration, "duration", positive=True)
+        hz = finite_scalar(hz, "hz", positive=True)
+        target, start = self._prepare_command(q, gripper, False)
+        delta = target - start
+        duration = max(duration, float(np.max(np.abs(delta[:N_JOINTS]))) / self.max_joint_speed)
+        if self.spec.has_motor_gripper:
+            duration = max(duration, abs(float(delta[-1])) / self.max_gripper_speed)
+        elapsed = 0.0
+        period = 1.0 / hz
+        previous_t = time.monotonic()
+        while elapsed < duration:
             if stop is not None and stop.is_set():
                 return
-            a = i / steps
-            self.command((1 - a) * start[:N_JOINTS] + a * target[:N_JOINTS],
-                         (1 - a) * start[-1] + a * target[-1] if self.spec.has_motor_gripper else None,
-                         limit_speed=False)
-            time.sleep(1.0 / hz)
+            delay = min(period, duration - elapsed)
+            if stop is not None:
+                if stop.wait(delay):
+                    return
+            else:
+                time.sleep(delay)
+            now = time.monotonic()
+            elapsed = min(duration, elapsed + min(max(now - previous_t, 0.0), delay))
+            previous_t = now
+            value = start + min(elapsed / duration, 1.0) * delta
+            # Bounds/state/gains validation still applies; interpolation enforces target speed.
+            self.command(value[:N_JOINTS], value[-1] if self.spec.has_motor_gripper else None, limit_speed=False)
 
     def hold(self) -> None:
-        """Hold the current measured pose under PD control."""
-        st = self.read()
-        self.command(st.q, st.gripper, limit_speed=False)
+        """Replace the old target with the measured pose before restoring any zeroed gains."""
+        state = self.read()
+        self.command(state.q, state.gripper if self.spec.has_motor_gripper else None, limit_speed=False)
 
     def go_home(self, speed: float = 0.5, *, compliant: bool = False, release: bool = False, stop: threading.Event | None = None) -> float:
-        """Move slowly to the home pose (`rest_pose`, default all joints 0 = folded). Blocking.
-
-        The move takes max|Δq| / `speed` (rad/s), at least 0.5 s; the gripper is left where it is.
-        `compliant` uses low gains so a hand holding the arm wins (leaders); `release` holds the target
-        for `HOME_SETTLE_S` and then leaves the arm in gravity-compensation idle (a compliant arm lags
-        the ramp, so without the pause it would be let go short of home). A KeyboardInterrupt, or a set
-        `stop` event (used when several arms move at once), releases the arm where it is; the interrupt
-        propagates so the caller can skip every remaining move. Returns how far (rad) the arm had to move."""
-        target = self.home_pose
-        dist = float(np.max(np.abs(self.read().q - target)))
-        duration = max(dist / max(float(speed), 1e-6), HOME_MIN_S)
-        log.info("%s: moving home, %.2f rad away over %.1f s%s", self.name, dist, duration, " (compliant)" if compliant else "")
-        if compliant:
-            self.scale_gains(COMPLIANT_KP_SCALE, COMPLIANT_KD_SCALE)
+        """Move home at no more than configured target speed; release on cancellation/error."""
+        speed = finite_scalar(speed, "home speed", positive=True)
+        state = self.read()
+        target, measured = self._prepare_command(self.home_pose, state.gripper if self.spec.has_motor_gripper else None, False)
+        dist = float(np.max(np.abs(measured[:N_JOINTS] - target[:N_JOINTS])))
+        duration = max(dist / min(speed, self.max_joint_speed), HOME_MIN_S)
+        if stop is not None and stop.is_set():
+            self.gravity_idle()
+            return dist
+        log.info("%s: moving home, %.2f rad over at least %.1f s", self.name, dist, duration)
         try:
-            self.move_to(target, None, duration=duration, stop=stop)
-            if stop is not None and stop.is_set():
-                log.warning("%s: home move stopped — releasing here", self.name)
-                self.gravity_idle()
-                return dist
-            if release:  # let a lagging (compliant) arm catch up with the target
+            if compliant:
+                # The SDK gain setter updates defaults only; hold installs the measured
+                # target with these low gains, avoiding a full-gain pulse on the leader.
+                self.scale_gains(COMPLIANT_KP_SCALE, COMPLIANT_KD_SCALE)
+                self.hold()
+            self.move_to(target[:N_JOINTS], target[-1] if self.spec.has_motor_gripper else None, duration=duration, stop=stop)
+            if release:
                 if stop is not None:
                     stop.wait(HOME_SETTLE_S)
                 else:
                     time.sleep(HOME_SETTLE_S)
-        except KeyboardInterrupt:
-            log.warning("%s: home move interrupted — releasing here", self.name)
-            self.gravity_idle()
+        except BaseException:
+            try:
+                self.gravity_idle()
+                if compliant:
+                    self.restore_gains()
+            except BaseException:
+                log.exception("%s: could not release after failed home move", self.name)
             raise
-        finally:
-            if compliant:
-                self.restore_gains()
-        if release:
+        if release or (stop is not None and stop.is_set()):
             self.gravity_idle()
+        if compliant:
+            self.restore_gains()
         return dist
 
     # ----- gains / modes --------------------------------------------------------------------
     def set_gains(self, kp: np.ndarray, kd: np.ndarray) -> None:
-        self._robot.update_kp_kd(np.asarray(kp, dtype=float), np.asarray(kd, dtype=float))
-        self._gains_zeroed = bool(np.all(np.asarray(kp) == 0))
+        self._ensure_open()
+        kp = finite_vector(kp, self.n_dofs, "kp")
+        kd = finite_vector(kd, self.n_dofs, "kd")
+        if np.any(kp < 0) or np.any(kd < 0):
+            raise ValueError("gains must be nonnegative")
+        self._robot.update_kp_kd(kp, kd)
+        self._gains_zeroed = bool(np.all(kp == 0))
 
     def scale_gains(self, kp_scale: float, kd_scale: float = 0.0) -> None:
+        kp_scale = finite_scalar(kp_scale, "kp_scale", minimum=0)
+        kd_scale = finite_scalar(kd_scale, "kd_scale", minimum=0)
         self.set_gains(self.default_kp * kp_scale, self.default_kd * kd_scale)
 
     def restore_gains(self) -> None:
@@ -256,40 +370,44 @@ class YamArm:
 
     def gravity_idle(self) -> None:
         """Compliant, gravity-compensated (the mode the arm starts in)."""
+        self._ensure_open()
         self._robot.enter_gravity_comp_idle()
         self._last_cmd = self._last_cmd_t = None
 
     def zero_torque(self) -> None:
+        self._ensure_open()
         self._robot.zero_torque_mode()
         self._gains_zeroed = True
         self._last_cmd = self._last_cmd_t = None
 
     def info(self) -> dict[str, Any]:
+        self._ensure_open()
         return self._robot.get_robot_info()
 
     # ----- teardown -------------------------------------------------------------------------
     def close(self, settle_s: float = 0.2) -> None:
         if self._closed:
             return
-        self._closed = True
+        self._ensure_open()
+        settle_s = finite_scalar(settle_s, "settle_s", minimum=0)
+        errors: list[BaseException] = []
         try:
             self._robot.enter_gravity_comp_idle()
             time.sleep(settle_s)
-        except Exception:
-            log.exception("%s: could not enter gravity idle before close", self.name)
-        # Ordered shutdown (the vendor's close() races its own threads and logs spurious errors):
-        # 1. stop the MotorChainRobot server thread, 2. stop the chain's CAN loop, 3. close the socket.
-        stop = getattr(self._robot, "_stop_event", None)
-        server = getattr(self._robot, "_server_thread", None)
-        if stop is not None:
-            stop.set()
-        if server is not None and server.is_alive():
-            server.join(timeout=2.0)
-        chain = getattr(self._robot, "motor_chain", None)
-        if chain is not None and hasattr(chain, "running"):
-            chain.running = False
-            time.sleep(0.05)
-        self._robot.close()
+        except BaseException as exc:  # noqa: BLE001 — finish cleanup, then re-raise
+            errors.append(exc)
+        # SDK close stops and joins both transmitters before closing the CAN socket.
+        # A failed SDK close retains the lease and allows another close attempt.
+        try:
+            self._robot.close()
+        except BaseException as exc:  # noqa: BLE001 — finish cleanup, then re-raise
+            errors.append(exc)
+        else:
+            self._closed = True
+            if self._ownership is not None:
+                self._ownership.release()
+        if errors:
+            raise errors[0]
         log.info("%s closed", self.name)
 
     def __enter__(self) -> Self:
@@ -299,30 +417,80 @@ class YamArm:
         self.close()
 
 
+def joint_limits(spec: ArmSpec) -> np.ndarray:
+    """Raw motor-coordinate bounds, exactly as configured by the pinned SDK."""
+    return vendor_joint_limits(spec.arm_type, spec.gripper).copy()
+
+
+def check_joint_bounds(raw: np.ndarray, limits: np.ndarray, label: str) -> None:
+    outside = (raw < limits[:, 0]) | (raw > limits[:, 1])
+    if np.any(outside):
+        indices = (np.flatnonzero(outside) + 1).tolist()
+        raise ValueError(f"{label}: outside vendor joint bounds at joints {indices} (raw motor coordinates)")
+
+
+def close_all(arms) -> None:
+    """Attempt every close; preserve an active error, otherwise raise the first cleanup error."""
+    active_error = sys.exc_info()[0] is not None
+    errors: list[BaseException] = []
+    for arm in arms:
+        try:
+            arm.close()
+        except BaseException as exc:
+            errors.append(exc)
+            log.exception("%s: cleanup failed", arm.name)
+    if errors and not active_error:
+        raise errors[0]
+
+
 def go_home_all(jobs: list[tuple[YamArm, dict[str, Any]]]) -> None:
     """`arm.go_home(**kw)` for every (arm, kw) at the same time — one thread per arm, each arm has its
     own CAN bus. Ctrl-C (raised in the calling thread) stops every move, releases the arms where they
     are, then propagates; an error in any arm's move is re-raised after all moves have ended."""
+    # Check every home target before any thread changes gains or sends a command.
+    for arm, kw in jobs:
+        finite_scalar(kw.get("speed", 0.5), "home speed", positive=True)
+        arm.validate_command(arm.home_pose, limit_speed=False)
     stop = threading.Event()
+    begin = threading.Event()
     errors: list[BaseException] = []
+    finished = [threading.Event() for _ in jobs]
 
-    def run(arm: YamArm, kw: dict[str, Any]) -> None:
+    def run(arm: YamArm, kw: dict[str, Any], done: threading.Event) -> None:
         try:
+            begin.wait()
+            if stop.is_set():
+                return
             arm.go_home(**kw, stop=stop)
-        except BaseException as e:  # noqa: BLE001 — surfaced in the caller's thread below
+        except BaseException as e:  # noqa: BLE001 — surfaced after every worker has stopped
             errors.append(e)
+            stop.set()
+        finally:
+            done.set()
 
-    threads = [threading.Thread(target=run, args=(a, kw), daemon=True, name=f"home-{a.name}") for a, kw in jobs]
-    for t in threads:
-        t.start()
+    threads = [threading.Thread(target=run, args=(a, kw, done), daemon=True, name=f"home-{a.name}")
+               for (a, kw), done in zip(jobs, finished, strict=True)]
+    started = []
     try:
-        while any(t.is_alive() for t in threads):
-            for t in threads:
-                t.join(timeout=0.05)
-    except KeyboardInterrupt:
+        for t, done in zip(threads, finished, strict=True):
+            started.append((t, done))
+            t.start()
+        begin.set()  # no hardware worker may run until all thread starts have succeeded
+        # Event waits avoid CPython's interrupted Thread.join marking a live worker stopped.
+        for _, done in started:
+            while not done.wait(0.05):
+                pass
+    except BaseException:
         stop.set()
-        for t in threads:
-            t.join(timeout=3.0)
+        begin.set()  # even a late-starting worker now exits without touching an arm
+        for t, done in started:
+            if t.ident is None:
+                continue
+            while not done.is_set():
+                try:
+                    done.wait(0.05)
+                except KeyboardInterrupt:
+                    stop.set()
         raise
     if errors:
         raise errors[0]

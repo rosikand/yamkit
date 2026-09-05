@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
 import yaml
 
 from .paths import DEFAULT_RIG, resolve
+from .validation import finite_scalar, finite_vector, vendor_joint_limits
 
 Role = Literal["leader", "follower"]
 
@@ -46,21 +49,34 @@ class ArmSpec:
     notes: str | None = None
 
     def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
         if self.role not in ("leader", "follower"):
             raise ValueError(f"{self.name}: role must be 'leader' or 'follower', got {self.role!r}")
         if self.arm_type not in ARM_TYPES:
             raise ValueError(f"{self.name}: arm_type must be one of {ARM_TYPES}, got {self.arm_type!r}")
         if self.gripper not in GRIPPER_TYPES:
             raise ValueError(f"{self.name}: gripper must be one of {GRIPPER_TYPES}, got {self.gripper!r}")
-        if self.rest_pose is not None and len(self.rest_pose) != N_JOINTS:
-            raise ValueError(f"{self.name}: rest_pose needs {N_JOINTS} values")
-        if self.joint_offsets is not None and len(self.joint_offsets) != N_JOINTS:
-            raise ValueError(f"{self.name}: joint_offsets needs {N_JOINTS} values")
+        for field_name in ("rest_pose", "joint_offsets"):
+            value = getattr(self, field_name)
+            if value is not None:
+                finite_vector(value, N_JOINTS, f"{self.name}: {field_name}")
+        if self.gripper_limits is not None:
+            limits = finite_vector(self.gripper_limits, 2, f"{self.name}: gripper_limits")
+            if limits[0] == limits[1]:
+                raise ValueError(f"{self.name}: gripper_limits endpoints must differ")
+
+        limits = vendor_joint_limits(self.arm_type, self.gripper)
+        offsets = np.zeros(N_JOINTS) if self.joint_offsets is None else np.asarray(self.joint_offsets)
+        raw_home = np.asarray(self.home_pose) - offsets
+        if np.any(raw_home < limits[:, 0]) or np.any(raw_home > limits[:, 1]):
+            raise ValueError(f"{self.name}: home pose outside vendor joint bounds after joint_offsets")
 
     @property
     def home_pose(self) -> list[float]:
         """Where the arm parks: `rest_pose` if stored, else the vendor zero pose (all joints 0 = folded)."""
-        return [float(x) for x in self.rest_pose] if self.rest_pose else [0.0] * N_JOINTS
+        return [float(x) for x in self.rest_pose] if self.rest_pose is not None else [0.0] * N_JOINTS
 
     @property
     def has_motor_gripper(self) -> bool:
@@ -91,6 +107,17 @@ class ControlSpec:
     max_gripper_speed: float = 3.0  # (normalized units)/s clamp on the gripper target
     home_speed: float = 0.25  # rad/s of the followers' automatic move to home at session start/stop (0 = off)
     leader_home_speed: float = 0.25  # rad/s of the leaders' (compliant) move to home
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        for name in ("teleop_hz", "sync_seconds", "max_joint_speed", "max_gripper_speed"):
+            finite_scalar(getattr(self, name), f"control.{name}", positive=True)
+        for name in ("bilateral_kp", "home_speed", "leader_home_speed"):
+            finite_scalar(getattr(self, name), f"control.{name}", minimum=0)
+        if isinstance(self.engage_button, bool) or not isinstance(self.engage_button, Integral) or self.engage_button < 0:
+            raise ValueError("control.engage_button: expected a nonnegative integer")
 
 
 @dataclass
@@ -136,15 +163,31 @@ class RigConfig:
 
     def validate(self) -> list[str]:
         problems: list[str] = []
+        for spec in [self.control, *self.arms.values()]:
+            try:
+                spec.validate()
+            except ValueError as exc:
+                problems.append(str(exc))
+        used: set[str] = set()
         for p in self.pairs:
+            for name in (p.leader, p.follower):
+                if name in used:
+                    problems.append(f"arm {name!r} appears in more than one pair")
+                used.add(name)
             for n, role in ((p.leader, "leader"), (p.follower, "follower")):
                 if n not in self.arms:
                     problems.append(f"pair references unknown arm {n!r}")
                 elif self.arms[n].role != role:
                     problems.append(f"{n!r} is used as {role} but has role {self.arms[n].role!r}")
+        adapters: dict[tuple[str, str], str] = {}
         for a in self.arms.values():
             if not a.can_serial and not a.can_iface:
                 problems.append(f"{a.name}: needs can_serial or can_iface")
+            else:
+                key = ("interface", a.can_iface) if a.can_iface else ("serial", a.can_serial)
+                if key in adapters:
+                    problems.append(f"{a.name}: shares CAN {key[0]} {key[1]!r} with {adapters[key]}")
+                adapters[key] = a.name
         return problems
 
     # ----- (de)serialisation ------------------------------------------------------------------
@@ -226,6 +269,8 @@ _SECTIONS: dict[str, str] = {
 #                   (the folded pose). Arms move home at every Start and Stop, and with `yamkit rest`.
 #   joint_offsets   leaders only, written by `yamkit align`: makes "same angle" mean "same direction"
 #                   for the leader and its follower (fixes a follower that points off to the side)
+# Joint/home targets must fit the vendored SDK bounds after undoing joint_offsets. Invalid targets
+# and measured out-of-bounds state are rejected; measured state requires operator recovery.
 """,
     "pairs": """\
 
@@ -248,13 +293,15 @@ _SECTIONS: dict[str, str] = {
 
 # ---- Control --------------------------------------------------------------------------------
 #   teleop_hz          loop rate of `yamkit teleop`
-#   sync_seconds       how long the follower takes to catch up with the leader when engaging
+#   sync_seconds       minimum catch-up duration on engage; extended to respect target speed limits
 #   bilateral_kp       force feedback on the leader: 0 = off, 0.1-0.2 = gentle
 #   engage_button      which teaching-handle button toggles engage (0 = top button)
-#   max_joint_speed    safety clamp in rad/s on every commanded follower move (teleop and rollout)
+#   max_joint_speed    target-speed clamp in rad/s (also applies to home and engage synchronization)
 #   max_gripper_speed  safety clamp on the gripper, in fraction of its range per second
 #   home_speed         rad/s of the followers' automatic move to home at Start / Stop (0 turns it off)
 #   leader_home_speed  rad/s of the leaders' move to home (all arms move at the same time)
+# Rates, sync duration and speed clamps must be finite and positive; home speeds and bilateral_kp
+# may be zero. These constrain targets, not measured velocity, collisions or emergency stopping.
 """,
     "hub": """\
 

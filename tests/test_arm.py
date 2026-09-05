@@ -1,3 +1,5 @@
+from itertools import pairwise
+
 import numpy as np
 import pytest
 
@@ -85,7 +87,7 @@ def test_go_home_default_pose_rest_pose_and_gripper(follower, monkeypatch):
     monkeypatch.setattr(arm_mod, "HOME_MIN_S", 0.01)
     monkeypatch.setattr(arm_mod, "HOME_SETTLE_S", 0.0)
     arm, robot = follower
-    robot.pos = np.array([0.5, -0.5, 0.5, 0.0, 0.0, 0.0, 0.3])
+    robot.pos = np.array([0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 0.3])
     assert arm.go_home(speed=50.0) == pytest.approx(0.5)
     assert np.allclose(robot.pos[:6], 0) and robot.pos[6] == pytest.approx(0.3)  # gripper untouched
     assert robot.idle_calls == 0  # not released
@@ -108,7 +110,7 @@ def test_go_home_compliant_and_interrupt(monkeypatch):
     robot.command_joint_pos = lambda q: (seen_kp.append(robot.kp.copy()), orig(q))
     arm.go_home(speed=50.0, compliant=True, release=True)
     assert np.allclose(robot.pos, 0) and robot.idle_calls == 1
-    assert np.allclose(seen_kp[0], 80.0 * arm_mod.COMPLIANT_KP_SCALE)  # moved with low gains
+    assert np.allclose(seen_kp, 80.0 * arm_mod.COMPLIANT_KP_SCALE)  # moved with low gains
     assert np.all(robot.kp == 80.0)  # restored afterwards
 
     def interrupted(*a, **k):
@@ -146,3 +148,239 @@ def test_go_home_all_runs_arms_together_and_ctrl_c_releases_all(monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         arm_mod.go_home_all([(a, {"speed": 0.01}) for a, _ in arms])  # would take 30 s
     assert all(r.pos[0] > 0.25 and r.idle_calls == 2 for _, r in arms)  # all stopped early and released
+
+
+@pytest.mark.parametrize('limit_speed', [True, False])
+@pytest.mark.parametrize('q', [np.zeros(5), np.zeros(7), np.zeros((2, 3)), [0] * 5 + [np.nan],
+                              [0] * 5 + [np.inf], ['0'] * 6, [True] * 6, [0j] * 6, None])
+def test_rejected_targets_never_command_or_restore_gains(follower, q, limit_speed):
+    arm, robot = follower
+    arm.zero_torque()
+    with pytest.raises(ValueError):
+        arm.command(q, limit_speed=limit_speed)
+    assert not robot.commands
+    assert np.all(robot.kp == 0) and arm._gains_zeroed
+
+
+@pytest.mark.parametrize('gripper', [np.nan, np.inf, -0.1, 1.1, '0.5', [0.5], True])
+def test_invalid_gripper_never_changes_gains(follower, gripper):
+    arm, robot = follower
+    arm.zero_torque()
+    with pytest.raises(ValueError):
+        arm.command(np.zeros(6), gripper, limit_speed=False)
+    assert not robot.commands and np.all(robot.kp == 0)
+
+
+@pytest.mark.parametrize('field,value', [('joint_pos', np.zeros(7)), ('joint_pos', [np.nan] * 6),
+                                        ('joint_vel', [np.inf] * 6), ('joint_eff', [[0] * 6]),
+                                        ('gripper_pos', [np.nan]), ('gripper_pos', [1.01])])
+def test_bad_measurements_rejected_even_without_speed_limit(follower, monkeypatch, field, value):
+    arm, robot = follower
+    arm.zero_torque()
+    obs = robot.get_observations()
+    obs[field] = value
+    monkeypatch.setattr(robot, 'get_observations', lambda: obs)
+    with pytest.raises(ValueError):
+        arm.command(np.zeros(6), 0.5, limit_speed=False)
+    assert not robot.commands and np.all(robot.kp == 0)
+
+
+@pytest.mark.parametrize('previous', [np.zeros(6), np.full(7, np.nan), [0, -1, 0, 0, 0, 0, 0], [0] * 6 + [2]])
+def test_previous_state_is_validated_before_gains(follower, previous):
+    arm, robot = follower
+    arm.zero_torque()
+    arm._last_cmd = np.asarray(previous)
+    with pytest.raises(ValueError):
+        arm.command(np.zeros(6), 0, limit_speed=False)
+    assert not robot.commands and np.all(robot.kp == 0)
+
+
+def test_invalid_default_gains_rejected_before_sending(follower):
+    arm, robot = follower
+    arm.zero_torque()
+    arm.default_kp[0] = np.nan
+    with pytest.raises(ValueError):
+        arm.command(np.zeros(6), 0)
+    assert not robot.commands and np.all(robot.kp == 0)
+
+
+@pytest.mark.parametrize('which', ['target', 'measured'])
+def test_raw_bounds_reject_instead_of_sdk_clipping(follower, which):
+    arm, robot = follower
+    arm.zero_torque()
+    q = np.zeros(6)
+    if which == 'target':
+        q[1] = -0.2  # below vendor joint 2 lower bound (-0.15)
+    else:
+        robot.pos[1] = -0.2
+    with pytest.raises(ValueError, match='vendor joint bounds'):
+        arm.command(q, limit_speed=False)
+    assert not robot.commands and np.all(robot.kp == 0)
+
+
+def test_aligned_bounds_shift_with_offsets_and_return_exact_raw_target():
+    spec = ArmSpec(name='l', role='leader', gripper='yam_teaching_handle', joint_offsets=[0.1, 0, 0, 0, 0, 0])
+    robot = FakeRobot(6, gripper=False, handle=True)
+    arm = YamArm(spec, 'can1', robot)
+    upper = arm._raw_limits[0, 1]
+    q = np.zeros(6)
+    q[0] = upper + 0.1
+    arm.command(q, limit_speed=False)
+    assert robot.commands[-1][0] == pytest.approx(upper)
+    q[0] += 0.001
+    before = len(robot.commands)
+    with pytest.raises(ValueError, match='vendor joint bounds'):
+        arm.command(q, limit_speed=False)
+    assert len(robot.commands) == before
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 10.0
+        self.late = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds + self.late
+        self.late = 0.0
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    from yamkit import arm as arm_mod
+    clock = FakeClock()
+    monkeypatch.setattr(arm_mod.time, 'monotonic', clock.monotonic)
+    monkeypatch.setattr(arm_mod.time, 'sleep', clock.sleep)
+    return clock
+
+
+def test_no_minimum_dt_or_catchup_budget(follower, clock):
+    arm, robot = follower
+    first = arm.command(np.ones(6), 1)
+    for _ in range(10):
+        assert np.array_equal(arm.command(np.ones(6), 1), first)
+    clock.now += 0.2
+    second = arm.command(np.ones(6), 1)
+    assert np.max(second[:6] - first[:6]) <= 0.01 + 1e-12
+    robot.pos[:6] = 0.2
+    clock.now += 1
+    third = arm.command(np.ones(6), 1)
+    assert np.allclose(third[:6], 0.21)  # stale ramp starts at measurement
+
+
+def test_move_extends_short_duration_and_late_wakeup_cannot_jump(follower, clock):
+    arm, robot = follower
+    records = [(clock.now, robot.pos.copy())]
+    orig = robot.command_joint_pos
+
+    def record(q):
+        records.append((clock.now, q.copy()))
+        orig(q)
+        if len(records) == 3:
+            clock.late = 0.3
+
+    robot.command_joint_pos = record
+    arm.move_to(np.full(6, 0.2), 1, duration=0.001, hz=100)
+    assert np.allclose(robot.pos, [0.2] * 6 + [1])
+    assert clock.now - records[0][0] >= 0.5
+    for (t0, q0), (t1, q1) in pairwise(records):
+        assert np.max(np.abs(q1[:6] - q0[:6])) <= min(t1 - t0, 0.01) * arm.max_joint_speed + 1e-12
+        assert abs(q1[-1] - q0[-1]) <= min(t1 - t0, 0.01) * arm.max_gripper_speed + 1e-12
+
+
+@pytest.mark.parametrize('kwargs', [{'duration': 0}, {'duration': float('nan')}, {'hz': 0}, {'hz': -1}])
+def test_bad_move_options_never_send(follower, kwargs):
+    arm, robot = follower
+    arm.zero_torque()
+    with pytest.raises(ValueError):
+        arm.move_to(np.zeros(6), **kwargs)
+    assert not robot.commands and np.all(robot.kp == 0)
+
+
+def test_home_checks_target_before_compliant_gains(follower):
+    arm, robot = follower
+    arm.spec.rest_pose = [0, -0.2, 0, 0, 0, 0]
+    arm.zero_torque()
+    with pytest.raises(ValueError, match='vendor joint bounds'):
+        arm.go_home(compliant=True)
+    assert not robot.commands and np.all(robot.kp == 0)
+
+
+def test_home_preserves_measured_gripper_and_respects_speed(follower, clock):
+    arm, robot = follower
+    arm.command(np.zeros(6), 1, limit_speed=False)
+    robot.pos = np.array([0.5] * 6 + [0.2])
+    started = clock.now
+    arm.go_home(speed=100)
+    assert clock.now - started >= 0.5
+    assert robot.pos[-1] == pytest.approx(0.2)
+
+
+def test_hold_replaces_obsolete_target_before_restoring_gains(follower):
+    arm, robot = follower
+    arm.command(np.ones(6), 1, limit_speed=False)
+    arm.zero_torque()
+    robot.pos = np.array([0.2] * 6 + [0.3])
+    held = robot.pos.copy()
+    updates = []
+    update = robot.update_kp_kd
+
+    def check(kp, kd):
+        updates.append(robot.commands[-1].copy())
+        update(kp, kd)
+
+    robot.update_kp_kd = check
+    arm.hold()
+    assert np.array_equal(robot.commands[-1], held)
+    assert updates and all(np.array_equal(q, held) for q in updates)
+
+
+def test_close_attempts_sdk_despite_idle_cancellation_and_repeats_are_safe(follower, monkeypatch):
+    arm, robot = follower
+
+    def fail():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(robot, 'enter_gravity_comp_idle', fail)
+    with pytest.raises(KeyboardInterrupt):
+        arm.close(settle_s=0)
+    assert robot.closed
+    arm.close(settle_s=0)
+    with pytest.raises(RuntimeError, match='closed'):
+        arm.command(np.zeros(6))
+
+
+def test_home_all_rejects_later_state_before_any_arm_moves(follower):
+    from yamkit.arm import go_home_all
+    arm, robot = follower
+    other_robot = FakeRobot()
+    other = YamArm(ArmSpec(name='other', role='follower'), 'can1', other_robot)
+    other_robot.pos[1] = -1
+    with pytest.raises(ValueError, match='operator recovery'):
+        go_home_all([(arm, {}), (other, {})])
+    assert not robot.commands and not other_robot.commands
+
+
+def test_cancellation_after_worker_start_never_moves_or_leaves_active_worker(follower, monkeypatch):
+    import threading
+
+    from yamkit.arm import go_home_all
+
+    arm, robot = follower
+    threads = []
+    start = threading.Thread.start
+
+    def interrupted(thread):
+        start(thread)
+        threads.append(thread)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(threading.Thread, 'start', interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        go_home_all([(arm, {})])
+    assert not robot.commands
+    for thread in threads:
+        thread.join(timeout=1)
+        assert not thread.is_alive()

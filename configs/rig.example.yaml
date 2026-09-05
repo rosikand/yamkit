@@ -18,6 +18,8 @@ version: 1
 #                   (the folded pose). Arms move home at every Start and Stop, and with `yamkit rest`.
 #   joint_offsets   leaders only, written by `yamkit align`: makes "same angle" mean "same direction"
 #                   for the leader and its follower (fixes a follower that points off to the side)
+# Joint/home targets must fit the vendored SDK bounds after undoing joint_offsets. Invalid targets
+# and measured out-of-bounds state are rejected; measured state requires operator recovery.
 arms:
   left_leader:
     role: leader
@@ -97,13 +99,15 @@ cameras:
 
 # ---- Control --------------------------------------------------------------------------------
 #   teleop_hz          loop rate of `yamkit teleop`
-#   sync_seconds       how long the follower takes to catch up with the leader when engaging
+#   sync_seconds       minimum catch-up duration on engage; extended to respect target speed limits
 #   bilateral_kp       force feedback on the leader: 0 = off, 0.1-0.2 = gentle
 #   engage_button      which teaching-handle button toggles engage (0 = top button)
-#   max_joint_speed    safety clamp in rad/s on every commanded follower move (teleop and rollout)
+#   max_joint_speed    target-speed clamp in rad/s (also applies to home and engage synchronization)
 #   max_gripper_speed  safety clamp on the gripper, in fraction of its range per second
 #   home_speed         rad/s of the followers' automatic move to home at Start / Stop (0 turns it off)
 #   leader_home_speed  rad/s of the leaders' move to home (all arms move at the same time)
+# Rates, sync duration and speed clamps must be finite and positive; home speeds and bilateral_kp
+# may be zero. These constrain targets, not measured velocity, collisions or emergency stopping.
 control:
   teleop_hz: 100.0
   sync_seconds: 3.0

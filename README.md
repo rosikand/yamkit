@@ -3,7 +3,8 @@
 Self-contained toolkit for the four YAM arms on this machine. **Everything lives in this directory**:
 the Python interpreter (`.uv-python/`), the virtualenv (`.venv/`), the uv cache (`.uv-cache/`), the
 vendored vendor SDK (`third_party/i2rt`, pinned in `third_party/i2rt.VERSION`), datasets/models
-(`data/`) and training outputs (`outputs/`). Nothing is installed system-wide.
+(`data/`) and training outputs (`outputs/`). Nothing is installed system-wide. Cooperative arm
+ownership uses shared runtime lock files in `/tmp/yamkit-arm-locks` across checkouts.
 
 ```
 src/yamkit/                 core package + `yamkit` CLI
@@ -237,6 +238,16 @@ spawns the corresponding `yamkit` command as a child process, and opening pages 
 motor. See `docs/UI.md` and `docs/ui-screenshots/`.
 
 ## Safety notes
+
+Arm commands now validate exact dimensions, finite values, measured state and vendor-configured
+joint bounds before commands or gain changes. Bimanual actions prevalidate both sides. Homing
+and synchronization respect configured target speeds even when their requested duration is too
+short. See [hardware guarantees, ownership and supervised acceptance](docs/HARDWARE_HARDENING.md)
+for the precise limits and optional `disconnect(home=False)` / `shutdown(home=False)` cleanup.
+
+The stale-command ramp reset is not a watchdog: SDK threads can keep transmitting during an
+application stall. Target bounds are not collision avoidance, measured-velocity guarantees, or
+a safety-rated emergency stop. Cooperative locks do not protect against unrelated drivers.
 
 * Nothing is enabled during `yamkit can` / `yamkit discover`. Everything else energises motors.
 * Keep the workspace clear when engaging teleop: the follower moves to the leader pose first.
