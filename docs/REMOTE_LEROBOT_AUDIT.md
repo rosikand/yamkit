@@ -27,8 +27,19 @@ the same event interrupts it through `go_home_all`'s optional stop argument.
 
 The upstream `supports_rtc_inference` requires both `policy.supports_rtc()` and
 the RTC argument signature. This gate applies even when `rtc.enabled=False`.
-MolmoAct2 has no verified guided RTC support. The remote proxy therefore returns
-false and the CLI rejects `--rtc` for all remote profiles in this version.
+The pinned native `MolmoAct2Policy.supports_rtc()` returns
+`config.inference_action_mode == "continuous"`; its `predict_action_chunk(**kwargs)`
+passes the signature check. Its continuous path implements guidance inside the
+flow-matching loop through `rtc_processor.denoise_step`. SmolVLA and pi0.5 also
+declare upstream RTC support. Molmo's discrete inference mode does not.
+
+The remote transport has not validated the model-space prefix conversions and
+guidance behavior required to expose those native capabilities. Its lightweight
+proxy therefore returns false, and the CLI rejects `--rtc` for remote profiles.
+This is a boundary of the remote implementation, not missing upstream Molmo RTC
+support. The pinned Molmo checkpoint uses absolute actions and its saved
+preprocessor has no `RelativeActionsProcessorStep`; the stock sync engine's
+enabled-relative-actions rejection is not a blocker for that checkpoint.
 
 The upstream inference factory has a fixed sync/RTC dispatch with no external
 engine-registration hook. The narrow adapter builds a genuine sync context, then
@@ -51,7 +62,7 @@ Buffering is not labeled RTC.
 
 ## Faults and Stop
 
-Upstream normally retries worker errors ten times, returns `None` on underrun,
+Upstream normally retries worker errors until ten consecutive failures, returns `None` on underrun,
 and tears down by returning to the initial pose and calling a plugin disconnect
 that also homes. Those defaults are unsuitable for a remote fault.
 

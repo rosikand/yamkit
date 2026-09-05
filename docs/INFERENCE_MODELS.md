@@ -12,7 +12,9 @@ probe, matching robot calibration and camera setup; it is not a validated robot 
 | `pi05` | [`b211f3d44c36b6acfcf7ae94a64e8e96f75a64ba`](https://huggingface.co/lerobot/pi05_base/tree/b211f3d44c36b6acfcf7ae94a64e8e96f75a64ba) | 32 / 32; chunk 50 | No physical YAM mapping or saved robot statistics; diagnostic inference only |
 
 No physical vector is padded or truncated. The native fixture keeps the checkpoint's
-original feature dimensions, names and saved statistics. Base SmolVLA and pi0.5 outputs
+original feature dimensions, camera names and saved statistics. Where the base checkpoint
+provides no joint names, `native_state_N` and `native_action_N` are diagnostic position
+labels, not physical joint identities. Base SmolVLA and pi0.5 outputs
 are labeled `checkpoint_native`, never radians or YAM gripper units. Custom checkpoints
 remain supported by the existing local path; the Modal catalog accepts reviewed profiles.
 
@@ -144,9 +146,19 @@ Compute region is separately configurable and returned in metadata. Specifying a
 region adds a published multiplier (1.15× broad, 1.75× narrow); measure total latency from
 the actual robot host before drawing conclusions about queue coverage.
 
-Guided RTC is deliberately unsupported in this transport. Upstream's supported denoisers
-would need normalized/relative action prefixes, re-anchoring and end-to-end delay guidance
-verified at this boundary. The service rejects continuation rather than sending raw robot
-units into a denoiser. An unguided background chunk worker is not advertised as guided RTC.
+Guided RTC is deliberately unsupported in this transport. In the actual LeRobot 0.6.1
+wheel, native SmolVLA and pi0.5 declare RTC support, and native MolmoAct2 declares it
+when `inference_action_mode` is `continuous`. Molmo's continuous implementation applies
+`rtc_processor.denoise_step` inside its flow-matching loop; discrete mode does not
+support that path. The remote proxy's `supports_rtc=False` and rejected continuation
+describe this integration's unvalidated guidance boundary, not the native models' capability.
+
+For the pinned absolute-action Molmo checkpoint, a robot-unit prefix would need the
+same joint frame and masked quantile normalization as model actions. Its saved
+preprocessor contains no relative-action step. Checkpoints with relative actions would
+additionally require conversion to the current observation's anchor. Those conversions,
+end-to-end delay guidance and their interactions have not been validated across this
+transport. The service rejects continuation rather than sending raw robot units into a
+denoiser. An unguided background chunk worker is not advertised as guided RTC.
 No inference-mode wrapper is imposed around denoising; future verified guidance must retain
 upstream gradient requirements. There are no pause heartbeats or permanent keepalives.
