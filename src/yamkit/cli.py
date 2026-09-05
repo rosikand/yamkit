@@ -20,6 +20,7 @@ from . import __version__
 from .paths import DATASETS_DIR, DEFAULT_RIG, OUTPUT_DIR, ROOT
 
 app = typer.Typer(help="I2RT YAM arms: CAN setup, teleop, LeRobot recording, VLA rollout.", no_args_is_help=True, add_completion=False)
+app.pretty_exceptions_show_locals = False
 console = Console()
 err = Console(stderr=True)
 
@@ -166,11 +167,26 @@ def cameras(rig: RigOpt = DEFAULT_RIG) -> None:
 
 
 # ------------------------------------------------------------------------------------- arms --
-def _connect(rig_path: Path, name: str):
-    from .arm import YamArm, resolve_channel
+def _active_rig(rig_path: Path):
     from .config import RigConfig
 
     rig = RigConfig.load(rig_path)
+    if problems := rig.validate():
+        raise ValueError("invalid rig: " + "; ".join(problems))
+    return rig
+
+
+def _duration(duration: float | None) -> None:
+    from .validation import finite_scalar
+
+    if duration is not None:
+        finite_scalar(duration, "duration", minimum=0)
+
+
+def _connect(rig_path: Path, name: str):
+    from .arm import YamArm, resolve_channel
+
+    rig = _active_rig(rig_path)
     spec = rig.arm(name)
     return rig, YamArm.connect(spec, resolve_channel(spec), max_joint_speed=rig.control.max_joint_speed, max_gripper_speed=rig.control.max_gripper_speed)
 
@@ -183,10 +199,15 @@ def read(
     duration: Annotated[float | None, typer.Option(help="seconds; default runs until Ctrl-C")] = None,
 ) -> None:
     """Connect (gravity-compensation mode, arm stays free to move) and stream joint state."""
-    from .config import RigConfig
+    from .arm import close_all
+    from .validation import finite_scalar
 
-    cfg = RigConfig.load(rig)
+    finite_scalar(hz, "hz", positive=True)
+    _duration(duration)
+    cfg = _active_rig(rig)
     names = arms or list(cfg.arms)
+    for name in names:
+        cfg.arm(name)  # reject a later unknown name before opening the first arm
     connected = []
     try:
         for n in names:
@@ -205,8 +226,7 @@ def read(
     except KeyboardInterrupt:
         pass
     finally:
-        for a in connected:
-            a.close()
+        close_all(connected)
 
 
 @app.command()
@@ -224,10 +244,10 @@ def teleop(
 
     On start every arm moves slowly to its home pose; on Ctrl-C every arm returns there before being
     released (a second Ctrl-C releases them immediately). `control.home_speed` sets the pace."""
-    from .config import RigConfig
     from .teleop import TeleopSession
 
-    cfg = RigConfig.load(rig)
+    _duration(duration)
+    cfg = _active_rig(rig)
     kw = {"auto_engage": auto_engage}
     if no_home:
         kw["home_speed"] = 0.0
@@ -258,18 +278,19 @@ def teleop(
                     console.print(f"{arm.name:>16} q=[{q}] grip={sg}{b}")
 
     session = TeleopSession.from_rig(cfg, pairs, on_tick=status, **kw)
-    if not auto_engage:
-        console.print("[cyan]Press the top button on a teaching handle to engage its follower; press again to release. Ctrl-C to quit.[/]")
-    stats = session.run(duration=duration)
+    try:
+        if not auto_engage:
+            console.print("[cyan]Press the top button on a teaching handle to engage its follower; press again to release. Ctrl-C to quit.[/]")
+        stats = session.run(duration=duration)
+    finally:
+        session.shutdown(home=False)  # also covers cancellation before run starts
     console.print(f"done: {stats.ticks} ticks at {stats.rate_hz:.1f} Hz ({stats.overruns} overruns)")
 
 
 @app.command("calibrate-gripper")
 def calibrate_gripper(arm: str, rig: RigOpt = DEFAULT_RIG) -> None:
     """Run the SDK gripper limit auto-calibration once and store the limits in the rig (skipped afterwards)."""
-    from .config import RigConfig
-
-    cfg = RigConfig.load(rig)
+    cfg = _active_rig(rig)
     spec = cfg.arm(arm)
     if not spec.has_motor_gripper:
         err.print(f"[red]{arm} has no motorised gripper[/]")
@@ -367,9 +388,11 @@ def set_rest(arm: str, rig: RigOpt = DEFAULT_RIG) -> None:
     cfg, a = _connect(rig, arm)
     try:
         q = a.read().q
+        a.validate_command(q, None, limit_speed=False)
     finally:
         a.close()
-    cfg.arm(arm).rest_pose = [round(float(x), 4) for x in q]
+    # Keep the sample's precision: rounding a value at a joint bound can move it outside.
+    cfg.arm(arm).rest_pose = [float(x) for x in q]
     cfg.save()
     console.print(f"[green]{arm}: rest_pose = {cfg.arm(arm).rest_pose} saved[/]")
 
@@ -384,16 +407,23 @@ def rest(
 
     Home is `rest_pose` if stored (`yamkit set-rest`), otherwise all joints at 0 — the folded pose.
     Leaders move compliantly (a hand on the handle wins). Ctrl-C releases the arms where they are."""
-    from .arm import go_home_all
-    from .config import RigConfig
+    from .arm import close_all, go_home_all
+    from .validation import finite_scalar
 
-    cfg = RigConfig.load(rig)
+    cfg = _active_rig(rig)
+    if speed is not None:
+        finite_scalar(speed, "speed", positive=True)
     if speed is None and cfg.control.home_speed <= 0:
         err.print("[red]home_speed is 0 in the rig — pass --speed (rad/s)[/]")
         raise typer.Exit(1)
+    names = arms or list(cfg.arms)
+    for name in names:
+        spec = cfg.arm(name)
+        if speed is None and spec.role == "leader" and cfg.control.leader_home_speed <= 0:
+            raise ValueError("leader_home_speed is 0 in the rig — pass --speed (rad/s)")
     connected = []
     try:
-        for n in arms or list(cfg.arms):
+        for n in names:
             _, a = _connect(rig, n)
             connected.append(a)
         jobs = []
@@ -407,8 +437,7 @@ def rest(
         console.print("[yellow]aborted — arms released where they are[/]")
         raise typer.Exit(130) from None
     finally:
-        for a in connected:
-            a.close()
+        close_all(connected)
 
 
 def _joint_stops(spec):
@@ -441,10 +470,11 @@ def align(
     are then moved back home before being released."""
     import numpy as np
 
-    from .arm import YamArm, resolve_channel
-    from .config import RigConfig
+    from .arm import YamArm, close_all, resolve_channel
+    from .validation import finite_scalar
 
-    cfg = RigConfig.load(rig)
+    cfg = _active_rig(rig)
+    tol = np.radians(finite_scalar(STOP_TOL_DEG, "alignment stop tolerance", positive=True))
     pair = cfg.pair_for(arm)
     if pair is None:
         err.print(f"[red]{arm!r} is not part of a leader/follower pair in the rig[/]")
@@ -453,13 +483,13 @@ def align(
     previous = np.zeros(6) if reset or not lspec.joint_offsets else np.asarray(lspec.joint_offsets, dtype=float)
     lspec.joint_offsets = None  # measure the raw motor frame
     stops = _joint_stops(fspec)
-    leader = YamArm.connect(lspec, resolve_channel(lspec))
+    lchannel, fchannel = resolve_channel(lspec), resolve_channel(fspec)
+    connected = []
     try:
-        follower = YamArm.connect(fspec, resolve_channel(fspec))
-    except Exception:
-        leader.close()
-        raise
-    try:
+        leader = YamArm.connect(lspec, lchannel, max_joint_speed=cfg.control.max_joint_speed, max_gripper_speed=cfg.control.max_gripper_speed)
+        connected.append(leader)
+        follower = YamArm.connect(fspec, fchannel, max_joint_speed=cfg.control.max_joint_speed, max_gripper_speed=cfg.control.max_gripper_speed)
+        connected.append(follower)
         console.print(f"[cyan]{pair.leader} and {pair.follower} are free to move. Push EVERY joint of BOTH arms against a stop, the same way on both:[/]")
         console.print("  shoulder + elbow folded all the way in · base turned all the way to one side · each wrist joint turned all the way the same way")
         if not yes and not typer.confirm("Every joint against its stop on both arms, and holding still?", default=True):
@@ -477,13 +507,11 @@ def align(
         except KeyboardInterrupt:
             console.print("[yellow]home move aborted — turn the bases back toward the front by hand before powering up again[/]")
     finally:
-        leader.close()
-        follower.close()
+        close_all(connected)
 
     def near(q: float, lim: float) -> bool:  # distance on the circle: a base at +183° may read -177°
         return abs((q - lim + np.pi) % (2 * np.pi) - np.pi) < tol
 
-    tol = np.radians(STOP_TOL_DEG)
     offsets = previous.copy()
     t = Table(title=f"align {pair.leader} → {pair.follower}")
     for c in ("joint", "leader (deg)", "follower (deg)", "stops (deg)", "result"):
@@ -505,6 +533,7 @@ def align(
         err.print("[red]no joint was against a stop on both arms — nothing saved[/]")
         raise typer.Exit(1)
     lspec.joint_offsets = [round(float(x), 4) for x in offsets]
+    lspec.validate()  # the new alignment must still admit the configured home pose
     cfg.save()
     console.print(f"[green]{pair.leader}: joint_offsets saved to {cfg.path}[/] ({len(aligned)} of 6 joints measured)")
     if skipped:
@@ -514,7 +543,10 @@ def align(
 
 # ------------------------------------------------------------------------------- LeRobot wrappers --
 def _exec_lerobot(script: str, args: list[str], dry_run: bool) -> None:
-    cmd = [sys.executable, "-m", f"lerobot.scripts.{script}", *args]
+    module = "yamkit.local_rollout" if script == "lerobot_rollout" else f"lerobot.scripts.{script}"
+    if script in ("lerobot_record", "lerobot_teleoperate"):
+        module, args = "yamkit.lerobot_teleop", [script.removeprefix("lerobot_"), *args]
+    cmd = [sys.executable, "-m", module, *args]
     console.print("[dim]$ " + " ".join(shlex.quote(c) for c in cmd) + "[/]")
     if dry_run:
         return
@@ -635,7 +667,10 @@ def _run_lerobot(script: str, args: list[str]) -> int:
     group), which parks the arms and finalises the dataset; we keep waiting so the caller can upload."""
     import subprocess
 
-    cmd = [sys.executable, "-m", f"lerobot.scripts.{script}", *args]
+    module = f"lerobot.scripts.{script}"
+    if script in ("lerobot_record", "lerobot_teleoperate"):
+        module, args = "yamkit.lerobot_teleop", [script.removeprefix("lerobot_"), *args]
+    cmd = [sys.executable, "-m", module, *args]
     console.print("[dim]$ " + " ".join(shlex.quote(c) for c in cmd) + "[/]")
     proc = subprocess.Popen(cmd)
     interrupts = 0
@@ -663,9 +698,83 @@ def rollout(
     device: str | None = None,
     display: bool = False,
     dry_run: bool = False,
+    backend: str = "local",
+    gpu: str = "L40S",
+    modal_app: str | None = None,
+    center_crop: bool = False,
+    async_chunks: Annotated[bool, typer.Option("--async/--no-async", help="unguided background chunks (Modal)")] = True,
+    image_encoding: str = "rgb8",
+    jpeg_quality: int = 85,
+    call_mode: str = "remote",
+    prediction_queue_threshold: int | None = None,
+    confirm_supervised: Annotated[bool, typer.Option("--confirm-supervised")] = False,
+    accept_mapping: Annotated[bool, typer.Option("--accept-mapping")] = False,
 ) -> None:
     """Run a policy/VLA on the follower arm(s) (`lerobot-rollout`)."""
-    _, pairs = _rig_arms(rig, arms)
+    from .deployment import InferenceOptions
+
+    options = InferenceOptions(policy=policy, task=task, backend=backend, device=device or "cpu", gpu=gpu,
+                               modal_app=modal_app, center_crop=center_crop, rtc=rtc,
+                               async_chunks=async_chunks, duration=duration, fps=fps, arms=tuple(arms or ()),
+                               image_encoding=image_encoding, jpeg_quality=jpeg_quality, call_mode=call_mode,
+                               prediction_queue_threshold=prediction_queue_threshold,
+                               supervised_confirmed=confirm_supervised, mapping_accepted=accept_mapping,
+                               rig_path=str(rig))
+    try:
+        options.validate(motion=True)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    rig_config, pairs = _rig_arms(rig, arms)
+    if backend == "modal":
+        if ctx.args or strategy != "base" or display:
+            raise typer.BadParameter("Modal supports base strategy without display or extra LeRobot flags")
+        from .modal_ops import owned_service
+
+        receipt = owned_service()
+        app_name = modal_app or (receipt or {}).get("app_name")
+        if not app_name:
+            raise typer.BadParameter("run yamkit modal-prepare first, or specify --modal-app")
+        if dry_run:
+            console.print(f"Modal unguided async via LeRobot context: {policy}, {app_name}, {fps:g} Hz")
+            return
+        from lerobot.rollout.configs import RolloutConfig
+        from lerobot_robot_yamkit import BiYamFollowerConfig
+
+        from .inference.profiles import get_profile
+        from .remote_policy import YamkitRemoteConfig
+        from .remote_rollout import run_remote_rollout
+
+        by_side = {rig_config.arm(p.follower).side: p.follower for p in pairs}
+        if set(by_side) != {"left", "right"}:
+            raise typer.BadParameter("Modal YAM mapping requires distinct left and right follower arms")
+        config = RolloutConfig(
+            robot=BiYamFollowerConfig(rig=str(rig), left=by_side["left"], right=by_side["right"], id="yam"),
+            policy=YamkitRemoteConfig(profile=get_profile(policy).id, modal_app=app_name,
+                                     center_crop=center_crop, image_encoding=image_encoding,
+                                     jpeg_quality=jpeg_quality, call_mode=call_mode,
+                                     prediction_queue_threshold=prediction_queue_threshold,
+                                     supervised_confirmed=confirm_supervised, mapping_accepted=accept_mapping),
+            task=task, duration=duration, fps=fps, device="cpu", play_sounds=False,
+            use_torch_compile=False, return_to_initial_position=False,
+        )
+        from .inference.client import RemoteFault
+
+        try:
+            result = run_remote_rollout(config)
+        except RemoteFault as exc:
+            if getattr(exc, "metrics", None):
+                _print_inference_result(exc.metrics)
+            raise
+        _print_inference_result(result)
+        return
+    from .inference.profiles import get_profile
+
+    try:
+        local_profile = get_profile(policy)
+    except ValueError:
+        local_profile = None
+    if local_profile:
+        policy = local_profile.repo_id
     args = [
         f"--strategy.type={strategy}",
         f"--policy.path={policy}",
@@ -680,7 +789,94 @@ def rollout(
         args.append("--inference.type=rtc")
     if device:
         args.append(f"--device={device}")
+    if local_profile:
+        args.append(f"--policy.pretrained_revision={local_profile.revision}")
+        if local_profile.id == "molmoact2":
+            import json
+
+            from .inference.mapping import CAMERA_RENAME_MAP
+
+            args.append("--rename_map=" + json.dumps(CAMERA_RENAME_MAP))
     _exec_lerobot("lerobot_rollout", [*args, *ctx.args], dry_run)
+
+
+@app.command()
+def agent(
+    model: Annotated[str, typer.Option(help="OpenAI model ID with image and function-call support")],
+    task: Annotated[str, typer.Option(help="instruction for this episode")],
+    arm: Annotated[str, typer.Option(help="one follower arm name from the rig")],
+    rig: RigOpt = DEFAULT_RIG,
+    max_steps: Annotated[int, typer.Option(help="maximum model decisions, including invalid/observe-only replies")] = 50,
+    settle_s: Annotated[float, typer.Option(help="settle time after an action, in seconds")] = 0.5,
+    max_joint_delta: Annotated[float, typer.Option(help="maximum joint change per action, in radians")] = 0.10,
+    motion_timeout_s: Annotated[float, typer.Option(help="deadline for each fixed-target motion, in seconds")] = 5.0,
+    api_timeout_s: Annotated[float, typer.Option(help="deadline for each model request, in seconds")] = 30.0,
+    episode_timeout_s: Annotated[float, typer.Option(help="deadline for the whole episode, in seconds")] = 300.0,
+    log_path: Annotated[Path | None, typer.Option(help="new JSONL file inside the repo (default: outputs/agent/episode-<time>.jsonl)")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="use labeled fixtures; OpenAI calls are still paid unless --offline")] = False,
+    execute: Annotated[bool, typer.Option("--execute", help="request live execution (currently blocked by sensor acquisition freshness gaps)")] = False,
+    offline: Annotated[bool, typer.Option("--offline", help="use the deterministic mocked provider; requires --dry-run")] = False,
+) -> None:
+    """Run a bounded multimodal LLM episode. Live execution is currently disabled; see docs/AGENT.md."""
+    from .agent import AgentConfig, run_episode
+    from .agent_openai import MockProvider, OpenAIProvider, ProviderError, credential_status
+    from .agent_robot import FixtureRobot, LiveIntegrationError, RobotAdapter, make_live_robot, validate_rig
+
+    if dry_run == execute:
+        raise typer.BadParameter("choose exactly one of --dry-run or --execute")
+    if offline and not dry_run:
+        raise typer.BadParameter("--offline requires --dry-run")
+
+    config = AgentConfig(
+        model=model,
+        task=task,
+        max_steps=max_steps,
+        settle_s=settle_s,
+        max_joint_delta=max_joint_delta,
+        motion_timeout_s=motion_timeout_s,
+        api_timeout_s=api_timeout_s,
+        episode_timeout_s=episode_timeout_s,
+    )
+    try:
+        config.validate()
+        validate_rig(rig, arm)
+        destination = log_path or OUTPUT_DIR / "agent" / f"episode-{time.time_ns()}.jsonl"
+        destination = (destination if destination.is_absolute() else ROOT / destination).resolve()
+        if not destination.is_relative_to(ROOT.resolve()):
+            raise ValueError("--log-path must stay inside this repository")
+        if destination.exists():
+            raise ValueError("--log-path must name a new file")
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        raise typer.BadParameter(str(exc)) from None
+
+    try:
+        if execute:
+            adapter = make_live_robot(rig, arm)
+        else:
+            console.print("Hardware dry-run: labeled synthetic fixtures; no physical arms or cameras are opened.")
+        if offline:
+            console.print("Offline mocked provider: no API requests or charges.")
+            provider = MockProvider()
+        else:
+            console.print(f"Paid OpenAI API mode; images are sent to OpenAI. Credential: {credential_status()}.")
+            provider = OpenAIProvider(model, task)
+        if dry_run:
+            adapter = RobotAdapter(FixtureRobot())
+    except (LiveIntegrationError, ProviderError) as exc:
+        err.print(str(exc), markup=False)
+        raise typer.Exit(1) from None
+
+    try:
+        result = run_episode(adapter, provider, config, destination)
+    except (OSError, ValueError) as exc:
+        err.print(f"Episode could not run ({type(exc).__name__}); check the log path and permissions.", markup=False)
+        raise typer.Exit(1) from None
+    console.print(f"Episode: {result['status']}; {result['reason']}", markup=False)
+    if result["success_basis"] == "model_declared":
+        console.print(f"Success: {result['success']} (model-declared; not independently verified).", markup=False)
+    console.print(f"Log: {destination}", markup=False)
+    if result["status"] != "finished":
+        raise typer.Exit(130 if result["status"] == "cancelled" else 1)
 
 
 @app.command(context_settings=PASSTHROUGH)
@@ -759,8 +955,31 @@ def policy_check(
     device: str = "cpu",
     steps: int = 3,
     keep_policy_features: Annotated[bool, typer.Option(help="use the checkpoint's own input features instead of this rig's")] = False,
+    backend: str = "local",
+    gpu: str = "L40S",
+    modal_app: str | None = None,
+    center_crop: bool = False,
 ) -> None:
     """Load a policy/VLA for this rig and run it on a synthetic frame (no arm is energised)."""
+    from .deployment import InferenceOptions
+    from .inference.profiles import get_profile
+
+    try:
+        InferenceOptions(policy=policy, task=task, backend=backend, device=device, gpu=gpu,
+                         modal_app=modal_app, center_crop=center_crop).validate()
+        try:
+            profile = get_profile(policy)
+        except ValueError:
+            profile = None
+        if profile is not None:
+            from .inference_check import run_check
+
+            result = run_check(profile.id, backend=backend, device=device, task=task, steps=steps,
+                               modal_app=modal_app, center_crop=center_crop)
+            _print_inference_result(result)
+            return
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
     from .policy_check import run_policy_check
 
     r = run_policy_check(policy, rig_path=str(rig), arms=arms, task=task, device=device, n_steps=steps, use_robot_features=not keep_policy_features)
@@ -775,6 +994,74 @@ def policy_check(
     t.add_row("next calls", ", ".join(f"{x * 1e3:.0f} ms" for x in r.step_call_s))
     t.add_row("sample action", ", ".join(f"{k}={v:+.3f}" for k, v in list(r.action.items())[:7]) + (" …" if len(r.action) > 7 else ""))
     console.print(t)
+
+
+@app.command("modal-prepare")
+def modal_prepare(policy: str = "molmoact2", gpu: str = "L40S", development: bool = False,
+                  cache_volume: str = "yamkit-policy-weights", region: str = "us-west",
+                  routing_region: str = "us-west", memory_mib: int = 65536) -> None:
+    """Explicitly deploy and warm this workspace's dedicated cloud pool; never activate hardware."""
+    from .modal_ops import prepare
+
+    _print_inference_result(prepare(policy, gpu=gpu, development=development, cache_volume_name=cache_volume,
+                                   region=region, routing_region=routing_region, memory_mib=memory_mib))
+
+
+@app.command("modal-qualify")
+def modal_qualify(policy: str = "molmoact2", requests: int = 50, modal_app: str | None = None,
+                  rig: RigOpt = DEFAULT_RIG, image_encoding: str = "rgb8", jpeg_quality: int = 85,
+                  call_mode: str = "remote", center_crop: bool = False,
+                  prediction_queue_threshold: int | None = None) -> None:
+    """Measure this host's existing Modal service with generated frames and fake arms only."""
+    from .modal_qualification import collect_qualification
+
+    try:
+        result = collect_qualification(policy, requests=requests, modal_app=modal_app, rig_path=rig,
+                                       image_encoding=image_encoding, jpeg_quality=jpeg_quality,
+                                       call_mode=call_mode, center_crop=center_crop,
+                                       prediction_queue_threshold=prediction_queue_threshold)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    _print_inference_result(result)
+
+
+@app.command("modal-shutdown")
+def modal_shutdown() -> None:
+    """Shut down only the owned cloud app. Stop local robot execution separately first."""
+    from .modal_ops import shutdown
+
+    _print_inference_result(shutdown())
+
+
+@app.command("policy-probe")
+def policy_probe(
+    policy: str = "molmoact2", task: str = "pick up the object", backend: str = "local",
+    device: str = "cpu", gpu: str = "L40S", modal_app: str | None = None,
+    center_crop: bool = False, saved: Path | None = None, live: bool = False,
+    approve_active_read: bool = False, rig: RigOpt = DEFAULT_RIG,
+    arms: Annotated[list[str] | None, typer.Option("--arms")] = None,
+) -> None:
+    """Inspect fresh targets without executing them; live mode needs explicit active-read approval."""
+    from .deployment import InferenceOptions
+    from .probe_runner import run_profile_probe
+    from .probes import format_probe_report
+
+    try:
+        InferenceOptions(policy=policy, task=task, backend=backend, device=device, gpu=gpu,
+                         modal_app=modal_app, center_crop=center_crop).validate()
+        result = run_profile_probe(policy, rig_path=rig, saved=saved, live=live, approved=approve_active_read,
+                                   backend=backend, device=device, modal_app=modal_app, task=task,
+                                   arms=arms, center_crop=center_crop)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    console.print(format_probe_report(result), markup=False)
+    _print_inference_result(result)
+
+
+def _print_inference_result(result: dict) -> None:
+    import json
+
+    print("[yamkit-result] " + json.dumps(result, allow_nan=False), flush=True)
 
 
 # ------------------------------------------------------------------------------------ doctor --

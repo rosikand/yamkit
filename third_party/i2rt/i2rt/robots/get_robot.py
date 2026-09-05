@@ -86,6 +86,20 @@ def get_encoder_chain(can_interface: CanInterface) -> EncoderChain:
     return EncoderChain([0x50E], passive_encoder_reader)
 
 
+def get_yam_joint_limits(arm_type: ArmType, gripper_type: GripperType) -> np.ndarray:
+    """Read the exact SDK command bounds without opening hardware or building models.
+
+    These are the vendored XML ranges with the SDK's existing 0.15 rad buffer,
+    in the raw joint coordinate frame. They are not collision-avoidance limits.
+    """
+    n_arm_joints = len(_load_arm_config(arm_type).motor_list)
+    limits = _load_joint_limits_from_xml(arm_type.get_xml_path(), gripper_type.get_xml_path())
+    limits = limits[:n_arm_joints].copy()
+    limits[:, 0] -= 0.15
+    limits[:, 1] += 0.15
+    return limits
+
+
 def _get_gripper_only_robot(
     channel: str = "can0",
     gripper_type: GripperType = GripperType.LINEAR_4310,
@@ -227,11 +241,8 @@ def get_yam_robot(
     )
 
     # Load limits for motor-driven joints only (arm joints + last wrist joint from gripper XML).
-    all_joint_limits = _load_joint_limits_from_xml(arm_type.get_xml_path(), gripper_type.get_xml_path())
     n_arm_joints = len(hw.motor_list)
-    joint_limits = all_joint_limits[:n_arm_joints]
-    joint_limits[:, 0] -= 0.15  # safety buffer
-    joint_limits[:, 1] += 0.15
+    joint_limits = get_yam_joint_limits(arm_type, gripper_type)
 
     # Build mutable lists from the frozen arm config, then extend for gripper.
     motor_list = [[can_id, mtype] for can_id, mtype in hw.motor_list]
@@ -301,47 +312,55 @@ def get_yam_robot(
         check_motor_types=True,
         check_motor_config=True,
     )
-    motor_states = motor_chain.read_states()
-    logging.debug(f"motor_states: {motor_states}")
+    try:
+        motor_states = motor_chain.read_states()
+        logging.debug(f"motor_states: {motor_states}")
 
-    logging.info(f"current_pos: {[m.pos for m in motor_states]}")
-    for idx, state in enumerate(motor_states):
-        limits = joint_limits[idx] if joint_limits is not None and idx < len(joint_limits) else None
-        turn = wrap_correction(state.pos, limits)
-        if turn:
-            logging.info(f"motor {idx} pos={state.pos:.3f}, offset {'-' if turn > 0 else '+'}2π")
-            motor_chain.motor_offset[idx] -= turn  # reported pos = absolute - offset
+        logging.info(f"current_pos: {[m.pos for m in motor_states]}")
+        for idx, state in enumerate(motor_states):
+            limits = joint_limits[idx] if joint_limits is not None and idx < len(joint_limits) else None
+            turn = wrap_correction(state.pos, limits)
+            if turn:
+                logging.info(f"motor {idx} pos={state.pos:.3f}, offset {'-' if turn > 0 else '+'}2π")
+                motor_chain.motor_offset[idx] -= turn  # reported pos = absolute - offset
 
-    logging.info(f"adjusted motor_offsets: {motor_chain.motor_offset.tolist()}")
+        logging.info(f"adjusted motor_offsets: {motor_chain.motor_offset.tolist()}")
 
-    # Start the control thread with corrected offsets.
-    motor_chain.start_thread()
-    logging.info(f"YAM initial motor_states: {motor_chain.read_states()}")
+        # Start the control thread with corrected offsets.
+        motor_chain.start_thread()
+        logging.info(f"YAM initial motor_states: {motor_chain.read_states()}")
 
-    get_robot = partial(
-        MotorChainRobot,
-        motor_chain=motor_chain,
-        xml_path=model_path,
-        use_gravity_comp=True,
-        gravity_comp_factor=effective_gravity_comp,
-        joint_limits=joint_limits,
-        kp=kp,
-        kd=kd,
-        grav_comp_kd=grav_comp_kd,
-        coulomb_friction=coulomb_friction,
-        use_coulomb_friction=use_coulomb_friction,
-        zero_gravity_mode=zero_gravity_mode,
-        joint_state_saver_factory=joint_state_saver_factory,
-        set_realtime_and_pin_callback=set_realtime_and_pin_callback,
-    )
-
-    if with_gripper:
-        return get_robot(
-            gripper_index=n_arm_joints,
-            gripper_limits=gripper_limits,
-            enable_gripper_calibration=gripper_needs_cal,
-            gripper_type=gripper_type,
-            arm_type=arm_type,
-            limit_gripper_force=50.0,
+        get_robot = partial(
+            MotorChainRobot,
+            motor_chain=motor_chain,
+            xml_path=model_path,
+            use_gravity_comp=True,
+            gravity_comp_factor=effective_gravity_comp,
+            joint_limits=joint_limits,
+            kp=kp,
+            kd=kd,
+            grav_comp_kd=grav_comp_kd,
+            coulomb_friction=coulomb_friction,
+            use_coulomb_friction=use_coulomb_friction,
+            zero_gravity_mode=zero_gravity_mode,
+            joint_state_saver_factory=joint_state_saver_factory,
+            set_realtime_and_pin_callback=set_realtime_and_pin_callback,
         )
-    return get_robot()
+
+        if with_gripper:
+            return get_robot(
+                gripper_index=n_arm_joints,
+                gripper_limits=gripper_limits,
+                enable_gripper_calibration=gripper_needs_cal,
+                gripper_type=gripper_type,
+                arm_type=arm_type,
+                limit_gripper_force=50.0,
+            )
+        return get_robot()
+    except BaseException as error:
+        try:
+            motor_chain.close()
+        except BaseException as cleanup_error:
+            error._yamkit_cleanup_failed = True
+            error.add_note(f"YAM factory cleanup also failed: {cleanup_error!r}")
+        raise

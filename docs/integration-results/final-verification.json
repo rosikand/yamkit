@@ -1,0 +1,66 @@
+{
+  "tested_source_commit": "6a076005250354d75f5452eadf020a0085afd07c",
+  "date_utc": "2026-09-05",
+  "pytest": {
+    "passed": 925,
+    "warnings": 4,
+    "seconds": 129.66
+  },
+  "lint": "make lint and Ruff for all three diagnostic scripts passed",
+  "lockfile": "Resolved 175 packages in 1ms",
+  "whitespace": "working diff and full origin/main...HEAD passed",
+  "torch": "2.11.0+cpu",
+  "torchvision": "0.26.0+cpu",
+  "browser_checks": 25,
+  "smolvla_cpu": {
+    "fresh_chunks": 3,
+    "shape": [
+      50,
+      6
+    ],
+    "finite": true,
+    "readiness_s": 23.151332621000165,
+    "round_trip_s": [
+      3.834507288000168,
+      3.762292110999624,
+      3.83279007200008
+    ]
+  },
+  "preview": [
+    {
+      "scenario": "off",
+      "source_hz": 30.0,
+      "handoff_p99_us": 3.8538,
+      "errors": 0,
+      "viewer_threads_alive_after_cleanup": 0
+    },
+    {
+      "scenario": "on",
+      "source_hz": 30.0,
+      "handoff_p99_us": 155.8755,
+      "errors": 0,
+      "viewer_threads_alive_after_cleanup": 0
+    },
+    {
+      "scenario": "slow",
+      "source_hz": 30.0,
+      "handoff_p99_us": 128.8756,
+      "errors": 0,
+      "viewer_threads_alive_after_cleanup": 0
+    },
+    {
+      "scenario": "multiple",
+      "source_hz": 30.0,
+      "handoff_p99_us": 164.9442,
+      "errors": 0,
+      "viewer_threads_alive_after_cleanup": 0
+    }
+  ],
+  "remote_performance": "../remote-performance.json; injected delays, not new real-service latency",
+  "physical_hardware_or_camera_access": false,
+  "new_paid_api_cloud_calls": 0,
+  "deployments": 0,
+  "live_llm_enabled": false,
+  "physical_modal_rollout_allowed": false,
+  "physical_mapping_validated_on_a_rig": false
+}

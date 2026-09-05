@@ -1,0 +1,25 @@
+{
+  "tested_source_commit": "6a076005250354d75f5452eadf020a0085afd07c",
+  "sources": {
+    "base": {
+      "sha": "dbd01f1e70be66bb0e639789d0d37d7ecb5bd166",
+      "ancestor_of_tested_source": true
+    },
+    "A": {
+      "sha": "686b95e2da7a68b7dc79832ea080efbfc9921c4b",
+      "ancestor_of_tested_source": true
+    },
+    "P": {
+      "sha": "8900a984dbcdf38177ee8e0f4bd3fe4537c3acdb",
+      "ancestor_of_tested_source": true
+    },
+    "B": {
+      "sha": "ad52a189816dcb1e346a1da8f94accb19c239427",
+      "ancestor_of_tested_source": true
+    },
+    "C": {
+      "sha": "f3efcd1194620b938d9aa4750bbd895c9eb96c4c",
+      "ancestor_of_tested_source": true
+    }
+  }
+}

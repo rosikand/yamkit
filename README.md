@@ -3,7 +3,8 @@
 Self-contained toolkit for the four YAM arms on this machine. **Everything lives in this directory**:
 the Python interpreter (`.uv-python/`), the virtualenv (`.venv/`), the uv cache (`.uv-cache/`), the
 vendored vendor SDK (`third_party/i2rt`, pinned in `third_party/i2rt.VERSION`), datasets/models
-(`data/`) and training outputs (`outputs/`). Nothing is installed system-wide.
+(`data/`) and training outputs (`outputs/`). Nothing is installed system-wide. Cooperative arm
+ownership uses shared runtime lock files in `/tmp/yamkit-arm-locks` across checkouts.
 
 ```
 src/yamkit/                 core package + `yamkit` CLI
@@ -21,7 +22,7 @@ scripts/env.sh              `source` it to activate the env
 scripts/install_system.sh   one-time: CAN adapters come up at boot/hot-plug (sudo; offered by setup.sh)
 scripts/can_up.sh           bring CAN up by hand (sudo) if you skipped the above
 system/                     the systemd-networkd unit that install_system.sh installs (+ alternatives)
-third_party/i2rt            vendored I2RT SDK (+ one documented local patch)
+third_party/i2rt            vendored I2RT SDK (local patches listed in i2rt.VERSION)
 tests/                      hardware-free unit tests (fake robot)
 ```
 
@@ -98,14 +99,18 @@ Connecting an arm enables its motors in the vendor's gravity-compensation mode (
 move). On exit the arm is left compliant; the motors fall back to firmware damping after 400 ms.
 
 **Home** is the folded pose the vendor zeroed every joint at (all joints 0), unless `yamkit set-rest`
-stored another one. Teleop, recording and rollout move every arm home slowly at Start and back home at
-Stop, all arms at the same time (`control.home_speed` for followers and `control.leader_home_speed`
-for leaders, both 0.25 rad/s by default; 0 turns it off). Leaders move with low gains so a hand on
-the handle simply wins. A second Stop / Ctrl-C during the return releases the arms immediately.
+stored another one. Teleop and recording normally move connected arms home slowly at Start and
+back home at Stop, all arms at the same time (`control.home_speed` for followers and
+`control.leader_home_speed` for leaders, both 0.25 rad/s by default; 0 turns it off). Local rollout
+retains its normal return behavior. Leaders move with low gains so a hand on the handle simply
+wins. A second Stop / Ctrl-C during the return releases the arms immediately. Failed startup or
+operator-session faults release without an additional home move. Physical Modal rollout requires
+a passing qualification on the robot host and explicit supervised confirmation.
 
 **Align** fixes a follower that points slightly off its leader: the two arms' motor zeros never agree
 exactly. `yamkit align` reads both arms folded against their stops and stores the per-joint difference
-on the leader (`joint_offsets`); teleop, recording and rollout then all work in the follower's frame.
+on the leader (`joint_offsets`); teleop and recording then map leader input into the follower's
+frame. Policy targets must already use the matching follower frame.
 
 ## 3. Teleop
 
@@ -115,11 +120,15 @@ yamkit teleop --pair left_follower --auto-engage --duration 20
 yamkit teleop --bilateral-kp 0.15   # force feedback on the leader (0.1–0.2 recommended)
 ```
 
-On start every arm moves to home; on engage the follower moves to the leader pose over
-`control.sync_seconds`, then tracks at `control.teleop_hz`; on Ctrl-C every arm returns home before
-being released (`--no-home` skips both moves). Follower targets are always clamped to
+On start every arm moves to home; on engage the follower moves to the leader pose over at least
+`control.sync_seconds`, then tracks at `control.teleop_hz`. Synchronization advances each tick and
+can be disengaged; disengaged followers hold a freshly measured pose. On normal Ctrl-C every arm
+returns home before being released (`--no-home` skips both moves). Follower targets are clamped to
 `control.max_joint_speed` (rad/s) and `control.max_gripper_speed`, so a jump in the target becomes a
 bounded-speed move.
+
+Native `yamkit teleop` supports bilateral feedback. Recording and LeRobot teleoperation reject
+nonzero `control.bilateral_kp`; use `0` for those paths. See [operator parity](docs/OPERATOR_PARITY.md).
 
 ## 4. Cameras
 
@@ -150,18 +159,19 @@ yamkit teleoperate                    # same plugins, LeRobot's teleop loop (no 
 lerobot-dataset-viz --repo-id yamkit/pick_cube --root data/datasets/pick_cube --episode-index 0
 ```
 
-`yamkit record` is a thin wrapper around `lerobot-record`; any extra `--flag=value` is passed through
+`yamkit record` is a thin wrapper around `lerobot-record`; extra `--flag=value` options are passed through
 (e.g. `--dataset.streaming_encoding=true --display_data=true`). Keys in the dataset:
 `observation.state` / `action` = `left_joint_1.pos … left_gripper.pos, right_…` (radians, gripper 0–1),
 `observation.images.<camera>`.
 
-Equivalent raw command (single arm shown):
+Use the yamkit wrappers for YAM leader input. They install the same engage, synchronization and
+hold processing used by native teleop, and recording stores the action actually sent after safety
+clamps. Raw `lerobot-record` / `lerobot-teleoperate` reject unprocessed YAM leader actions with
+guidance to use these wrappers. A single-arm recording is:
 
 ```bash
-lerobot-record --robot.type=yam_follower --robot.rig=configs/rig.yaml --robot.arm=left_follower \
-               --teleop.type=yam_leader --teleop.rig=configs/rig.yaml --teleop.arm=left_leader \
-               --dataset.repo_id=yamkit/pick_cube --dataset.root=data/datasets/pick_cube \
-               --dataset.single_task="pick up the red cube" --dataset.num_episodes=20
+yamkit record --arms left_follower --name pick_cube \
+              --task "pick up the red cube" --episodes 20
 ```
 
 ## 5b. Hugging Face Hub (optional)
@@ -205,11 +215,12 @@ Bring the `pretrained_model` directory back under `outputs/` (or push it to the 
 
 ## 7. Run a policy on the arms
 
-First check that a checkpoint loads for this rig and how fast it runs here (no arm is energised):
+First check a checkpoint without activating hardware. Reviewed base-model checks use
+checkpoint-native fixtures; compatible custom checkpoint checks use the rig's feature spec:
 
 ```bash
 yamkit policy-check --policy lerobot/smolvla_base --task "pick up the red cube"
-# smolvla on this CPU: ~35 s load, ~0.8 s per 50-step action chunk, 14-d state/action, 1 camera
+# smolvla base: three fresh 50-step chunks, native 6-d state/action; no physical YAM mapping implied
 ```
 
 Then deploy:
@@ -217,13 +228,47 @@ Then deploy:
 ```bash
 yamkit rollout --policy outputs/train/smolvla_pick_cube/checkpoints/last/pretrained_model \
                --task "pick up the red cube" --duration 60 --rtc
-yamkit rollout --policy lerobot/smolvla_base --task "..." --dry-run    # print the lerobot-rollout command only
+yamkit rollout --policy outputs/train/my_policy/checkpoints/last/pretrained_model --task "..." --dry-run
 ```
 
-`--rtc` enables LeRobot's real-time-chunking inference, which hides most of the latency of a slow VLA
-on CPU. The same speed clamps as in teleop bound every commanded step. For a remote GPU, run
-`lerobot-rollout` here with the policy served by LeRobot's async inference (`lerobot[async]`) over
-Tailscale, or copy the checkpoint over.
+`--rtc` enables LeRobot's real-time-chunking inference for compatible local policies.
+Measure end-to-end latency before relying on chunk buffering. The same speed clamps
+as in teleop bound every commanded step.
+
+For optional Modal GPU inference and browser deployment, see [docs/MODAL.md](docs/MODAL.md).
+Local remains the default. MolmoAct2-YAM has a reviewed source mapping and a local synchronous
+path, but no supervised physical validation was performed. **Physical Modal rollout requires
+a current passing qualification on the actual robot host**, separate mapping acceptance and
+explicit supervised confirmation. No passing qualification has been demonstrated; readiness or
+confirmation alone cannot enable motion. Checks and probes remain available. SmolVLA
+and pi05 base profiles support native checks and are blocked from physical rollout because they
+lack a reviewed YAM mapping. Guided remote RTC and local Molmo guidance are unsupported. See
+[remote performance and its measurement limits](docs/REMOTE_PERFORMANCE.md).
+
+Modal defaults to raw RGB, cached `.remote` calls and `us-west` placement, with earlier
+requests through the same LeRobot async worker. JPEG qualities 85, 90 and 95 all exceeded
+the gripper-difference limit in paired H100 fixture tests; raw RGB preserves the image
+values. JPEG remains selectable for diagnostics. See [the H100 investigation](docs/MOLMO_H100.md).
+Collect evidence on the robot host without opening its arms or cameras:
+
+```bash
+yamkit modal-prepare --policy molmoact2 --region us-west --routing-region us-west
+yamkit modal-qualify --policy molmoact2 --requests 50
+yamkit modal-shutdown
+```
+
+These are billable cloud operations. Qualification uses generated images and fake arms
+with the real service; its record stays under `data/qualifications/`, applies only to
+the measured host/settings and expires after 24 hours. It requires healthy queue execution,
+Stop rejection of late actions, and warm p95 within 80% of the remaining usable action
+horizon. Mapping acceptance and supervised confirmation remain separate. Cloud results
+cannot qualify the Lenovo, and failed or expired records keep physical rollout blocked. Image,
+transport and scheduling options are described in [the Modal guide](docs/MODAL.md);
+see [the earlier latency investigation](docs/MODAL_LATENCY.md) for its measured settings and limits.
+
+For a small multimodal LLM controller, see [the agent guide](docs/AGENT.md). `yamkit agent` offers
+an offline fixture mode and paid OpenAI calls with fixtures; live execution is disabled pending
+verified sensor acquisition freshness (hardened no-home cleanup is available).
 
 ## 8. Web UI
 
@@ -234,11 +279,25 @@ yamkit ui        # → http://127.0.0.1:8400
 Local dashboard: live camera/state/CAN view, teleop + recording control, dataset browser with an
 episode viewer, policy-run history, checkpoint list. It is a thin wrapper — every hardware action
 spawns the corresponding `yamkit` command as a child process, and opening pages never energises a
-motor. See `docs/UI.md` and `docs/ui-screenshots/`.
+motor. The Inference page starts with camera previews off; **Show camera previews** explicitly
+opens them through the existing ownership mechanism. See [UI behavior](docs/UI.md) and
+the [staged acceptance checklist](docs/acceptance-test.md) for command effects and Stop behavior.
 
 ## Safety notes
 
-* Nothing is enabled during `yamkit can` / `yamkit discover`. Everything else energises motors.
+Arm commands now validate exact dimensions, finite values, measured state and vendor-configured
+joint bounds before commands or gain changes. Bimanual actions prevalidate both sides. Homing
+and synchronization respect configured target speeds even when their requested duration is too
+short. See [hardware guarantees, ownership and supervised acceptance](docs/HARDWARE_HARDENING.md)
+for the precise limits and optional `disconnect(home=False)` / `shutdown(home=False)` cleanup.
+
+The stale-command ramp reset is not a watchdog: SDK threads can keep transmitting during an
+application stall. Target bounds are not collision avoidance, measured-velocity guarantees, or
+a safety-rated emergency stop. Cooperative locks do not protect against unrelated drivers.
+
+* `yamkit can`, discovery and hardware-free policy checks do not energise motors. Arm read,
+  calibration, teleoperation, recording and permitted rollout commands can energise them; an
+  active-read probe requires its separate approval. See the acceptance checklist for each command.
 * Keep the workspace clear when engaging teleop: the follower moves to the leader pose first.
 * Another program on this machine (`ctrl_pi` Docker container) can drive the same buses; make sure
   it is idle (`candump can0` shows nothing) before starting yamkit.
@@ -259,33 +318,40 @@ motor. See `docs/UI.md` and `docs/ui-screenshots/`.
 | `yamkit align` | Once per pair: fold leader and follower to their stops, store the per-joint offset on the leader so both point the same way. |
 | `yamkit set-rest` | Store the arm's current pose as its home pose (default home: all joints 0). |
 | `yamkit rest` | Park: move arm(s) slowly to their home pose, then release them there. |
-| `yamkit teleoperate` | Teleop through LeRobot's `lerobot-teleoperate` (same plugins used for recording). |
-| `yamkit record` | Record teleop episodes into a LeRobot dataset (`lerobot-record`). |
-| `yamkit rollout` | Run a policy/VLA on the follower arm(s) (`lerobot-rollout`). |
+| `yamkit teleoperate` | LeRobot teleoperation with shared YAM operator processing; bilateral feedback unsupported. |
+| `yamkit record` | Record sent teleop actions into a LeRobot dataset with shared YAM operator processing. |
+| `yamkit rollout` | Run a compatible policy/VLA on the followers; Modal additionally requires current host qualification, mapping acceptance and supervised confirmation. |
+| `yamkit agent` | Bounded multimodal LLM controller with labeled fixtures; `--dry-run --offline` makes no API calls. Live execution is blocked; see [docs/AGENT.md](docs/AGENT.md). |
 | `yamkit train` | Fine-tune a policy with `lerobot-train` (needs a GPU box; see README for the remote workflow). |
 | `yamkit policy-check` | Load a policy/VLA for this rig and run it on a synthetic frame (no arm is energised). |
+| `yamkit modal-prepare` / `modal-shutdown` | Explicitly prepare or shut down the owned Modal service; billable preparation, no hardware activation. |
+| `yamkit modal-qualify` | Measure the real Modal service with generated images and fake hardware; write a host-bound qualification record. Failed records cannot authorize motion. |
 | `yamkit ui` | Serve the local web UI (viewer + launcher for the commands above; pages never energise a motor). |
 | `yamkit doctor` | Check the environment: venv, torch, CAN (and boot-time bring-up), plugins, cameras, rig file vs attached hardware. |
 | `yamkit hub login/status/logout` | Hugging Face sign-in (token kept in `data/hf`, never in the rig). |
 | `yamkit push-dataset` / `pull-dataset` / `push-model` | Move datasets and checkpoints between this computer and the Hub. |
 | `yamkit env` | Print the environment variables that keep everything inside this repo (for `eval`). |
 
-Every command accepts `--help`; `record`/`teleoperate`/`rollout`/`train` pass unknown `--flags` straight to the underlying `lerobot-*` script and `--dry-run` prints the exact command instead of running it.
+Every command accepts `--help`. Local `record`/`teleoperate`/`rollout`/`train` pass extra
+`--flags` to LeRobot, subject to wrapper validation; `--dry-run` prints the command without running it.
+Modal rollout rejects extra LeRobot flags and requires the same qualification and confirmation
+checks even with `--dry-run`. Browser Modal Start remains disabled.
 
 ## How it fits together
 
 ```
 teaching handle ─┐                      ┌─ YamArm.command() (speed-clamped) ─► follower motors
 leader motors ───┴─► YamArm.read() ──► TeleopSession (yamkit teleop)
-                                  └──► YamLeader.get_action() ─► lerobot-record / -teleoperate ─► YamFollower.send_action()
+                                  └──► YamLeader.get_action() ─► shared operator processor
+                                       ─► LeRobot record / teleoperate ─► YamFollower.send_action()
 cameras (rig.yaml) ─► YamFollower.get_observation() ─► LeRobotDataset (data/datasets/<name>)
 checkpoint ─► lerobot-rollout ─► policy.select_action() ─► YamFollower.send_action()
 ```
 
 * `yamkit.arm.YamArm` is the only place that talks to the vendor SDK (`i2rt.MotorChainRobot`).
-* The LeRobot plugins (`plugins/`) adapt `YamArm` to LeRobot's `Robot` / `Teleoperator` interfaces;
-  everything LeRobot offers (datasets, viz, training, rollout strategies, async inference) works
-  through them.
+* The LeRobot plugins (`plugins/`) adapt `YamArm` to LeRobot's `Robot` / `Teleoperator` interfaces.
+  LeRobot owns datasets, visualization, training and supported rollout paths. YAM leader input
+  requires the yamkit operator wrappers; the model and deployment restrictions above still apply.
 * The rig file is the single source of truth for hardware identity and control limits. It is
   machine-specific (git-ignored), written with comments for hand editing, and regenerated by
   `yamkit discover --write` without losing names, calibration or settings.
@@ -303,9 +369,9 @@ checkpoint ─► lerobot-rollout ─► policy.select_action() ─► YamFollow
 | trigger reads ~0 while released | `yamkit zero-handle <leader>` |
 | follower moves too fast | lower `control.max_joint_speed` in `configs/rig.yaml` |
 | follower points slightly off its leader | `yamkit align <arm>` (both arms folded to their stops) |
-| arms should not move by themselves at Start/Stop | `control.home_speed: 0` in `configs/rig.yaml`, or `yamkit teleop --no-home` |
+| arms should not home at Start/Stop | Set both `control.home_speed: 0` and `control.leader_home_speed: 0`, or use `yamkit teleop --no-home` |
 | torchcodec / libavutil errors in logs | harmless: LeRobot falls back to PyAV for video |
-| policy too slow on CPU | `yamkit rollout --rtc`, or serve the policy from a GPU box |
+| policy too slow on CPU | Use a suitable local GPU or supported local RTC; physical Modal rollout requires a passing queue qualification on the robot host |
 | training stops silently at step 0 (leaked semaphores) | forked data-loader workers; `yamkit train` adds `--num_workers=0` on CPU boxes, pass it yourself to plain `lerobot-train` |
 
 ## Development

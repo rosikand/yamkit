@@ -257,6 +257,11 @@ input[type="checkbox"] { accent-color: var(--accent); }
   padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 550; color: #d5d4cb;
 }
 .cam .placeholder { color: #85847c; font-size: 12.5px; text-align: center; padding: 12px; }
+.cam .preview-state {
+  position: absolute; bottom: 8px; left: 8px; right: 8px;
+  padding: 4px 8px; border-radius: 5px; background: rgba(0, 0, 0, 0.7);
+  color: #d5d4cb; font-size: 11px; pointer-events: none;
+}
 
 /* ---------------------------------------------------------------- joint state ------------- */
 .arm-panel { padding: 12px 16px 14px; }

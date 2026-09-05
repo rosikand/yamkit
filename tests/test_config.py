@@ -44,14 +44,14 @@ def test_swap_command(rig, tmp_path):
 
 def test_saved_rig_is_commented_and_readable(rig, tmp_path):
     rig.arm("left_follower").gripper_limits = [6.47, 1.16]
-    rig.arm("left_leader").rest_pose = [0.0, -0.5, 0.3, 0.0, 0.1, 0.0]
+    rig.arm("left_leader").rest_pose = [0.0, 0.5, 0.3, 0.0, 0.1, 0.0]
     rig.cameras = {"top": {"type": "opencv", "index_or_path": "/dev/video10", "width": 640, "height": 480, "fps": 30, "notes": "RealSense D435"}}
     rig.save()
     text = rig.path.read_text()
     for section in ("# ---- Arms", "# ---- Pairs", "# ---- Cameras", "# ---- Control", "yamkit swap", "yamkit discover --write"):
         assert section in text
     assert "gripper_limits: [6.47, 1.16]" in text  # short numeric lists inline
-    assert "rest_pose: [0.0, -0.5, 0.3, 0.0, 0.1, 0.0]" in text
+    assert "rest_pose: [0.0, 0.5, 0.3, 0.0, 0.1, 0.0]" in text
     assert text.index("arms:") < text.index("pairs:") < text.index("cameras:") < text.index("control:")
     loaded = RigConfig.load(rig.path)
     assert loaded.to_dict() == rig.to_dict()
@@ -173,6 +173,7 @@ def test_find_root_prefers_the_checkout_the_code_runs_from(monkeypatch, tmp_path
     (other / "pyproject.toml").write_text("")
     monkeypatch.setenv("YAMKIT_ROOT", str(other))
     monkeypatch.setenv("HF_HOME", str(other / "data" / "hf"))  # exported by the other clone's env.sh
+    monkeypatch.setenv("TMPDIR", str(other / "data" / "tmp"))
     monkeypatch.setenv("TORCH_HOME", "/somewhere/shared/torch")  # the user's own choice: untouched
     assert _env.find_root() == here
     _env.apply()
@@ -180,6 +181,8 @@ def test_find_root_prefers_the_checkout_the_code_runs_from(monkeypatch, tmp_path
 
     assert os.environ["YAMKIT_ROOT"] == str(here)
     assert os.environ["HF_HOME"] == str(here / "data" / "hf")
+    assert os.environ["TMPDIR"] == str(here / "data" / "tmp")
+    assert (here / "data" / "tmp").is_dir()
     assert os.environ["TORCH_HOME"] == "/somewhere/shared/torch"
 
 
@@ -201,3 +204,47 @@ def test_discover_write_keeps_a_backup_of_the_previous_rig(rig, monkeypatch):
     assert res.exit_code == 0, res.output
     assert rig.path.with_suffix(".yaml.bak").read_text() == before
     assert RigConfig.load(rig.path).arm("left_leader").can_serial == "AAA"  # names kept by serial
+
+
+@pytest.mark.parametrize('name', ['teleop_hz', 'sync_seconds', 'max_joint_speed', 'max_gripper_speed'])
+@pytest.mark.parametrize('value', [0, -1, float('nan'), float('inf'), True, '3'])
+def test_control_positive_finite_fields(name, value):
+    from yamkit.config import ControlSpec
+    with pytest.raises(ValueError):
+        ControlSpec(**{name: value})
+
+
+@pytest.mark.parametrize('name', ['bilateral_kp', 'home_speed', 'leader_home_speed'])
+@pytest.mark.parametrize('value', [-1, float('nan'), float('inf')])
+def test_control_nonnegative_finite_fields(name, value):
+    from yamkit.config import ControlSpec
+    with pytest.raises(ValueError):
+        ControlSpec(**{name: value})
+
+
+@pytest.mark.parametrize('value', [-1, 0.5, True, float('nan')])
+def test_engage_button_is_nonnegative_integer(value):
+    from yamkit.config import ControlSpec
+    with pytest.raises(ValueError):
+        ControlSpec(engage_button=value)
+
+
+@pytest.mark.parametrize('kwargs', [{'joint_offsets': [0] * 5 + [float('nan')]},
+                                   {'rest_pose': [[0] * 6]}, {'rest_pose': [0, -1, 0, 0, 0, 0]},
+                                   {'joint_offsets': [0, 1, 0, 0, 0, 0]},
+                                   {'gripper_limits': [0, 0]}, {'gripper_limits': [0, float('inf')]}])
+def test_arm_config_validates_shape_finiteness_and_raw_home_bounds(kwargs):
+    with pytest.raises(ValueError):
+        ArmSpec(name='f', role='follower', **kwargs)
+
+
+def test_mutated_control_is_reported_by_rig_validation(rig):
+    rig.control.max_joint_speed = float('nan')
+    assert any('max_joint_speed' in problem for problem in rig.validate())
+
+
+@pytest.mark.parametrize('field', ['can_serial', 'can_iface'])
+def test_duplicate_configured_adapters_are_invalid_before_open(rig, field):
+    setattr(rig.arm('right_follower'), field, 'duplicate')
+    setattr(rig.arm('left_follower'), field, 'duplicate')
+    assert any('shares CAN' in problem for problem in rig.validate())

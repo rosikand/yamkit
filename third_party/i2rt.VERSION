@@ -3,3 +3,5 @@
 Local patches (re-apply if the SDK is updated):
   - i2rt/motor_drivers/dm_driver.py PassiveEncoderReader._parse_encoder_message: wrap encoder counts >2048 to negative (trigger rest position just past zero read as fully squeezed).
   - i2rt/robots/get_robot.py wrap_correction() + its use in get_yam_robot: decide the ±2π wrap-around fix from the joint's own limits, not just |pos| > π, so an arm parked past its encoder wrap (base at +183° reading -177°) can still be powered up.
+  - i2rt/robots/get_robot.py get_yam_joint_limits(): expose the exact existing XML + 0.15 rad SDK command bounds for hardware-free preflight; get_yam_robot uses the same helper. No change to the bounds or firmware timeout.
+  - i2rt/motor_drivers/can_interface.py, dm_driver.py, i2rt/robots/get_robot.py, motor_chain_robot.py: close sockets/chains/server threads on partial construction, including BaseException cancellation; retain/join the CAN transmitter; attempt every cleanup and make successful repeated close a no-op. Failed startup cleanup marks the original exception so yamkit retains its ownership lease.

@@ -1,0 +1,43 @@
+{
+  "passed": 23,
+  "checks": [
+    "Inference page load starts no session, model, motors or paid API",
+    "Local backend default and unsupported base mapping visible",
+    "Policy check uses shared CLI and displays fixture readiness",
+    "Changed selection invalidates displayed readiness",
+    "Custom checkpoint selection remains available",
+    "Modal selects GPU and disables guided RTC",
+    "Prepare Modal uses fixture child and displays result",
+    "Saved probe passes saved path through shared CLI",
+    "Declining active-read confirmation starts no child",
+    "Confirmed active-read uses explicit CLI approval",
+    "Start and Stop control only the local fixture rollout child",
+    "Dynamic camera ownership works for camera-owning teleop",
+    "Recording displays recorder-owned JPEGs through browser /stream",
+    "Healthy MJPEG nodes and URLs survive normal polling",
+    "Reset retains recorder ownership and fresh previews",
+    "Browser reload reconnects to active recorder preview",
+    "Paused acquisition shows increasing stale image age",
+    "Failed publisher never opens competing direct cameras",
+    "Released recorder returns to direct preview during simulated upload",
+    "Stop leaves idle previews working and no session child",
+    "Zero JavaScript exceptions",
+    "Zero real camera, arm, model-load, or paid-service attempts",
+    "Frontend requests stay on fixture loopback origin"
+  ],
+  "javascript_exceptions": [],
+  "forbidden_calls": [],
+  "child_commands": [
+    "policy-check",
+    "modal-prepare",
+    "policy-probe",
+    "policy-probe",
+    "rollout",
+    "teleop",
+    "record"
+  ],
+  "physical_hardware": false,
+  "real_services": false,
+  "scope": "Chrome, actual UI/HTTP/session/preview paths; synthetic acquisition and phase simulation",
+  "page_load_camera_note": "Baseline Inference page opens direct preview cameras; Stage 5 makes this opt-in."
+}

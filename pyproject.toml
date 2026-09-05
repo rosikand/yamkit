@@ -28,6 +28,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+agent = ["openai>=2.26,<3"]  # lazy Responses adapter for `yamkit agent`
+molmoact2 = ["lerobot[molmoact2]"]  # optional local Molmo model dependencies
+modal = ["modal==1.5.5"]  # outbound authenticated GPU inference; local remains the default
 realsense = ["lerobot[intelrealsense]"]
 dev = ["pytest>=8.0", "ruff>=0.6", "httpx>=0.27", "quickjs>=1.19"]  # quickjs: syntax-checks ui/app.js in the tests (no node needed)
 
@@ -50,6 +53,8 @@ packages = ["src/yamkit"]
 members = ["plugins/*"]
 
 [tool.uv]
+cache-dir = ".uv-cache"
+python-preference = "only-managed"
 # ruckig (i2rt dep) ships only an sdist and needs an older scikit-build-core to build.
 build-constraint-dependencies = ["scikit-build-core<0.10"]
 
@@ -71,3 +76,4 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--basetemp=.pytest_cache/tmp"  # test artifacts, including agent logs, stay in the repo

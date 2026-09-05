@@ -1,0 +1,3744 @@
+{
+  "date": "2026-09-05",
+  "base_sha": "d3570a79e022414a97d62e68564c2bd6cedc57ba",
+  "hardware": "No real arms or cameras; generated fixtures and repository FakeRobot only",
+  "before": {
+    "measurement": "real Modal RPC; generated checkpoint-native fixtures; no action execution",
+    "measurement_host": null,
+    "profile": "molmoact2",
+    "revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+    "image_hw": [
+      480,
+      640
+    ],
+    "fixture_pattern": null,
+    "call_mode": null,
+    "image_encoding": null,
+    "jpeg_quality": null,
+    "readiness_s": 0.251032190999922,
+    "readiness": {
+      "profile": "molmoact2",
+      "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+      "instance_id": "563ef55a-08ff-49fe-b1d0-534a42bd0c01",
+      "device": "cuda",
+      "load_s": 145.271570498,
+      "prediction_count": 0,
+      "compute_region": "eu-frankfurt-1",
+      "requested_compute_region": null,
+      "routing_region": "us-east",
+      "container_init_s": 153.87518214699998
+    },
+    "elapsed_s": 180.54569719000006,
+    "terminated": "request_limit",
+    "sample_count": 101,
+    "warm_sample_count": 100,
+    "warm_round_trip_s": {
+      "sample_count": 100,
+      "min": 1.4202567939998971,
+      "max": 4.552968361000012,
+      "p50": 1.7194518894999646,
+      "p95": 2.070351601000015,
+      "p99": 2.745286645269944
+    },
+    "warm_stages": {
+      "fixture_generation_s": {
+        "sample_count": 100,
+        "min": 0.0028598440001132985,
+        "max": 0.005006414000035875,
+        "p50": 0.0029790945000058855,
+        "p95": 0.0033779550999156523,
+        "p99": 0.004227291920005886
+      },
+      "lifecycle.idle_s": {
+        "sample_count": 100,
+        "min": 1.0685996349999982,
+        "max": 4.167109086000011,
+        "p50": 1.359487631999997,
+        "p95": 1.7120727971499985,
+        "p99": 2.3970700422600038
+      },
+      "lifecycle.load_s": {
+        "sample_count": 100,
+        "min": 145.271570498,
+        "max": 145.271570498,
+        "p50": 145.271570498,
+        "p95": 145.271570498,
+        "p99": 145.271570498
+      },
+      "lifecycle.runtime_age_s": {
+        "sample_count": 100,
+        "min": 5.434291489000003,
+        "max": 181.161929331,
+        "p50": 94.9606321915,
+        "p95": 172.43472218724997,
+        "p99": 179.36374619997002
+      },
+      "observation_age_at_dispatch_s": {
+        "sample_count": 100,
+        "min": 0.00037545099985436536,
+        "max": 0.0015841350000300736,
+        "p50": 0.00043033149995608255,
+        "p95": 0.0007517468500850555,
+        "p99": 0.0008610281098549459
+      },
+      "payload_bytes": {
+        "sample_count": 100,
+        "min": 2764800.0,
+        "max": 2764800.0,
+        "p50": 2764800.0,
+        "p95": 2764800.0,
+        "p99": 2764800.0
+      },
+      "request_validation_s": {
+        "sample_count": 100,
+        "min": 2.0693999886134407e-05,
+        "max": 4.1024000211109524e-05,
+        "p50": 2.3764499928802252e-05,
+        "p95": 3.145209997228448e-05,
+        "p99": 3.924496989156979e-05
+      },
+      "response_validation_s": {
+        "sample_count": 100,
+        "min": 0.00019939000003432739,
+        "max": 0.0003922509999938484,
+        "p50": 0.0002165585000284409,
+        "p95": 0.00024833690005152673,
+        "p99": 0.000332392630039067
+      },
+      "round_trip_s": {
+        "sample_count": 100,
+        "min": 1.4202567939998971,
+        "max": 4.552968361000012,
+        "p50": 1.7194518894999646,
+        "p95": 2.070351601000015,
+        "p99": 2.745286645269944
+      },
+      "rpc_minus_server_s": {
+        "sample_count": 100,
+        "min": 1.0648091869999234,
+        "max": 4.163036837000021,
+        "p50": 1.3582412024999257,
+        "p95": 1.7079828364500211,
+        "p99": 2.3887666471099545
+      },
+      "server_timing.diagnostic_conversion_s": {
+        "sample_count": 100,
+        "min": 2.609999967262411e-07,
+        "max": 7.429999868691084e-07,
+        "p50": 3.480000003719397e-07,
+        "p95": 5.710500133204732e-07,
+        "p99": 6.677599947124694e-07
+      },
+      "server_timing.diagnostic_postprocess_s": {
+        "sample_count": 100,
+        "min": 1.0280000140028278e-06,
+        "max": 3.1840000076499564e-06,
+        "p50": 1.490500011414042e-06,
+        "p95": 2.065249991289875e-06,
+        "p99": 2.7444400134868395e-06
+      },
+      "server_timing.image_decode_transform_s": {
+        "sample_count": 100,
+        "min": 0.001100172000008115,
+        "max": 0.005553599999984726,
+        "p50": 0.0017926955000007183,
+        "p95": 0.002851012849986034,
+        "p99": 0.005126017020010354
+      },
+      "server_timing.inference_s": {
+        "sample_count": 100,
+        "min": 0.33079063000002407,
+        "max": 0.3846468600000037,
+        "p50": 0.33915538149997815,
+        "p95": 0.3694357943500023,
+        "p99": 0.3821536024199796
+      },
+      "server_timing.postprocess_s": {
+        "sample_count": 100,
+        "min": 0.00022077200000580888,
+        "max": 0.0004897619999724157,
+        "p50": 0.0002965289999963261,
+        "p95": 0.00037889789996938813,
+        "p99": 0.0004466375999777485
+      },
+      "server_timing.preprocess_s": {
+        "sample_count": 100,
+        "min": 0.01772241800000529,
+        "max": 0.025470073000008142,
+        "p50": 0.021360577500018962,
+        "p95": 0.02458018464999867,
+        "p99": 0.024936005619945835
+      },
+      "server_timing.queue_wait_s": {
+        "sample_count": 100,
+        "min": 2.569000002949906e-06,
+        "max": 5.218000012519042e-06,
+        "p50": 2.999500011924283e-06,
+        "p95": 3.5358999923573715e-06,
+        "p99": 4.521039954852316e-06
+      },
+      "server_timing.request_validation_s": {
+        "sample_count": 100,
+        "min": 3.5295999992968063e-05,
+        "max": 7.045300000640964e-05,
+        "p50": 4.642499999363281e-05,
+        "p95": 6.0959800046589406e-05,
+        "p99": 6.305374000618261e-05
+      },
+      "server_timing.response_conversion_s": {
+        "sample_count": 100,
+        "min": 2.1215000003849127e-05,
+        "max": 5.039299998088609e-05,
+        "p50": 3.0494500009581316e-05,
+        "p95": 4.307470001378988e-05,
+        "p99": 4.8495169961029214e-05
+      },
+      "server_timing.response_validation_s": {
+        "sample_count": 100,
+        "min": 0.00013994699997965654,
+        "max": 0.00023003999999104963,
+        "p50": 0.00015077400000507168,
+        "p95": 0.00019538230004343405,
+        "p99": 0.0002149147800128049
+      },
+      "server_timing.saved_postprocess_s": {
+        "sample_count": 100,
+        "min": 0.0002195529999937662,
+        "max": 0.0004880839999827913,
+        "p50": 0.00029482249999546184,
+        "p95": 0.0003773880499977622,
+        "p99": 0.0004449130699737227
+      },
+      "server_timing.state_reset_s": {
+        "sample_count": 100,
+        "min": 5.409700000313933e-05,
+        "max": 0.0001631389999943167,
+        "p50": 0.00010744649998173372,
+        "p95": 0.00015649725000344006,
+        "p99": 0.00016144411996663166
+      },
+      "server_timing.total_s": {
+        "sample_count": 100,
+        "min": 0.35246110100001715,
+        "max": 0.41388863100002027,
+        "p50": 0.3635199545000205,
+        "p95": 0.3948840939499917,
+        "p99": 0.40448743755005473
+      },
+      "total_request_s": {
+        "sample_count": 100,
+        "min": 1.420880354000019,
+        "max": 4.553883588999952,
+        "p50": 1.720081141000037,
+        "p95": 2.0712476523498933,
+        "p99": 2.7462259946200542
+      },
+      "transport_timing.dispatch_s": {
+        "sample_count": 100,
+        "min": 0.47600749399998676,
+        "max": 0.9099969240000974,
+        "p50": 0.6430509154999982,
+        "p95": 0.8441037125499633,
+        "p99": 0.8971837608898955
+      },
+      "transport_timing.handle_lookup_s": {
+        "sample_count": 100,
+        "min": 0.00014325300003292796,
+        "max": 0.00023763500007589755,
+        "p50": 0.00016557600008582085,
+        "p95": 0.0002072200999123197,
+        "p99": 0.0002348293400336843
+      },
+      "transport_timing.response_wait_s": {
+        "sample_count": 100,
+        "min": 0.9116913899999872,
+        "max": 3.948555423000016,
+        "p50": 1.0298440745000335,
+        "p95": 1.378623482399871,
+        "p99": 2.1205069302898987
+      },
+      "transport_timing.sdk.input_blob_bytes": {
+        "sample_count": 100,
+        "min": 2765751.0,
+        "max": 2765751.0,
+        "p50": 2765751.0,
+        "p95": 2765751.0,
+        "p99": 2765751.0
+      },
+      "transport_timing.sdk.input_blob_upload_s": {
+        "sample_count": 100,
+        "min": 0.34381170100004965,
+        "max": 0.7803706170000169,
+        "p50": 0.5106766199999129,
+        "p95": 0.7216209230499999,
+        "p99": 0.75543832236001
+      },
+      "transport_timing.sdk.request_serialization_s": {
+        "sample_count": 100,
+        "min": 0.0014385469999069755,
+        "max": 0.002632722000043941,
+        "p50": 0.0019360574999609526,
+        "p95": 0.0022975465000854454,
+        "p99": 0.002476670279920655
+      },
+      "transport_timing.sdk.response_deserialization_s": {
+        "sample_count": 100,
+        "min": 6.514699998660944e-05,
+        "max": 0.0001300229998832947,
+        "p50": 8.852650012158847e-05,
+        "p95": 0.0001174158000026182,
+        "p99": 0.0001250541899821656
+      },
+      "transport_timing.sdk.serialized_request_bytes": {
+        "sample_count": 100,
+        "min": 2765751.0,
+        "max": 2765751.0,
+        "p50": 2765751.0,
+        "p95": 2765751.0,
+        "p99": 2765751.0
+      },
+      "transport_timing.sdk.serialized_response_bytes": {
+        "sample_count": 100,
+        "min": 6051.0,
+        "max": 6051.0,
+        "p50": 6051.0,
+        "p95": 6051.0,
+        "p99": 6051.0
+      }
+    },
+    "container_instance_count": 1,
+    "first_request": {
+      "round_trip_s": 2.998909774999902,
+      "server_timing": {
+        "request_validation_s": 8.84810000059133e-05,
+        "queue_wait_s": 4.713000009815005e-06,
+        "modal_queue_s": null,
+        "request_deserialization_s": null,
+        "response_serialization_s": null,
+        "image_decode_transform_s": 0.0031709609999950317,
+        "per_camera": {
+          "top": {
+            "decode_s": 3.223999982537862e-06,
+            "crop_s": 7.617000022719367e-06,
+            "tensor_conversion_s": 0.0010337269999922682
+          },
+          "left": {
+            "decode_s": 1.0168000017074519e-05,
+            "crop_s": 5.690999984153677e-06,
+            "tensor_conversion_s": 0.001190521000012268
+          },
+          "right": {
+            "decode_s": 2.2209999997357954e-05,
+            "crop_s": 6.321000000752974e-06,
+            "tensor_conversion_s": 0.0008823860000006789
+          }
+        },
+        "state_reset_s": 0.00013056800000299518,
+        "preprocess_s": 0.02840322299999798,
+        "inference_s": 1.6050011719999873,
+        "preprocess_steps_s": {
+          "0:RenameObservationsProcessorStep": 1.4518999989832082e-05,
+          "1:AddBatchDimensionProcessorStep": 0.00011666099999274593,
+          "2:MolmoAct2StateFrameTransformStep": 4.673999995929989e-06,
+          "3:MolmoAct2MaskedNormalizerProcessorStep": 0.0006712370000059309,
+          "4:MolmoAct2ClampNormalizedProcessorStep": 4.3718000000581014e-05,
+          "5:MolmoAct2PackInputsProcessorStep": 0.02574692300001402,
+          "6:DeviceProcessorStep": 0.0016371079999828453
+        },
+        "postprocess_s": 0.0008179760000075476,
+        "diagnostic_postprocess_s": 3.141000007644834e-06,
+        "saved_postprocess_s": 0.0008148349999999027,
+        "postprocess_steps_s": {
+          "0:MolmoAct2ClampActionProcessorStep": 3.1144000018912266e-05,
+          "1:MolmoAct2MaskedUnnormalizerProcessorStep": 0.0006851820000122189,
+          "2:MolmoAct2ActionFrameTransformStep": 2.945000005638576e-06,
+          "3:DeviceProcessorStep": 3.710300001102951e-05
+        },
+        "diagnostic_postprocess_steps_s": {},
+        "response_conversion_s": 3.9044000004651025e-05,
+        "total_s": 1.6379224789999967,
+        "diagnostic_conversion_s": 5.260000079942984e-07,
+        "response_validation_s": 0.00024250999999253509
+      },
+      "lifecycle": {
+        "first_prediction": true,
+        "prediction_count": 1,
+        "idle_s": null,
+        "runtime_age_s": 2.607487378000002,
+        "load_s": 145.271570498
+      }
+    }
+  },
+  "cached_handle_only": {
+    "measurement": "real Modal RPC; generated checkpoint-native fixtures; no action execution",
+    "measurement_host": null,
+    "profile": "molmoact2",
+    "revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+    "image_hw": [
+      480,
+      640
+    ],
+    "fixture_pattern": null,
+    "call_mode": null,
+    "image_encoding": null,
+    "jpeg_quality": null,
+    "readiness_s": 0.25576275299999907,
+    "readiness": {
+      "profile": "molmoact2",
+      "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+      "instance_id": "563ef55a-08ff-49fe-b1d0-534a42bd0c01",
+      "device": "cuda",
+      "load_s": 145.271570498,
+      "prediction_count": 101,
+      "compute_region": "eu-frankfurt-1",
+      "requested_compute_region": null,
+      "routing_region": "us-east",
+      "container_init_s": 153.87518214699998
+    },
+    "elapsed_s": 178.99990952200005,
+    "terminated": "request_limit",
+    "sample_count": 101,
+    "warm_sample_count": 100,
+    "warm_round_trip_s": {
+      "sample_count": 100,
+      "min": 1.4662009050000506,
+      "max": 3.0432432349998635,
+      "p50": 1.6627029840000205,
+      "p95": 2.362922118299934,
+      "p99": 2.8848989621002086
+    },
+    "warm_stages": {
+      "fixture_generation_s": {
+        "sample_count": 100,
+        "min": 0.002821099999891885,
+        "max": 0.0061170190001575975,
+        "p50": 0.002990436499885618,
+        "p95": 0.004467669249959272,
+        "p99": 0.005945458929943471
+      },
+      "lifecycle.idle_s": {
+        "sample_count": 100,
+        "min": 1.1057216089999997,
+        "max": 2.6601712850000467,
+        "p50": 1.3032827419999933,
+        "p95": 2.0020214182500267,
+        "p99": 2.4995852798599705
+      },
+      "lifecycle.load_s": {
+        "sample_count": 100,
+        "min": 145.271570498,
+        "max": 145.271570498,
+        "p50": 145.271570498,
+        "p95": 145.271570498,
+        "p99": 145.271570498
+      },
+      "lifecycle.runtime_age_s": {
+        "sample_count": 100,
+        "min": 185.83285199199997,
+        "max": 360.590458135,
+        "p50": 271.954921025,
+        "p95": 351.1416252752,
+        "p99": 359.04354461014
+      },
+      "observation_age_at_dispatch_s": {
+        "sample_count": 100,
+        "min": 0.000373688000081529,
+        "max": 0.0019118760001219925,
+        "p50": 0.00042158299982020253,
+        "p95": 0.0008222577999049462,
+        "p99": 0.001697343990101673
+      },
+      "payload_bytes": {
+        "sample_count": 100,
+        "min": 2764800.0,
+        "max": 2764800.0,
+        "p50": 2764800.0,
+        "p95": 2764800.0,
+        "p99": 2764800.0
+      },
+      "request_validation_s": {
+        "sample_count": 100,
+        "min": 2.0204000065859873e-05,
+        "max": 3.747999994629936e-05,
+        "p50": 2.3118999934013118e-05,
+        "p95": 3.2927450013175986e-05,
+        "p99": 3.663355011894965e-05
+      },
+      "response_validation_s": {
+        "sample_count": 100,
+        "min": 0.00019765100000768143,
+        "max": 0.00041626999995969527,
+        "p50": 0.0002198824998913551,
+        "p95": 0.0003276215500477519,
+        "p99": 0.000380658709971158
+      },
+      "round_trip_s": {
+        "sample_count": 100,
+        "min": 1.4662009050000506,
+        "max": 3.0432432349998635,
+        "p50": 1.6627029840000205,
+        "p95": 2.362922118299934,
+        "p99": 2.8848989621002086
+      },
+      "rpc_minus_server_s": {
+        "sample_count": 100,
+        "min": 1.1081222260000345,
+        "max": 2.6574300839998273,
+        "p50": 1.3014799220000839,
+        "p95": 2.0001280720999284,
+        "p99": 2.497610356680217
+      },
+      "server_timing.diagnostic_conversion_s": {
+        "sample_count": 100,
+        "min": 2.6899999738816405e-07,
+        "max": 7.109999842214165e-07,
+        "p50": 4.0250000665764674e-07,
+        "p95": 6.080499929339567e-07,
+        "p99": 7.010999763679138e-07
+      },
+      "server_timing.diagnostic_postprocess_s": {
+        "sample_count": 100,
+        "min": 1.0609999776534096e-06,
+        "max": 3.151999976580555e-06,
+        "p50": 1.3695000120605982e-06,
+        "p95": 2.0766000403682483e-06,
+        "p99": 2.673829968671273e-06
+      },
+      "server_timing.image_decode_transform_s": {
+        "sample_count": 100,
+        "min": 0.0010283260000392147,
+        "max": 0.003160922999995819,
+        "p50": 0.0015702974999953767,
+        "p95": 0.002723077449971356,
+        "p99": 0.0031041870899969127
+      },
+      "server_timing.inference_s": {
+        "sample_count": 100,
+        "min": 0.3306134199999633,
+        "max": 0.3947594219999928,
+        "p50": 0.3343967290000194,
+        "p95": 0.3666824578000103,
+        "p99": 0.37914885747001004
+      },
+      "server_timing.postprocess_s": {
+        "sample_count": 100,
+        "min": 0.00024259200000642522,
+        "max": 0.0007718589999967662,
+        "p50": 0.00033839649998412824,
+        "p95": 0.0006137687500455513,
+        "p99": 0.0007571040399858476
+      },
+      "server_timing.preprocess_s": {
+        "sample_count": 100,
+        "min": 0.018423050000023977,
+        "max": 0.024665206000008766,
+        "p50": 0.020796509500002003,
+        "p95": 0.02363123405002341,
+        "p99": 0.02392390290997412
+      },
+      "server_timing.queue_wait_s": {
+        "sample_count": 100,
+        "min": 2.581999979156535e-06,
+        "max": 3.7590000374621013e-06,
+        "p50": 2.953000006300499e-06,
+        "p95": 3.360800016594112e-06,
+        "p99": 3.4986299772299403e-06
+      },
+      "server_timing.request_validation_s": {
+        "sample_count": 100,
+        "min": 3.5066999998889514e-05,
+        "max": 6.151700000600613e-05,
+        "p50": 4.530850000605824e-05,
+        "p95": 5.707825001479705e-05,
+        "p99": 6.0744799956182764e-05
+      },
+      "server_timing.response_conversion_s": {
+        "sample_count": 100,
+        "min": 2.074399998264198e-05,
+        "max": 4.876899998862427e-05,
+        "p50": 2.7591000019810963e-05,
+        "p95": 4.175330003590716e-05,
+        "p99": 4.501591000519058e-05
+      },
+      "server_timing.response_validation_s": {
+        "sample_count": 100,
+        "min": 0.000139965000016673,
+        "max": 0.00022280500002125336,
+        "p50": 0.0001458084999796938,
+        "p95": 0.00019312250000211862,
+        "p99": 0.00020766096996055702
+      },
+      "server_timing.saved_postprocess_s": {
+        "sample_count": 100,
+        "min": 0.00024132699996926021,
+        "max": 0.0007702990000097998,
+        "p50": 0.00033685949998130127,
+        "p95": 0.0006124028000243697,
+        "p99": 0.0007559855800002425
+      },
+      "server_timing.state_reset_s": {
+        "sample_count": 100,
+        "min": 5.4090999981326604e-05,
+        "max": 0.00016035699997019037,
+        "p50": 0.00010316050000369614,
+        "p95": 0.00015403805000175909,
+        "p99": 0.0001585631199765203
+      },
+      "server_timing.total_s": {
+        "sample_count": 100,
+        "min": 0.3515009559999953,
+        "max": 0.41961306799998965,
+        "p50": 0.357091322499997,
+        "p95": 0.3913128998499872,
+        "p99": 0.400609344799994
+      },
+      "total_request_s": {
+        "sample_count": 100,
+        "min": 1.4668189399999392,
+        "max": 3.043844392999972,
+        "p50": 1.6641093835000902,
+        "p95": 2.363633430700065,
+        "p99": 2.885507155039978
+      },
+      "transport_timing.dispatch_s": {
+        "sample_count": 100,
+        "min": 0.2542848110001614,
+        "max": 1.0788595169999553,
+        "p50": 0.6402749325000059,
+        "p95": 0.8553489083000044,
+        "p99": 1.0564665099899369
+      },
+      "transport_timing.handle_lookup_s": {
+        "sample_count": 100,
+        "min": 0.00012969499994142097,
+        "max": 0.0002582510001047922,
+        "p50": 0.00014484949997495278,
+        "p95": 0.00019100999993497677,
+        "p99": 0.0002379431301233127
+      },
+      "transport_timing.response_wait_s": {
+        "sample_count": 100,
+        "min": 0.9087733060000573,
+        "max": 2.5969968659999267,
+        "p50": 1.03844874899994,
+        "p95": 1.5795197765499096,
+        "p99": 2.2289726245799097
+      },
+      "transport_timing.sdk.input_blob_bytes": {
+        "sample_count": 100,
+        "min": 2765751.0,
+        "max": 2765751.0,
+        "p50": 2765751.0,
+        "p95": 2765751.0,
+        "p99": 2765751.0
+      },
+      "transport_timing.sdk.input_blob_upload_s": {
+        "sample_count": 100,
+        "min": 0.19359164000002238,
+        "max": 1.0206876859999738,
+        "p50": 0.5669637770000691,
+        "p95": 0.7880640934999633,
+        "p99": 1.0069883362699648
+      },
+      "transport_timing.sdk.request_serialization_s": {
+        "sample_count": 100,
+        "min": 0.0005788990001747152,
+        "max": 0.0032655580000664486,
+        "p50": 0.0006412550000050032,
+        "p95": 0.0023309103000087815,
+        "p99": 0.002449995010042589
+      },
+      "transport_timing.sdk.response_deserialization_s": {
+        "sample_count": 100,
+        "min": 6.453399987549346e-05,
+        "max": 0.0001565600000503764,
+        "p50": 9.092199991300731e-05,
+        "p95": 0.00012125145004802106,
+        "p99": 0.00014540270009092644
+      },
+      "transport_timing.sdk.serialized_request_bytes": {
+        "sample_count": 100,
+        "min": 2765751.0,
+        "max": 2765751.0,
+        "p50": 2765751.0,
+        "p95": 2765751.0,
+        "p99": 2765751.0
+      },
+      "transport_timing.sdk.serialized_response_bytes": {
+        "sample_count": 100,
+        "min": 6051.0,
+        "max": 6051.0,
+        "p50": 6051.0,
+        "p95": 6051.0,
+        "p99": 6051.0
+      }
+    },
+    "container_instance_count": 1,
+    "first_request": {
+      "round_trip_s": 2.123406065000154,
+      "server_timing": {
+        "request_validation_s": 4.316500002232715e-05,
+        "queue_wait_s": 6.911000014042656e-06,
+        "modal_queue_s": null,
+        "request_deserialization_s": null,
+        "response_serialization_s": null,
+        "image_decode_transform_s": 0.002237794999984999,
+        "per_camera": {
+          "top": {
+            "decode_s": 2.4469999857501534e-06,
+            "crop_s": 5.294000004596455e-06,
+            "tensor_conversion_s": 0.0006700360000309047
+          },
+          "left": {
+            "decode_s": 6.3410000166186364e-06,
+            "crop_s": 2.494000000297092e-06,
+            "tensor_conversion_s": 0.0007008350000319297
+          },
+          "right": {
+            "decode_s": 1.3315999979113258e-05,
+            "crop_s": 3.56700002157595e-06,
+            "tensor_conversion_s": 0.0008268259999795191
+          }
+        },
+        "state_reset_s": 9.148800000957635e-05,
+        "preprocess_s": 0.019936631999996735,
+        "inference_s": 0.3312636929999826,
+        "preprocess_steps_s": {
+          "0:RenameObservationsProcessorStep": 1.0135000025002228e-05,
+          "1:AddBatchDimensionProcessorStep": 5.349099996010409e-05,
+          "2:MolmoAct2StateFrameTransformStep": 2.0749999976032996e-06,
+          "3:MolmoAct2MaskedNormalizerProcessorStep": 0.00029542900000478767,
+          "4:MolmoAct2ClampNormalizedProcessorStep": 1.7090000028474606e-05,
+          "5:MolmoAct2PackInputsProcessorStep": 0.018033795000008013,
+          "6:DeviceProcessorStep": 0.0014362450000362514
+        },
+        "postprocess_s": 0.00035739000003331967,
+        "diagnostic_postprocess_s": 1.2969999829692824e-06,
+        "saved_postprocess_s": 0.0003560930000503504,
+        "postprocess_steps_s": {
+          "0:MolmoAct2ClampActionProcessorStep": 1.915900003268689e-05,
+          "1:MolmoAct2MaskedUnnormalizerProcessorStep": 0.00013791199995694114,
+          "2:MolmoAct2ActionFrameTransformStep": 2.6059999527205946e-06,
+          "3:DeviceProcessorStep": 0.0001627180000127737
+        },
+        "diagnostic_postprocess_steps_s": {},
+        "response_conversion_s": 2.5797999967380747e-05,
+        "total_s": 0.3541298880000454,
+        "diagnostic_conversion_s": 5.969999961052963e-07,
+        "response_validation_s": 0.00015310200001295016
+      },
+      "lifecycle": {
+        "first_prediction": false,
+        "prediction_count": 102,
+        "idle_s": 2.4612800849999985,
+        "runtime_age_s": 183.986277115,
+        "load_s": 145.271570498
+      }
+    }
+  },
+  "local_jpeg": {
+    "rgb8": {
+      "warm_samples": 100,
+      "first": {
+        "encode_s": 0.001256845999705547,
+        "decode_s": 2.1131000266905176e-05,
+        "payload_bytes": 2764800,
+        "rgb_mean_absolute_delta": 0.0
+      },
+      "warm": {
+        "encode_s": {
+          "sample_count": 100,
+          "min": 0.000205820999781281,
+          "max": 0.001037023000208137,
+          "p50": 0.00031690550008534046,
+          "p95": 0.0006617923498424716,
+          "p99": 0.0007153205197300866
+        },
+        "decode_s": {
+          "sample_count": 100,
+          "min": 1.073199973689043e-05,
+          "max": 0.0001372550000269257,
+          "p50": 1.2372999890430947e-05,
+          "p95": 1.4703900114909628e-05,
+          "p99": 1.6529449981135883e-05
+        },
+        "payload_bytes": {
+          "sample_count": 100,
+          "min": 2764800.0,
+          "max": 2764800.0,
+          "p50": 2764800.0,
+          "p95": 2764800.0,
+          "p99": 2764800.0
+        },
+        "rgb_mean_absolute_delta": {
+          "sample_count": 100,
+          "min": 0.0,
+          "max": 0.0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0
+        }
+      }
+    },
+    "jpeg": {
+      "warm_samples": 100,
+      "first": {
+        "encode_s": 0.028500139999778185,
+        "decode_s": 0.01124276300015481,
+        "payload_bytes": 698666,
+        "rgb_mean_absolute_delta": 46.78474645543981
+      },
+      "warm": {
+        "encode_s": {
+          "sample_count": 100,
+          "min": 0.006664564999937284,
+          "max": 0.007687697999699594,
+          "p50": 0.006897544499906871,
+          "p95": 0.007140046299923597,
+          "p99": 0.007268482499953282
+        },
+        "decode_s": {
+          "sample_count": 100,
+          "min": 0.009798451999813551,
+          "max": 0.010720598999796493,
+          "p50": 0.01009242300006008,
+          "p95": 0.010558339900103419,
+          "p99": 0.01066624007975861
+        },
+        "payload_bytes": {
+          "sample_count": 100,
+          "min": 697813.0,
+          "max": 698919.0,
+          "p50": 698282.5,
+          "p95": 698629.15,
+          "p99": 698810.1
+        },
+        "rgb_mean_absolute_delta": {
+          "sample_count": 100,
+          "min": 46.69705548321759,
+          "max": 46.80369574652778,
+          "p50": 46.75024233217592,
+          "p95": 46.790318305121524,
+          "p99": 46.80355932074652
+        }
+      }
+    }
+  },
+  "proxy_conversion": {
+    "image_shape": [
+      480,
+      640,
+      3
+    ],
+    "pixel_equivalence": "exact uint8 equality",
+    "results": [
+      {
+        "torch_threads": 4,
+        "timings": {
+          "torch_validation": {
+            "n": 150,
+            "p50_p95_p99_s": [
+              0.0020447095000122317,
+              0.002870385749906745,
+              0.0030631592200529665
+            ]
+          },
+          "numpy_validation": {
+            "n": 150,
+            "p50_p95_p99_s": [
+              0.0010209159999590156,
+              0.0010608193499820116,
+              0.001081226730002527
+            ]
+          }
+        }
+      },
+      {
+        "torch_threads": 4,
+        "timings": {
+          "torch_validation": {
+            "n": 150,
+            "p50_p95_p99_s": [
+              0.0019587564999596907,
+              0.0025829034500247866,
+              0.003128139479950959
+            ]
+          },
+          "numpy_validation": {
+            "n": 150,
+            "p50_p95_p99_s": [
+              0.0010240494999607108,
+              0.001124891149970608,
+              0.0012031940100575864
+            ]
+          }
+        }
+      },
+      {
+        "torch_threads": 16,
+        "timings": {
+          "torch_validation": {
+            "n": 150,
+            "p50_p95_p99_s": [
+              0.0027677759999846785,
+              0.003693153050022601,
+              0.005457109909942801
+            ]
+          },
+          "numpy_validation": {
+            "n": 150,
+            "p50_p95_p99_s": [
+              0.001022696999996242,
+              0.001094285699991815,
+              0.001117680210012395
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "artifacts": {
+    "before.json": {
+      "path": ".context/latency/before.json",
+      "sha256": "ef221ebae62505ed1e4c07a5ed4fdf4e8926d3dd80514adc3ef76016e2d495a5"
+    },
+    "after.json": {
+      "path": ".context/latency/after.json",
+      "sha256": "754f3aadf8e72e85c6c2e1c4daed448c27431183787e4c0afa4d7289091b579f"
+    },
+    "integrated.json": {
+      "path": ".context/latency/integrated.json",
+      "sha256": "096031016f8806bcf4a6f52fd75b4ce09b1577c5b3e3d3556bd288b2b4cd8fd8"
+    },
+    "jpeg-local.json": {
+      "path": ".context/latency/jpeg-local.json",
+      "sha256": "779a6d738272fb12d2a30135dd99aca03c2747b7a11f1d122d7fd512cc06a0b1"
+    },
+    "qualification-stop-fake.json": {
+      "path": ".context/latency/qualification-stop-fake.json",
+      "sha256": "309198697dafcc0d0840eb4df0ec6b165636b90aa00eee57e0a44d42d8588339"
+    },
+    "optimized-us/qualification.json": {
+      "path": ".context/latency/optimized-us/qualification.json",
+      "sha256": "1b987d58eea80b9d3b8b94f74001c17b0d9be63989761a2fb3b65899789d4403"
+    },
+    "optimized-us/encoding-comparison.json": {
+      "path": ".context/latency/optimized-us/encoding-comparison.json",
+      "sha256": "a607b427186ae6519dc2efa12cdf132b659260e3de67fac325b455eb2f010838"
+    }
+  },
+  "raw_integrated": {
+    "measurement": "real Modal through final LeRobot worker; fake hardware only",
+    "integrated_scenario": {
+      "name": "real_modal_fake_hardware",
+      "source": "final LeRobot worker/strategy; fake RGB cameras and fake YAM; real Modal RPC",
+      "injected_delay_cycle_s": null,
+      "fps": 30,
+      "chunk_steps": 30,
+      "image_hw": [
+        480,
+        640
+      ],
+      "elapsed_s": 2.4626786340002127,
+      "error": "Remote rollout stopped after an inference fault",
+      "readiness_s": 0.24808126900006755,
+      "readiness": {
+        "id": "molmoact2",
+        "repo_id": "lerobot/MolmoAct2-BimanualYAM-LeRobot",
+        "revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+        "policy_type": "molmoact2",
+        "state_names": [
+          "left_joint_1.pos",
+          "left_joint_2.pos",
+          "left_joint_3.pos",
+          "left_joint_4.pos",
+          "left_joint_5.pos",
+          "left_joint_6.pos",
+          "left_gripper.pos",
+          "right_joint_1.pos",
+          "right_joint_2.pos",
+          "right_joint_3.pos",
+          "right_joint_4.pos",
+          "right_joint_5.pos",
+          "right_joint_6.pos",
+          "right_gripper.pos"
+        ],
+        "action_names": [
+          "left_joint_1.pos",
+          "left_joint_2.pos",
+          "left_joint_3.pos",
+          "left_joint_4.pos",
+          "left_joint_5.pos",
+          "left_joint_6.pos",
+          "left_gripper.pos",
+          "right_joint_1.pos",
+          "right_joint_2.pos",
+          "right_joint_3.pos",
+          "right_joint_4.pos",
+          "right_joint_5.pos",
+          "right_joint_6.pos",
+          "right_gripper.pos"
+        ],
+        "image_keys": [
+          "top",
+          "left_wrist",
+          "right_wrist"
+        ],
+        "native_image_keys": [
+          "top",
+          "left",
+          "right"
+        ],
+        "chunk_size": 30,
+        "fps": 30,
+        "mapping_verified": true,
+        "mapping_note": "Source-defined left then right, six joints in radians then gripper 0 closed / 1 open; absolute joint targets. Dataset joint_0..5 maps to yamkit joint_1..6. Requires matching I2RT zero frame, calibrated LINEAR_4310 grippers and physical camera/side verification; this is not robot validation.",
+        "dependency_repo": "allenai/MolmoAct2-BimanualYAM",
+        "dependency_revision": "8dcbed66f2380e4393189c303ea72488eb9e63c2",
+        "native_image_hw": [
+          360,
+          640
+        ],
+        "supports_rtc": false,
+        "profile": "molmoact2",
+        "profile_id": "molmoact2",
+        "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+        "model": "lerobot/MolmoAct2-BimanualYAM-LeRobot",
+        "action_units": "robot",
+        "max_chunk_steps": 30,
+        "lerobot_version": "0.6.1",
+        "physical_validation": "not performed",
+        "mapping_validation": "source conventions only; physical calibration/alignment and cameras unvalidated",
+        "physical_modal_rollout_allowed": false,
+        "physical_modal_rollout_reason": "Physical Modal rollout BLOCKED: integrated real-service queue performance is unvalidated. Recorded Molmo warm RPC (~1.48 s) exceeds its 1 s action horizon; saved-observation inference and fake-robot diagnostics remain available.",
+        "ready": true,
+        "instance_id": "563ef55a-08ff-49fe-b1d0-534a42bd0c01",
+        "device": "cuda",
+        "load_s": 145.271570498,
+        "fresh_chunk": true,
+        "prediction_count": 202,
+        "runtime_age_s": 365.96560462099995,
+        "continuation": "unsupported",
+        "image_encoding": "rgb8",
+        "saved_processors": true,
+        "session_state": "reset for every fresh chunk",
+        "gpu": "L40S",
+        "compute_region": "eu-frankfurt-1",
+        "requested_compute_region": null,
+        "routing_region": "us-east",
+        "scaledown_window_s": 15,
+        "min_containers": 0,
+        "max_containers": 1,
+        "request_timeout_s": 90,
+        "startup_timeout_s": 240,
+        "container_init_s": 153.87518214699998,
+        "volume_commit_s": 0.002685802999991438,
+        "payload_routing": "Spawned SDK payloads of every size use Modal's US storage"
+      },
+      "all_fake_robots_released": true,
+      "sdk_commands_during_completed_rpc": [
+        0
+      ],
+      "inference": "unguided_async",
+      "failed": true,
+      "underruns": 0,
+      "queue_depth": 0,
+      "peak_queue_depth": 0,
+      "last_queue_depth_before_stop": 0,
+      "executed_actions": 0,
+      "dequeued_actions": 0,
+      "minimum_execution_queue_depth": null,
+      "minimum_dispatch_margin_s": null,
+      "expired_before_dispatch": 0,
+      "expired_queued_actions": 0,
+      "stop_to_robot_release_s": 0.40735641400010536,
+      "stop_timing_basis": "local stop/fault detection to completed no-home robot release",
+      "prediction_samples": [
+        {
+          "prediction_started_monotonic_s": 1840.859552059,
+          "observation_timestamp_monotonic_s": 1840.844687737,
+          "observation_age_at_start_s": 0.01486432199999399,
+          "observation_processing_s": 0.0059250199999496544,
+          "queue_depth_at_start": 0,
+          "queue_horizon_at_start_s": 0.0,
+          "queue_deadline_horizon_at_start_s": 0.0,
+          "next_action_margin_at_start_s": null,
+          "prefetch_threshold_steps": 15,
+          "executed_actions_at_start": 0,
+          "expired_prefix_dropped": 30,
+          "overlap_prefix_dropped": 0,
+          "accepted_steps": 0,
+          "prediction_s": 1.6806415290000132,
+          "observation_age_at_return_s": 1.6955058510000072,
+          "remaining_valid_action_horizon_s": 0.0,
+          "queue_depth_at_return": 0,
+          "queue_deadline_horizon_at_return_s": 0.0,
+          "next_action_margin_at_return_s": null,
+          "actions_executed_during_prediction": 0,
+          "error": null,
+          "encoding_s": 0.009576978000040981,
+          "image_tensor_transform_s": 0.0049098760000561015,
+          "image_serialization_s": 0.004253759999983231,
+          "per_camera_timing": {
+            "top": {
+              "tensor_transform_s": 0.0018027529999926628,
+              "image_encode_s": 0.0014367300000230898,
+              "jpeg_encode_s": 0.0,
+              "payload_bytes": 921600
+            },
+            "left_wrist": {
+              "tensor_transform_s": 0.0015102610000212735,
+              "image_encode_s": 0.001395604999970601,
+              "jpeg_encode_s": 0.0,
+              "payload_bytes": 921600
+            },
+            "right_wrist": {
+              "tensor_transform_s": 0.0015968620000421652,
+              "image_encode_s": 0.00142142499998954,
+              "jpeg_encode_s": 0.0,
+              "payload_bytes": 921600
+            }
+          },
+          "queue_depth_at_merge": 0,
+          "queue_deadline_horizon_at_merge_s": 0.0,
+          "queue_horizon_after_merge_s": 0.0,
+          "queue_deadline_horizon_after_merge_s": 0.0
+        }
+      ],
+      "prefetch_threshold_steps": 15,
+      "expired_prefix_dropped": 30,
+      "overlap_prefix_dropped": 0,
+      "expired_chunks": 1,
+      "sample_count": 1,
+      "request_count": 1,
+      "failed_request_count": 0,
+      "failures": [],
+      "first_round_trip_s": 1.6701266570000826,
+      "max_observation_age_s": 1.695234193000033,
+      "warm_sample_count": 0,
+      "warm_round_trip_s": {},
+      "samples": [
+        {
+          "round_trip_s": 1.6701266570000826,
+          "observation_timestamp_monotonic_s": 1840.844687737,
+          "observation_age_at_dispatch_s": 0.02488857299999836,
+          "observation_age_s": 1.695234193000033,
+          "camera_exposure_timestamp_s": null,
+          "timestamp_basis": "local observation receipt; camera exposure is unobservable",
+          "payload_bytes": 2764800,
+          "wire_payload_bytes": null,
+          "payload_size_basis": "raw RGB image bytes; SDK framing size unobservable",
+          "image_encoding": "rgb8",
+          "jpeg_encoding_s": 0.0,
+          "request_validation_s": 3.917100002581719e-05,
+          "response_validation_s": 0.00021173899995119427,
+          "transport_timing": {
+            "network_only_s": null,
+            "modal_queue_s": null,
+            "sdk_response_decode_s": null,
+            "note": "SDK dispatch/wait include serialization and network; separate internals unobservable",
+            "handle_reused": true,
+            "handle_lookup_s": 0.00015829499989195028,
+            "dispatch_s": 0.5786885610000354,
+            "response_wait_s": 1.0909856579999087,
+            "sdk": {
+              "request_serialization_s": 0.0012416780000421568,
+              "serialized_request_bytes": 2765761,
+              "request_serialization_calls": 1,
+              "input_blob_upload_s": 0.5091884240000581,
+              "input_blob_bytes": 2765761,
+              "response_deserialization_s": 7.309500006158487e-05,
+              "serialized_response_bytes": 6051
+            }
+          },
+          "server_timing": {
+            "request_validation_s": 5.216799991103471e-05,
+            "queue_wait_s": 2.934999997705745e-06,
+            "modal_queue_s": null,
+            "request_deserialization_s": null,
+            "response_serialization_s": null,
+            "image_decode_transform_s": 0.0027636259999326285,
+            "per_camera": {
+              "top": {
+                "decode_s": 2.3180000425782055e-06,
+                "crop_s": 4.555999908006925e-06,
+                "tensor_conversion_s": 0.001084318000039275
+              },
+              "left_wrist": {
+                "decode_s": 6.3510000245514675e-06,
+                "crop_s": 2.799000071718183e-06,
+                "tensor_conversion_s": 0.0005602989999715646
+              },
+              "right_wrist": {
+                "decode_s": 1.4388999943548697e-05,
+                "crop_s": 3.81899997137225e-06,
+                "tensor_conversion_s": 0.0010792040000069392
+              }
+            },
+            "state_reset_s": 0.00015295300011075597,
+            "preprocess_s": 0.02212390099998629,
+            "inference_s": 0.35689801800003806,
+            "preprocess_steps_s": {
+              "0:RenameObservationsProcessorStep": 1.0398000085842796e-05,
+              "1:AddBatchDimensionProcessorStep": 4.65269999949669e-05,
+              "2:MolmoAct2StateFrameTransformStep": 2.5780000214581378e-06,
+              "3:MolmoAct2MaskedNormalizerProcessorStep": 0.00036076000003504305,
+              "4:MolmoAct2ClampNormalizedProcessorStep": 2.2204000060810358e-05,
+              "5:MolmoAct2PackInputsProcessorStep": 0.020057975999975497,
+              "6:DeviceProcessorStep": 0.0015238779999435792
+            },
+            "postprocess_s": 0.0007860009999376416,
+            "diagnostic_postprocess_s": 1.912000016091042e-06,
+            "saved_postprocess_s": 0.0007840889999215506,
+            "postprocess_steps_s": {
+              "0:MolmoAct2ClampActionProcessorStep": 2.6197000011052296e-05,
+              "1:MolmoAct2MaskedUnnormalizerProcessorStep": 0.00018727799999851413,
+              "2:MolmoAct2ActionFrameTransformStep": 3.166999931636383e-06,
+              "3:DeviceProcessorStep": 0.000522886999988259
+            },
+            "diagnostic_postprocess_steps_s": {},
+            "response_conversion_s": 4.172000001290144e-05,
+            "total_s": 0.3830223439999827,
+            "diagnostic_conversion_s": 7.049999339869828e-07,
+            "response_validation_s": 0.00017845100001068204
+          },
+          "encoding_s": 0.009576978000040981,
+          "image_tensor_transform_s": 0.0049098760000561015,
+          "image_serialization_s": 0.004253759999983231,
+          "per_camera_timing": {
+            "top": {
+              "tensor_transform_s": 0.0018027529999926628,
+              "image_encode_s": 0.0014367300000230898,
+              "jpeg_encode_s": 0.0,
+              "payload_bytes": 921600
+            },
+            "left_wrist": {
+              "tensor_transform_s": 0.0015102610000212735,
+              "image_encode_s": 0.001395604999970601,
+              "jpeg_encode_s": 0.0,
+              "payload_bytes": 921600
+            },
+            "right_wrist": {
+              "tensor_transform_s": 0.0015968620000421652,
+              "image_encode_s": 0.00142142499998954,
+              "jpeg_encode_s": 0.0,
+              "payload_bytes": 921600
+            }
+          },
+          "response_tensor_decode_s": 0.00020869000013590266
+        }
+      ]
+    },
+    "measured_on": "2026-09-05T12:10:05.426446+00:00",
+    "modal_app": "yamkit-vla-353b002beeae4a29",
+    "uncached_handles": false,
+    "sdk_profile": true,
+    "physical_modal_rollout_allowed": false
+  },
+  "final_synthetic_stop": {
+    "name": "qualification_stop_regression",
+    "source": "final LeRobot worker/strategy; fake RGB cameras and fake YAM; fake RPC",
+    "injected_delay_cycle_s": [
+      0.04
+    ],
+    "fps": 30,
+    "chunk_steps": 30,
+    "image_hw": [
+      8,
+      8
+    ],
+    "elapsed_s": 2.708561292000013,
+    "error": null,
+    "policy_options": {
+      "image_encoding": "jpeg",
+      "jpeg_quality": 85,
+      "call_mode": "remote",
+      "center_crop": false,
+      "prediction_queue_threshold": 30
+    },
+    "readiness_s": 5.548899980567512e-05,
+    "readiness": {
+      "profile": "molmoact2",
+      "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+      "instance_id": "synthetic-benchmark"
+    },
+    "stop_requested_monotonic_s": 2951.790610071,
+    "commands_after_stop": 0,
+    "stop_requested_during_inflight_rpc": true,
+    "all_fake_robots_released": true,
+    "sdk_commands_during_completed_rpc": [
+      0,
+      1,
+      1,
+      1,
+      1,
+      1,
+      2,
+      1,
+      1,
+      1,
+      2,
+      1,
+      1,
+      1,
+      2,
+      1,
+      1,
+      1,
+      2,
+      1,
+      1,
+      1,
+      2,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      2,
+      1,
+      1,
+      1,
+      2,
+      1,
+      1,
+      1,
+      2,
+      1,
+      1,
+      1,
+      2,
+      1,
+      1,
+      1,
+      2,
+      1,
+      1,
+      1,
+      2,
+      1
+    ],
+    "failed": false,
+    "underruns": 0,
+    "queue_depth": 0,
+    "peak_queue_depth": 28,
+    "last_queue_depth_before_stop": 28,
+    "executed_actions": 64,
+    "dequeued_actions": 64,
+    "minimum_execution_queue_depth": 26,
+    "minimum_dispatch_margin_s": 0.030002602999957162,
+    "expired_before_dispatch": 0,
+    "expired_queued_actions": 0,
+    "stop_to_robot_release_s": 0.40046805499969196,
+    "stop_timing_basis": "local stop/fault detection to completed no-home robot release",
+    "readiness_model_warmup_s": 0.0,
+    "prefetch_threshold_steps": 30,
+    "expired_prefix_dropped": 117,
+    "overlap_prefix_dropped": 1351,
+    "expired_chunks": 0,
+    "redundant_chunks": 0,
+    "sample_count": 52,
+    "request_count": 53,
+    "failed_request_count": 1,
+    "failures": [
+      {
+        "elapsed_s": 0.006224963000022399,
+        "reason": "InvalidatedRequest",
+        "round_trip_s": null,
+        "observation_age_s": 0.017327346000001853,
+        "payload_bytes": 2109,
+        "server_timing": {},
+        "transport_timing": {
+          "network_only_s": null,
+          "modal_queue_s": null,
+          "source": "injected fake RPC sleep; no real SDK dispatch"
+        }
+      }
+    ],
+    "first_round_trip_s": 0.04011148800009323,
+    "max_observation_age_s": 0.07504505399992922,
+    "warm_sample_count": 51,
+    "warm_round_trip_s": {
+      "p50": 0.040109365999796864,
+      "p95": 0.04021277149990965,
+      "p99": 0.04036803000008149
+    }
+  },
+  "optimized_preparation": {
+    "prepare_wall_s": 206.44346670400046,
+    "receipt": {
+      "app_name": "yamkit-vla-db2afc162a054ff8",
+      "app_id": "ap-CmStbk9vTIhpWRxCg3GL30",
+      "profile_id": "molmoact2",
+      "revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+      "status": "ready",
+      "created_at": 1788612838.3745215,
+      "development": false,
+      "gpu": "L40S",
+      "scaledown_window": 300,
+      "region": "us",
+      "routing_region": "us-west",
+      "cache_volume_name": "yamkit-latency-20260905-d3570a79",
+      "memory_mib": 49152,
+      "deployment_started": true,
+      "metadata": {
+        "id": "molmoact2",
+        "repo_id": "lerobot/MolmoAct2-BimanualYAM-LeRobot",
+        "revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+        "policy_type": "molmoact2",
+        "state_names": [
+          "left_joint_1.pos",
+          "left_joint_2.pos",
+          "left_joint_3.pos",
+          "left_joint_4.pos",
+          "left_joint_5.pos",
+          "left_joint_6.pos",
+          "left_gripper.pos",
+          "right_joint_1.pos",
+          "right_joint_2.pos",
+          "right_joint_3.pos",
+          "right_joint_4.pos",
+          "right_joint_5.pos",
+          "right_joint_6.pos",
+          "right_gripper.pos"
+        ],
+        "action_names": [
+          "left_joint_1.pos",
+          "left_joint_2.pos",
+          "left_joint_3.pos",
+          "left_joint_4.pos",
+          "left_joint_5.pos",
+          "left_joint_6.pos",
+          "left_gripper.pos",
+          "right_joint_1.pos",
+          "right_joint_2.pos",
+          "right_joint_3.pos",
+          "right_joint_4.pos",
+          "right_joint_5.pos",
+          "right_joint_6.pos",
+          "right_gripper.pos"
+        ],
+        "image_keys": [
+          "top",
+          "left_wrist",
+          "right_wrist"
+        ],
+        "native_image_keys": [
+          "top",
+          "left",
+          "right"
+        ],
+        "chunk_size": 30,
+        "fps": 30,
+        "mapping_verified": true,
+        "mapping_note": "Source-defined left then right, six joints in radians then gripper 0 closed / 1 open; absolute joint targets. Dataset joint_0..5 maps to yamkit joint_1..6. Requires matching I2RT zero frame, calibrated LINEAR_4310 grippers and physical camera/side verification; this is not robot validation.",
+        "dependency_repo": "allenai/MolmoAct2-BimanualYAM",
+        "dependency_revision": "8dcbed66f2380e4393189c303ea72488eb9e63c2",
+        "native_image_hw": [
+          360,
+          640
+        ],
+        "supports_rtc": false,
+        "profile": "molmoact2",
+        "profile_id": "molmoact2",
+        "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+        "model": "lerobot/MolmoAct2-BimanualYAM-LeRobot",
+        "action_units": "robot",
+        "max_chunk_steps": 30,
+        "lerobot_version": "0.6.1",
+        "physical_validation": "not performed",
+        "mapping_validation": "source conventions only; physical calibration/alignment and cameras unvalidated",
+        "physical_modal_rollout_allowed": false,
+        "physical_modal_rollout_reason": "Physical Modal rollout BLOCKED: integrated real-service queue performance is unvalidated. Recorded Molmo warm RPC (~1.48 s) exceeds its 1 s action horizon; saved-observation inference and fake-robot diagnostics remain available.",
+        "ready": true,
+        "instance_id": "1868959a-b4d7-4a20-946e-b0194ca96bed",
+        "device": "cuda",
+        "load_s": 137.891379196,
+        "fresh_chunk": true,
+        "prediction_count": 0,
+        "runtime_age_s": 0.09993672799998876,
+        "continuation": "unsupported",
+        "image_encoding": "jpeg",
+        "preferred_image_encoding": "jpeg",
+        "supported_image_encodings": [
+          "jpeg",
+          "rgb8"
+        ],
+        "jpeg_quality": 85,
+        "memory": {
+          "process_peak_rss_bytes": 45764771840,
+          "cgroup_memory_peak_bytes": null,
+          "cgroup_memory_current_bytes": null,
+          "cgroup_memory_max_bytes": null,
+          "cuda_peak_allocated_bytes": 21808112128,
+          "cuda_peak_reserved_bytes": 22286434304
+        },
+        "saved_processors": true,
+        "session_state": "reset for every fresh chunk",
+        "gpu": "L40S",
+        "compute_region": "us-ashburn-1",
+        "requested_compute_region": "us",
+        "routing_region": "us-west",
+        "scaledown_window_s": 300,
+        "min_containers": 0,
+        "max_containers": 1,
+        "request_timeout_s": 120,
+        "startup_timeout_s": 600,
+        "requested_memory_mib": 49152,
+        "memory_scope": "Requested memory is host RAM; CUDA telemetry measures GPU memory separately",
+        "container_init_s": 147.214676695,
+        "volume_commit_s": 0.002703808000006802,
+        "supported_call_modes": [
+          "remote"
+        ],
+        "preferred_call_mode": "remote",
+        "observed_compute_region": "us-ashburn-1",
+        "requested_routing_region": "us-west",
+        "observed_routing_region": null,
+        "payload_routing": "Requested SDK routing region; actual routing is not independently observable. Spawned SDK payloads use US storage; use remote for non-default routing."
+      }
+    }
+  },
+  "paired_jpeg_comparison": {
+    "measurement": "paired generated RGB fixtures, identical state/task and seeded Molmo noise; no execution",
+    "image_hw": [
+      480,
+      640
+    ],
+    "jpeg_quality": 85,
+    "pairs": [
+      {
+        "diagnostic_seed": 0,
+        "samples": {
+          "rgb8": {
+            "round_trip_s": 2.805127667999841,
+            "server_timing": {
+              "request_validation_s": 0.0003832900000020345,
+              "queue_wait_s": 5.458999993379621e-06,
+              "modal_queue_s": null,
+              "request_deserialization_s": null,
+              "response_serialization_s": null,
+              "image_decode_transform_s": 0.0026704630000153884,
+              "per_camera": {
+                "top": {
+                  "decode_s": 4.614100001276711e-05,
+                  "crop_s": 7.43199998964883e-06,
+                  "tensor_conversion_s": 0.0010300250000057076
+                },
+                "left": {
+                  "decode_s": 2.2844999989501957e-05,
+                  "crop_s": 5.538000010574251e-06,
+                  "tensor_conversion_s": 0.0008565789999863682
+                },
+                "right": {
+                  "decode_s": 2.1129999993263482e-05,
+                  "crop_s": 4.998000008527015e-06,
+                  "tensor_conversion_s": 0.0006631880000043111
+                }
+              },
+              "state_reset_s": 0.00014632399998504297,
+              "preprocess_s": 0.04976819300000557,
+              "inference_s": 1.7806600469999978,
+              "preprocess_steps_s": {
+                "0:RenameObservationsProcessorStep": 1.6291000008550327e-05,
+                "1:AddBatchDimensionProcessorStep": 0.0001517510000041966,
+                "2:MolmoAct2StateFrameTransformStep": 5.118000018455859e-06,
+                "3:MolmoAct2MaskedNormalizerProcessorStep": 0.0008062309999843364,
+                "4:MolmoAct2ClampNormalizedProcessorStep": 4.7945000005711336e-05,
+                "5:MolmoAct2PackInputsProcessorStep": 0.03573877399998082,
+                "6:DeviceProcessorStep": 0.002310703999995667
+              },
+              "postprocess_s": 0.0007878019999907337,
+              "diagnostic_postprocess_s": 1.8540000041866733e-06,
+              "saved_postprocess_s": 0.0007859479999865471,
+              "postprocess_steps_s": {
+                "0:MolmoAct2ClampActionProcessorStep": 2.9557999994267448e-05,
+                "1:MolmoAct2MaskedUnnormalizerProcessorStep": 0.0006409179999877779,
+                "2:MolmoAct2ActionFrameTransformStep": 2.9289999758930207e-06,
+                "3:DeviceProcessorStep": 3.58000000062475e-05
+              },
+              "diagnostic_postprocess_steps_s": {},
+              "response_conversion_s": 3.735199999255201e-05,
+              "total_s": 1.8346952999999928,
+              "diagnostic_conversion_s": 5.889999954433733e-07,
+              "response_validation_s": 0.0002140660000122807
+            },
+            "transport_timing": {
+              "network_only_s": null,
+              "modal_queue_s": null,
+              "sdk_response_decode_s": null,
+              "call_mode": "remote",
+              "remote_cancellation_supported": false,
+              "note": "SDK dispatch/wait include serialization and network; separate internals unobservable",
+              "handle_reused": false,
+              "handle_lookup_s": 0.0006149620003270684,
+              "remote_call_s": 2.804098471000543,
+              "sdk": {
+                "request_serialization_s": 0.0021760859999631066,
+                "serialized_request_bytes": 2765771,
+                "request_serialization_calls": 1,
+                "input_blob_upload_s": 0.6118647900002543,
+                "input_blob_bytes": 2765771,
+                "response_deserialization_s": 0.0001013529999909224,
+                "serialized_response_bytes": 6063
+              }
+            },
+            "payload_bytes": 2764800
+          },
+          "jpeg": {
+            "round_trip_s": 1.416743638999833,
+            "server_timing": {
+              "request_validation_s": 0.011079152999997177,
+              "queue_wait_s": 5.582000000003973e-06,
+              "modal_queue_s": null,
+              "request_deserialization_s": null,
+              "response_serialization_s": null,
+              "image_decode_transform_s": 0.01629510600000117,
+              "per_camera": {
+                "top": {
+                  "decode_s": 0.004497697999994443,
+                  "crop_s": 9.23300001431926e-06,
+                  "tensor_conversion_s": 0.002476849000004222
+                },
+                "left": {
+                  "decode_s": 0.003230315999985578,
+                  "crop_s": 6.45100001861465e-06,
+                  "tensor_conversion_s": 0.0012055930000087756
+                },
+                "right": {
+                  "decode_s": 0.0031018399999993562,
+                  "crop_s": 5.14000001317072e-06,
+                  "tensor_conversion_s": 0.0017549490000021706
+                }
+              },
+              "state_reset_s": 0.0001294829999949343,
+              "preprocess_s": 0.023626704999998083,
+              "inference_s": 0.3572048180000138,
+              "preprocess_steps_s": {
+                "0:RenameObservationsProcessorStep": 1.0343000013790515e-05,
+                "1:AddBatchDimensionProcessorStep": 5.070999998224579e-05,
+                "2:MolmoAct2StateFrameTransformStep": 2.2149999949760968e-06,
+                "3:MolmoAct2MaskedNormalizerProcessorStep": 0.0003111210000099618,
+                "4:MolmoAct2ClampNormalizedProcessorStep": 2.1580999998604966e-05,
+                "5:MolmoAct2PackInputsProcessorStep": 0.02162486099999228,
+                "6:DeviceProcessorStep": 0.0015119850000075985
+              },
+              "postprocess_s": 0.0002918859999851975,
+              "diagnostic_postprocess_s": 1.5219999909277249e-06,
+              "saved_postprocess_s": 0.00029036399999426976,
+              "postprocess_steps_s": {
+                "0:MolmoAct2ClampActionProcessorStep": 2.1798999995326085e-05,
+                "1:MolmoAct2MaskedUnnormalizerProcessorStep": 0.00014871499999458138,
+                "2:MolmoAct2ActionFrameTransformStep": 2.8750000069521775e-06,
+                "3:DeviceProcessorStep": 6.36510000049384e-05
+              },
+              "diagnostic_postprocess_steps_s": {},
+              "response_conversion_s": 3.723699998658958e-05,
+              "total_s": 0.4088387760000103,
+              "diagnostic_conversion_s": 5.259999795725889e-07,
+              "response_validation_s": 0.00015050000001792796
+            },
+            "transport_timing": {
+              "network_only_s": null,
+              "modal_queue_s": null,
+              "sdk_response_decode_s": null,
+              "call_mode": "remote",
+              "remote_cancellation_supported": false,
+              "note": "SDK dispatch/wait include serialization and network; separate internals unobservable",
+              "handle_reused": true,
+              "handle_lookup_s": 0.0002279840000483091,
+              "remote_call_s": 1.416159233000144,
+              "sdk": {
+                "request_serialization_s": 0.00048607100052322494,
+                "serialized_request_bytes": 699337,
+                "request_serialization_calls": 1,
+                "response_deserialization_s": 0.00011579500005609589,
+                "serialized_response_bytes": 6071
+              }
+            },
+            "payload_bytes": 698346
+          }
+        },
+        "shape": [
+          30,
+          14
+        ],
+        "action_max_absolute_delta": 0.03125,
+        "action_mean_absolute_delta": 0.0018412268809264614,
+        "action_p95_absolute_delta": 0.01171875,
+        "per_action_max_absolute_delta": {
+          "left_joint_1.pos": 0.0011042356491088867,
+          "left_joint_2.pos": 0.004375375807285309,
+          "left_joint_3.pos": 0.0038948822766542435,
+          "left_joint_4.pos": 0.002946138381958008,
+          "left_joint_5.pos": 0.001213669776916504,
+          "left_joint_6.pos": 0.0024701952934265137,
+          "left_gripper.pos": 0.03125,
+          "right_joint_1.pos": 0.0018038153648376465,
+          "right_joint_2.pos": 0.004453778266906738,
+          "right_joint_3.pos": 0.003991015255451202,
+          "right_joint_4.pos": 0.003249526023864746,
+          "right_joint_5.pos": 0.001468956470489502,
+          "right_joint_6.pos": 0.0028009414672851562,
+          "right_gripper.pos": 0.01953125
+        }
+      },
+      {
+        "diagnostic_seed": 1,
+        "samples": {
+          "rgb8": {
+            "round_trip_s": 1.1546451080002953,
+            "server_timing": {
+              "request_validation_s": 3.0232999989721066e-05,
+              "queue_wait_s": 3.2180000175685564e-06,
+              "modal_queue_s": null,
+              "request_deserialization_s": null,
+              "response_serialization_s": null,
+              "image_decode_transform_s": 0.0016765949999921759,
+              "per_camera": {
+                "top": {
+                  "decode_s": 9.434000020291933e-06,
+                  "crop_s": 4.211999993231075e-06,
+                  "tensor_conversion_s": 0.000522810000006757
+                },
+                "left": {
+                  "decode_s": 8.6510000016915e-06,
+                  "crop_s": 2.550999994355152e-06,
+                  "tensor_conversion_s": 0.00030762899999103865
+                },
+                "right": {
+                  "decode_s": 5.213000008552626e-06,
+                  "crop_s": 1.879999985021641e-06,
+                  "tensor_conversion_s": 0.0008102990000224963
+                }
+              },
+              "state_reset_s": 6.364600000097198e-05,
+              "preprocess_s": 0.01827025800000115,
+              "inference_s": 0.355643735000001,
+              "preprocess_steps_s": {
+                "0:RenameObservationsProcessorStep": 9.225000013657336e-06,
+                "1:AddBatchDimensionProcessorStep": 3.657899998188441e-05,
+                "2:MolmoAct2StateFrameTransformStep": 2.055999999583946e-06,
+                "3:MolmoAct2MaskedNormalizerProcessorStep": 0.00021236299997440256,
+                "4:MolmoAct2ClampNormalizedProcessorStep": 1.3208000012809862e-05,
+                "5:MolmoAct2PackInputsProcessorStep": 0.01650127600001383,
+                "6:DeviceProcessorStep": 0.001421829999998181
+              },
+              "postprocess_s": 0.0002711090000104832,
+              "diagnostic_postprocess_s": 1.3719999856220966e-06,
+              "saved_postprocess_s": 0.0002697370000248611,
+              "postprocess_steps_s": {
+                "0:MolmoAct2ClampActionProcessorStep": 1.9427000012228746e-05,
+                "1:MolmoAct2MaskedUnnormalizerProcessorStep": 0.0001409490000128244,
+                "2:MolmoAct2ActionFrameTransformStep": 2.2469999976237887e-06,
+                "3:DeviceProcessorStep": 6.104499999537438e-05
+              },
+              "diagnostic_postprocess_steps_s": {},
+              "response_conversion_s": 2.5477999997747247e-05,
+              "total_s": 0.3761390399999982,
+              "diagnostic_conversion_s": 3.4100000334547076e-07,
+              "response_validation_s": 0.00014213700001164398
+            },
+            "transport_timing": {
+              "network_only_s": null,
+              "modal_queue_s": null,
+              "sdk_response_decode_s": null,
+              "call_mode": "remote",
+              "remote_cancellation_supported": false,
+              "note": "SDK dispatch/wait include serialization and network; separate internals unobservable",
+              "handle_reused": true,
+              "handle_lookup_s": 0.00023325900019699475,
+              "remote_call_s": 1.1540607550005006,
+              "sdk": {
+                "request_serialization_s": 0.0008570949994464172,
+                "serialized_request_bytes": 2765771,
+                "request_serialization_calls": 1,
+                "input_blob_upload_s": 0.4525691119997646,
+                "input_blob_bytes": 2765771,
+                "response_deserialization_s": 0.0001371830003336072,
+                "serialized_response_bytes": 6071
+              }
+            },
+            "payload_bytes": 2764800
+          },
+          "jpeg": {
+            "round_trip_s": 0.9875511449999976,
+            "server_timing": {
+              "request_validation_s": 0.00021049099999004284,
+              "queue_wait_s": 2.679999994370519e-06,
+              "modal_queue_s": null,
+              "request_deserialization_s": null,
+              "response_serialization_s": null,
+              "image_decode_transform_s": 0.012516007000016316,
+              "per_camera": {
+                "top": {
+                  "decode_s": 0.0029712770000003275,
+                  "crop_s": 5.668000000014217e-06,
+                  "tensor_conversion_s": 0.0005463389999817991
+                },
+                "left": {
+                  "decode_s": 0.0030112980000183143,
+                  "crop_s": 5.091999980777473e-06,
+                  "tensor_conversion_s": 0.0004633930000181863
+                },
+                "right": {
+                  "decode_s": 0.00305672299998605,
+                  "crop_s": 5.662999996047802e-06,
+                  "tensor_conversion_s": 0.0024451450000242403
+                }
+              },
+              "state_reset_s": 6.182199999216209e-05,
+              "preprocess_s": 0.017032808999999816,
+              "inference_s": 0.37215667699999244,
+              "preprocess_steps_s": {
+                "0:RenameObservationsProcessorStep": 8.636000018213963e-06,
+                "1:AddBatchDimensionProcessorStep": 4.603600001473751e-05,
+                "2:MolmoAct2StateFrameTransformStep": 1.9069999837029172e-06,
+                "3:MolmoAct2MaskedNormalizerProcessorStep": 0.00021771400000147878,
+                "4:MolmoAct2ClampNormalizedProcessorStep": 1.2643000019352257e-05,
+                "5:MolmoAct2PackInputsProcessorStep": 0.015240806000008433,
+                "6:DeviceProcessorStep": 0.0014283090000049015
+              },
+              "postprocess_s": 0.0002935349999972914,
+              "diagnostic_postprocess_s": 1.6380000147364626e-06,
+              "saved_postprocess_s": 0.0002918969999825549,
+              "postprocess_steps_s": {
+                "0:MolmoAct2ClampActionProcessorStep": 2.1947999982785404e-05,
+                "1:MolmoAct2MaskedUnnormalizerProcessorStep": 0.00015502500002639863,
+                "2:MolmoAct2ActionFrameTransformStep": 2.180999985057497e-06,
+                "3:DeviceProcessorStep": 5.9399999997822306e-05
+              },
+              "diagnostic_postprocess_steps_s": {},
+              "response_conversion_s": 2.9537000017398896e-05,
+              "total_s": 0.40249067399997784,
+              "diagnostic_conversion_s": 3.260000198679336e-07,
+              "response_validation_s": 0.00017219199997953183
+            },
+            "transport_timing": {
+              "network_only_s": null,
+              "modal_queue_s": null,
+              "sdk_response_decode_s": null,
+              "call_mode": "remote",
+              "remote_cancellation_supported": false,
+              "note": "SDK dispatch/wait include serialization and network; separate internals unobservable",
+              "handle_reused": true,
+              "handle_lookup_s": 0.00021381800070230383,
+              "remote_call_s": 0.9870094030002292,
+              "sdk": {
+                "request_serialization_s": 0.0004556860003503971,
+                "serialized_request_bytes": 699337,
+                "request_serialization_calls": 1,
+                "response_deserialization_s": 9.447199954593088e-05,
+                "serialized_response_bytes": 6071
+              }
+            },
+            "payload_bytes": 698346
+          }
+        },
+        "shape": [
+          30,
+          14
+        ],
+        "action_max_absolute_delta": 0.05078125,
+        "action_mean_absolute_delta": 0.0025018768562447458,
+        "action_p95_absolute_delta": 0.006884765624999956,
+        "per_action_max_absolute_delta": {
+          "left_joint_1.pos": 0.00165635347366333,
+          "left_joint_2.pos": 0.004375379532575607,
+          "left_joint_3.pos": 0.0038948804140090942,
+          "left_joint_4.pos": 0.002946138381958008,
+          "left_joint_5.pos": 0.0012136399745941162,
+          "left_joint_6.pos": 0.002470254898071289,
+          "left_gripper.pos": 0.05078125,
+          "right_joint_1.pos": 0.0012025833129882812,
+          "right_joint_2.pos": 0.00445377454161644,
+          "right_joint_3.pos": 0.003991015255451202,
+          "right_joint_4.pos": 0.0032494068145751953,
+          "right_joint_5.pos": 0.0029378533363342285,
+          "right_joint_6.pos": 0.0014004707336425781,
+          "right_gripper.pos": 0.00390625
+        }
+      },
+      {
+        "diagnostic_seed": 2,
+        "samples": {
+          "rgb8": {
+            "round_trip_s": 1.1198587549997683,
+            "server_timing": {
+              "request_validation_s": 3.204199998663171e-05,
+              "queue_wait_s": 4.019000016342034e-06,
+              "modal_queue_s": null,
+              "request_deserialization_s": null,
+              "response_serialization_s": null,
+              "image_decode_transform_s": 0.0020555920000049355,
+              "per_camera": {
+                "top": {
+                  "decode_s": 1.0164999991957302e-05,
+                  "crop_s": 3.5989999958019325e-06,
+                  "tensor_conversion_s": 0.0005821630000184541
+                },
+                "left": {
+                  "decode_s": 8.278999985122937e-06,
+                  "crop_s": 2.659000017501967e-06,
+                  "tensor_conversion_s": 0.00029549299998166134
+                },
+                "right": {
+                  "decode_s": 5.383000001302207e-06,
+                  "crop_s": 1.6600000094513234e-06,
+                  "tensor_conversion_s": 0.0011413329999925281
+                }
+              },
+              "state_reset_s": 6.503099999122242e-05,
+              "preprocess_s": 0.018377463999996735,
+              "inference_s": 0.3784662639999965,
+              "preprocess_steps_s": {
+                "0:RenameObservationsProcessorStep": 8.610000008957286e-06,
+                "1:AddBatchDimensionProcessorStep": 4.812000000242733e-05,
+                "2:MolmoAct2StateFrameTransformStep": 1.505999989603879e-06,
+                "3:MolmoAct2MaskedNormalizerProcessorStep": 0.00023831100000393235,
+                "4:MolmoAct2ClampNormalizedProcessorStep": 1.3970999987122923e-05,
+                "5:MolmoAct2PackInputsProcessorStep": 0.01656059300000834,
+                "6:DeviceProcessorStep": 0.0014309679999939817
+              },
+              "postprocess_s": 0.0003235339999889675,
+              "diagnostic_postprocess_s": 1.5370000028269715e-06,
+              "saved_postprocess_s": 0.0003219969999861405,
+              "postprocess_steps_s": {
+                "0:MolmoAct2ClampActionProcessorStep": 2.38449999869772e-05,
+                "1:MolmoAct2MaskedUnnormalizerProcessorStep": 0.0001641579999898113,
+                "2:MolmoAct2ActionFrameTransformStep": 3.1889999831946625e-06,
+                "3:DeviceProcessorStep": 7.335400002261849e-05
+              },
+              "diagnostic_postprocess_steps_s": {},
+              "response_conversion_s": 3.3744000006663555e-05,
+              "total_s": 0.3995488049999949,
+              "diagnostic_conversion_s": 3.619999802140228e-07,
+              "response_validation_s": 0.0001749609999990298
+            },
+            "transport_timing": {
+              "network_only_s": null,
+              "modal_queue_s": null,
+              "sdk_response_decode_s": null,
+              "call_mode": "remote",
+              "remote_cancellation_supported": false,
+              "note": "SDK dispatch/wait include serialization and network; separate internals unobservable",
+              "handle_reused": true,
+              "handle_lookup_s": 0.00019125800008623628,
+              "remote_call_s": 1.1194132740001805,
+              "sdk": {
+                "request_serialization_s": 0.002215751000221644,
+                "serialized_request_bytes": 2765771,
+                "request_serialization_calls": 1,
+                "input_blob_upload_s": 0.42762164899977506,
+                "input_blob_bytes": 2765771,
+                "response_deserialization_s": 0.00010893799935729476,
+                "serialized_response_bytes": 6071
+              }
+            },
+            "payload_bytes": 2764800
+          },
+          "jpeg": {
+            "round_trip_s": 0.8954782270002397,
+            "server_timing": {
+              "request_validation_s": 0.000230837000003703,
+              "queue_wait_s": 2.958999999691514e-06,
+              "modal_queue_s": null,
+              "request_deserialization_s": null,
+              "response_serialization_s": null,
+              "image_decode_transform_s": 0.013641222999979163,
+              "per_camera": {
+                "top": {
+                  "decode_s": 0.0035015870000165705,
+                  "crop_s": 6.227999989505406e-06,
+                  "tensor_conversion_s": 0.0005446840000047359
+                },
+                "left": {
+                  "decode_s": 0.003427985000001854,
+                  "crop_s": 8.903999997755818e-06,
+                  "tensor_conversion_s": 0.000815547999991395
+                },
+                "right": {
+                  "decode_s": 0.0033456919999821366,
+                  "crop_s": 4.826999997931125e-06,
+                  "tensor_conversion_s": 0.001979824000017061
+                }
+              },
+              "state_reset_s": 8.252800000718707e-05,
+              "preprocess_s": 0.02026441500001397,
+              "inference_s": 0.3559781369999939,
+              "preprocess_steps_s": {
+                "0:RenameObservationsProcessorStep": 9.329000022262335e-06,
+                "1:AddBatchDimensionProcessorStep": 5.0420999997413674e-05,
+                "2:MolmoAct2StateFrameTransformStep": 1.865999990968703e-06,
+                "3:MolmoAct2MaskedNormalizerProcessorStep": 0.0002632309999910376,
+                "4:MolmoAct2ClampNormalizedProcessorStep": 1.4432999989821838e-05,
+                "5:MolmoAct2PackInputsProcessorStep": 0.01829134900000895,
+                "6:DeviceProcessorStep": 0.0015544249999948079
+              },
+              "postprocess_s": 0.0002812609999978122,
+              "diagnostic_postprocess_s": 1.2620000120477926e-06,
+              "saved_postprocess_s": 0.0002799989999857644,
+              "postprocess_steps_s": {
+                "0:MolmoAct2ClampActionProcessorStep": 1.882899999827714e-05,
+                "1:MolmoAct2MaskedUnnormalizerProcessorStep": 0.0001441139999940333,
+                "2:MolmoAct2ActionFrameTransformStep": 2.2700000101849582e-06,
+                "3:DeviceProcessorStep": 6.802099997571531e-05
+              },
+              "diagnostic_postprocess_steps_s": {},
+              "response_conversion_s": 2.5490000012950986e-05,
+              "total_s": 0.390666643000003,
+              "diagnostic_conversion_s": 4.399999795623444e-07,
+              "response_validation_s": 0.00014532099999087222
+            },
+            "transport_timing": {
+              "network_only_s": null,
+              "modal_queue_s": null,
+              "sdk_response_decode_s": null,
+              "call_mode": "remote",
+              "remote_cancellation_supported": false,
+              "note": "SDK dispatch/wait include serialization and network; separate internals unobservable",
+              "handle_reused": true,
+              "handle_lookup_s": 0.00017318499976681778,
+              "remote_call_s": 0.8950243950002914,
+              "sdk": {
+                "request_serialization_s": 0.0003043369997612899,
+                "serialized_request_bytes": 699337,
+                "request_serialization_calls": 1,
+                "response_deserialization_s": 0.00010092400043504313,
+                "serialized_response_bytes": 6071
+              }
+            },
+            "payload_bytes": 698346
+          }
+        },
+        "shape": [
+          30,
+          14
+        ],
+        "action_max_absolute_delta": 0.02734375,
+        "action_mean_absolute_delta": 0.002598356774875096,
+        "action_p95_absolute_delta": 0.015625,
+        "per_action_max_absolute_delta": {
+          "left_joint_1.pos": 0.0011042356491088867,
+          "left_joint_2.pos": 0.004375383257865906,
+          "left_joint_3.pos": 0.0038948804140090942,
+          "left_joint_4.pos": 0.002946138381958008,
+          "left_joint_5.pos": 0.001213669776916504,
+          "left_joint_6.pos": 0.002470254898071289,
+          "left_gripper.pos": 0.02734375,
+          "right_joint_1.pos": 0.0012025833129882812,
+          "right_joint_2.pos": 0.004453778266906738,
+          "right_joint_3.pos": 0.003991015255451202,
+          "right_joint_4.pos": 0.003249526023864746,
+          "right_joint_5.pos": 0.0029378533363342285,
+          "right_joint_6.pos": 0.0014004707336425781,
+          "right_gripper.pos": 0.01953125
+        }
+      },
+      {
+        "diagnostic_seed": 3,
+        "samples": {
+          "rgb8": {
+            "round_trip_s": 1.3872212270007367,
+            "server_timing": {
+              "request_validation_s": 3.130700000042452e-05,
+              "queue_wait_s": 3.61300001827658e-06,
+              "modal_queue_s": null,
+              "request_deserialization_s": null,
+              "response_serialization_s": null,
+              "image_decode_transform_s": 0.0017142899999953443,
+              "per_camera": {
+                "top": {
+                  "decode_s": 1.083999998741092e-05,
+                  "crop_s": 4.2630000223198294e-06,
+                  "tensor_conversion_s": 0.0006558489999974881
+                },
+                "left": {
+                  "decode_s": 8.375999982490612e-06,
+                  "crop_s": 2.6609999963511655e-06,
+                  "tensor_conversion_s": 0.0005772670000112612
+                },
+                "right": {
+                  "decode_s": 6.2569999954575906e-06,
+                  "crop_s": 1.3949999981832661e-06,
+                  "tensor_conversion_s": 0.0004431129999886707
+                }
+              },
+              "state_reset_s": 7.0192999999108e-05,
+              "preprocess_s": 0.02163868599998864,
+              "inference_s": 0.36168614100000696,
+              "preprocess_steps_s": {
+                "0:RenameObservationsProcessorStep": 9.124000001747845e-06,
+                "1:AddBatchDimensionProcessorStep": 4.78979999911644e-05,
+                "2:MolmoAct2StateFrameTransformStep": 1.9109999982447334e-06,
+                "3:MolmoAct2MaskedNormalizerProcessorStep": 0.0002394169999888618,
+                "4:MolmoAct2ClampNormalizedProcessorStep": 1.5224999998508792e-05,
+                "5:MolmoAct2PackInputsProcessorStep": 0.01980941799999414,
+                "6:DeviceProcessorStep": 0.0014418740000223806
+              },
+              "postprocess_s": 0.00029750000001627086,
+              "diagnostic_postprocess_s": 1.5490000180307106e-06,
+              "saved_postprocess_s": 0.00029595099999824015,
+              "postprocess_steps_s": {
+                "0:MolmoAct2ClampActionProcessorStep": 2.207800000064708e-05,
+                "1:MolmoAct2MaskedUnnormalizerProcessorStep": 0.00015949100000511862,
+                "2:MolmoAct2ActionFrameTransformStep": 2.8469999904245924e-06,
+                "3:DeviceProcessorStep": 5.57040000046527e-05
+              },
+              "diagnostic_postprocess_steps_s": {},
+              "response_conversion_s": 2.8730999986237293e-05,
+              "total_s": 0.3856444240000201,
+              "diagnostic_conversion_s": 3.6299999806033156e-07,
+              "response_validation_s": 0.00015896700000439523
+            },
+            "transport_timing": {
+              "network_only_s": null,
+              "modal_queue_s": null,
+              "sdk_response_decode_s": null,
+              "call_mode": "remote",
+              "remote_cancellation_supported": false,
+              "note": "SDK dispatch/wait include serialization and network; separate internals unobservable",
+              "handle_reused": true,
+              "handle_lookup_s": 0.00016260800020972965,
+              "remote_call_s": 1.386766622000323,
+              "sdk": {
+                "request_serialization_s": 0.001929893999658816,
+                "serialized_request_bytes": 2765771,
+                "request_serialization_calls": 1,
+                "input_blob_upload_s": 0.7258988220000901,
+                "input_blob_bytes": 2765771,
+                "response_deserialization_s": 0.00012236500060680555,
+                "serialized_response_bytes": 6071
+              }
+            },
+            "payload_bytes": 2764800
+          },
+          "jpeg": {
+            "round_trip_s": 0.9427050599997528,
+            "server_timing": {
+              "request_validation_s": 0.00025065399998425164,
+              "queue_wait_s": 3.1880000221917726e-06,
+              "modal_queue_s": null,
+              "request_deserialization_s": null,
+              "response_serialization_s": null,
+              "image_decode_transform_s": 0.013168278999984295,
+              "per_camera": {
+                "top": {
+                  "decode_s": 0.003865542999989202,
+                  "crop_s": 5.6689999894388166e-06,
+                  "tensor_conversion_s": 0.0004714480000131971
+                },
+                "left": {
+                  "decode_s": 0.003747075999996241,
+                  "crop_s": 4.426000003832087e-06,
+                  "tensor_conversion_s": 0.0006120619999876453
+                },
+                "right": {
+                  "decode_s": 0.0038679070000000593,
+                  "crop_s": 5.735000002005108e-06,
+                  "tensor_conversion_s": 0.0005820270000072014
+                }
+              },
+              "state_reset_s": 7.675099999460144e-05,
+              "preprocess_s": 0.021378158000004532,
+              "inference_s": 0.40296418200000517,
+              "preprocess_steps_s": {
+                "0:RenameObservationsProcessorStep": 9.344000005739872e-06,
+                "1:AddBatchDimensionProcessorStep": 5.0329000004012414e-05,
+                "2:MolmoAct2StateFrameTransformStep": 2.483999992364261e-06,
+                "3:MolmoAct2MaskedNormalizerProcessorStep": 0.00026165799999944284,
+                "4:MolmoAct2ClampNormalizedProcessorStep": 1.5698999987989737e-05,
+                "5:MolmoAct2PackInputsProcessorStep": 0.01931254299998386,
+                "6:DeviceProcessorStep": 0.0016228159999798208
+              },
+              "postprocess_s": 0.00029064599999628626,
+              "diagnostic_postprocess_s": 1.4539999995122344e-06,
+              "saved_postprocess_s": 0.00028919199999677403,
+              "postprocess_steps_s": {
+                "0:MolmoAct2ClampActionProcessorStep": 2.1994999997332343e-05,
+                "1:MolmoAct2MaskedUnnormalizerProcessorStep": 0.00015559100000928083,
+                "2:MolmoAct2ActionFrameTransformStep": 2.8450000115753937e-06,
+                "3:DeviceProcessorStep": 5.426899997473811e-05
+              },
+              "diagnostic_postprocess_steps_s": {},
+              "response_conversion_s": 2.8732000004083602e-05,
+              "total_s": 0.43834508699998764,
+              "diagnostic_conversion_s": 3.810000066550856e-07,
+              "response_validation_s": 0.00016872099999432066
+            },
+            "transport_timing": {
+              "network_only_s": null,
+              "modal_queue_s": null,
+              "sdk_response_decode_s": null,
+              "call_mode": "remote",
+              "remote_cancellation_supported": false,
+              "note": "SDK dispatch/wait include serialization and network; separate internals unobservable",
+              "handle_reused": true,
+              "handle_lookup_s": 0.0002103059996443335,
+              "remote_call_s": 0.942187820000072,
+              "sdk": {
+                "request_serialization_s": 0.0004335809999247431,
+                "serialized_request_bytes": 699337,
+                "request_serialization_calls": 1,
+                "response_deserialization_s": 0.00012306200005696155,
+                "serialized_response_bytes": 6071
+              }
+            },
+            "payload_bytes": 698346
+          }
+        },
+        "shape": [
+          30,
+          14
+        ],
+        "action_max_absolute_delta": 0.087890625,
+        "action_mean_absolute_delta": 0.005331833740430219,
+        "action_p95_absolute_delta": 0.03125,
+        "per_action_max_absolute_delta": {
+          "left_joint_1.pos": 0.0011042356491088867,
+          "left_joint_2.pos": 0.017501503229141235,
+          "left_joint_3.pos": 0.0038948804140090942,
+          "left_joint_4.pos": 0.005892157554626465,
+          "left_joint_5.pos": 0.00242730975151062,
+          "left_joint_6.pos": 0.00988084077835083,
+          "left_gripper.pos": 0.087890625,
+          "right_joint_1.pos": 0.0012025833129882812,
+          "right_joint_2.pos": 0.004453778266906738,
+          "right_joint_3.pos": 0.003991015255451202,
+          "right_joint_4.pos": 0.003249526023864746,
+          "right_joint_5.pos": 0.001468956470489502,
+          "right_joint_6.pos": 0.0028009414672851562,
+          "right_gripper.pos": 0.03125
+        }
+      }
+    ],
+    "instance_id": "1868959a-b4d7-4a20-946e-b0194ca96bed",
+    "note": "Numerical sensitivity diagnostic, not physical policy fidelity validation."
+  },
+  "optimized_assessment": {
+    "schema_version": 1,
+    "created_unix_s": 1788613095.9693305,
+    "created_at": "2026-09-05T12:58:15.969331+00:00",
+    "host": {
+      "hostname": "cd13c3ed-f6f",
+      "machine_fingerprint": "282b17c8c1488c65957278b08bbd3775a8a853b8801ebc4777580b39f41c6860"
+    },
+    "scope": "same host and settings only; mapping and supervised confirmation required",
+    "source_environment": "cloud",
+    "status": "STILL_TOO_SLOW",
+    "hardware_tested": false,
+    "settings": {
+      "profile": "molmoact2",
+      "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+      "dependency_revision": "8dcbed66f2380e4393189c303ea72488eb9e63c2",
+      "modal_app": "yamkit-vla-db2afc162a054ff8",
+      "call_mode": "remote",
+      "image_encoding": "jpeg",
+      "jpeg_quality": 85,
+      "image_hw": [
+        480,
+        640
+      ],
+      "crop": "none",
+      "requested_region": "us",
+      "observed_region": "us-ashburn-1",
+      "routing_region": "us-west",
+      "fps": 30,
+      "chunk_steps": 30,
+      "prediction_queue_threshold": 30,
+      "max_observation_age_s": 2.0,
+      "protocol_version": 1,
+      "lerobot_version": "0.6.1",
+      "jpeg_subsampling": 2,
+      "image_boundary_version": "saved-policy-transform-v1"
+    },
+    "assessment": {
+      "qualified": false,
+      "reasons": [
+        "Insufficient completed warm requests in the direct and integrated paths",
+        "Integrated fake-robot execution failed or did not release normally",
+        "Integrated execution reported expired_chunks or omitted its measurement",
+        "Missing or invalid integer counter minimum_execution_queue_depth",
+        "The executing queue drained",
+        "Stop during in-flight inference did not prove zero late SDK commands",
+        "Warm RPC p95 does not fit the effective usable horizon with 20% margin"
+      ],
+      "requested_warm_samples": 50,
+      "completed_integrated_warm_samples": 0,
+      "nominal_action_horizon_s": 1.0,
+      "integrated_observation_age_p95_s": null,
+      "integrated_merged_horizon_p05_s": 0.0,
+      "effective_usable_action_horizon_s": 0.0,
+      "required_margin_fraction": 0.2,
+      "maximum_qualifying_rpc_p95_s": 0.0,
+      "warm_round_trip_s": {
+        "sample_count": 50,
+        "min": 0.5741675509998458,
+        "max": 0.7168641910002407,
+        "p50": 0.6446829530000286,
+        "p95": 0.6951814430501599,
+        "p99": 0.707055775739891
+      }
+    },
+    "qualification_path": "/home/vercel-sandbox/yamkit/data/qualifications/modal-molmoact2.json",
+    "notice": "Host-bound measurement only. Physical rollout separately requires a valid local record, accepted mapping and explicit supervised confirmation."
+  },
+  "optimized_direct": {
+    "measurement": "real Modal RPC; generated checkpoint-native fixtures; no action execution",
+    "measurement_host": {
+      "hostname": "cd13c3ed-f6f",
+      "machine_fingerprint": "282b17c8c1488c65957278b08bbd3775a8a853b8801ebc4777580b39f41c6860"
+    },
+    "profile": "molmoact2",
+    "revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+    "image_hw": [
+      480,
+      640
+    ],
+    "fixture_pattern": "seeded random RGB generated per request; zero native state",
+    "call_mode": "remote",
+    "image_encoding": "jpeg",
+    "jpeg_quality": 85,
+    "crop": "none",
+    "requested_warm_samples": 50,
+    "max_wall_s": 600,
+    "readiness_s": 0.22381321000011667,
+    "readiness": {
+      "profile": "molmoact2",
+      "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+      "instance_id": "1868959a-b4d7-4a20-946e-b0194ca96bed",
+      "device": "cuda",
+      "load_s": 137.891379196,
+      "prediction_count": 8,
+      "memory": {
+        "process_peak_rss_bytes": 45764771840,
+        "cgroup_memory_peak_bytes": null,
+        "cgroup_memory_current_bytes": null,
+        "cgroup_memory_max_bytes": null,
+        "cuda_peak_allocated_bytes": 21808112128,
+        "cuda_peak_reserved_bytes": 22294822912
+      },
+      "compute_region": "us-ashburn-1",
+      "requested_compute_region": "us",
+      "routing_region": "us-west",
+      "requested_memory_mib": 49152,
+      "container_init_s": 147.214676695
+    },
+    "readiness_transport_timing": {
+      "network_only_s": null,
+      "modal_queue_s": null,
+      "sdk_response_decode_s": null,
+      "call_mode": "remote",
+      "remote_cancellation_supported": false,
+      "note": "SDK dispatch/wait include serialization and network; separate internals unobservable",
+      "handle_reused": false,
+      "handle_lookup_s": 0.0002038689999608323,
+      "remote_call_s": 0.22335882399966067
+    },
+    "readiness_cold_start_verified": false,
+    "cold_start_note": "First observed request is separated, not assumed cold; inspect readiness and lifecycle.",
+    "elapsed_s": 33.980055099999845,
+    "terminated": "request_limit",
+    "failures": [],
+    "sample_count": 51,
+    "warm_sample_count": 50,
+    "minimum_warm_samples": 50,
+    "warm_sample_requirement_met": true,
+    "first_request": {
+      "round_trip_s": 0.7699975240002459,
+      "server_timing": {
+        "request_validation_s": 0.00026521399999523965,
+        "queue_wait_s": 3.4599999878537346e-06,
+        "modal_queue_s": null,
+        "request_deserialization_s": null,
+        "response_serialization_s": null,
+        "image_decode_transform_s": 0.012461086000001842,
+        "per_camera": {
+          "top": {
+            "decode_s": 0.003487597999992431,
+            "crop_s": 6.195999986857714e-06,
+            "tensor_conversion_s": 0.0007132160000082877
+          },
+          "left": {
+            "decode_s": 0.0034683890000053452,
+            "crop_s": 4.767999996602157e-06,
+            "tensor_conversion_s": 0.0005556979999994383
+          },
+          "right": {
+            "decode_s": 0.0034635709999975006,
+            "crop_s": 6.205000005365946e-06,
+            "tensor_conversion_s": 0.0007491430000072796
+          }
+        },
+        "state_reset_s": 0.00011115899999936119,
+        "preprocess_s": 0.01981815700000311,
+        "inference_s": 0.3587871240000027,
+        "preprocess_steps_s": {
+          "0:RenameObservationsProcessorStep": 1.0290000005852562e-05,
+          "1:AddBatchDimensionProcessorStep": 4.732100001092476e-05,
+          "2:MolmoAct2StateFrameTransformStep": 2.247000026045498e-06,
+          "3:MolmoAct2MaskedNormalizerProcessorStep": 0.0002986100000157421,
+          "4:MolmoAct2ClampNormalizedProcessorStep": 1.7422000013311845e-05,
+          "5:MolmoAct2PackInputsProcessorStep": 0.01781364300001087,
+          "6:DeviceProcessorStep": 0.001543988000008767
+        },
+        "postprocess_s": 0.0002885520000006636,
+        "diagnostic_postprocess_s": 1.443000002154804e-06,
+        "saved_postprocess_s": 0.0002871089999985088,
+        "postprocess_steps_s": {
+          "0:MolmoAct2ClampActionProcessorStep": 2.1722000013824072e-05,
+          "1:MolmoAct2MaskedUnnormalizerProcessorStep": 0.00015128199999026037,
+          "2:MolmoAct2ActionFrameTransformStep": 3.051000021514483e-06,
+          "3:DeviceProcessorStep": 7.331899999485358e-05
+        },
+        "diagnostic_postprocess_steps_s": {},
+        "response_conversion_s": 2.7772999999342574e-05,
+        "total_s": 0.39192501099998367,
+        "diagnostic_conversion_s": 3.680000020267471e-07,
+        "response_validation_s": 0.00014783499997861327
+      },
+      "lifecycle": {
+        "first_prediction": false,
+        "prediction_count": 9,
+        "idle_s": 0.8593035899999961,
+        "runtime_age_s": 11.756415622999981,
+        "load_s": 137.891379196
+      }
+    },
+    "warm_round_trip_s": {
+      "sample_count": 50,
+      "min": 0.5741675509998458,
+      "max": 0.7168641910002407,
+      "p50": 0.6446829530000286,
+      "p95": 0.6951814430501599,
+      "p99": 0.707055775739891
+    },
+    "warm_stages": {
+      "fixture_generation_s": {
+        "sample_count": 50,
+        "min": 0.00291433600068558,
+        "max": 0.005854916000316734,
+        "p50": 0.0031308819993682846,
+        "p95": 0.00459133950016621,
+        "p99": 0.005568381149878404
+      },
+      "lifecycle.idle_s": {
+        "sample_count": 50,
+        "min": 0.20195023299999093,
+        "max": 0.32733113200001185,
+        "p50": 0.265915868999997,
+        "p95": 0.2709705707499893,
+        "p99": 0.30054329260000734
+      },
+      "lifecycle.load_s": {
+        "sample_count": 50,
+        "min": 137.891379196,
+        "max": 137.891379196,
+        "p50": 137.891379196,
+        "p95": 137.891379196,
+        "p99": 137.891379196
+      },
+      "lifecycle.runtime_age_s": {
+        "sample_count": 50,
+        "min": 12.415489103999988,
+        "max": 44.69695765,
+        "p50": 28.54474220199998,
+        "p95": 43.169426980999994,
+        "p99": 44.38079722997
+      },
+      "observation_age_at_dispatch_s": {
+        "sample_count": 50,
+        "min": 0.007337160999668413,
+        "max": 0.01331263000065519,
+        "p50": 0.007576862499718118,
+        "p95": 0.009972321549957997,
+        "p99": 0.011741827200385153
+      },
+      "payload_bytes": {
+        "sample_count": 50,
+        "min": 697813.0,
+        "max": 698919.0,
+        "p50": 698281.0,
+        "p95": 698693.65,
+        "p99": 698848.93
+      },
+      "request_validation_s": {
+        "sample_count": 50,
+        "min": 0.00011545400047907606,
+        "max": 0.0002059520002148929,
+        "p50": 0.00012121800000386429,
+        "p95": 0.00016898005028451727,
+        "p99": 0.00019818549990304742
+      },
+      "response_validation_s": {
+        "sample_count": 50,
+        "min": 0.00020467500053200638,
+        "max": 0.0004168460000073537,
+        "p50": 0.00024241550045189797,
+        "p95": 0.00035816359954878854,
+        "p99": 0.0004104044599444023
+      },
+      "round_trip_s": {
+        "sample_count": 50,
+        "min": 0.5741675509998458,
+        "max": 0.7168641910002407,
+        "p50": 0.6446829530000286,
+        "p95": 0.6951814430501599,
+        "p99": 0.707055775739891
+      },
+      "rpc_minus_server_s": {
+        "sample_count": 50,
+        "min": 0.19177462600003992,
+        "max": 0.3168054830002518,
+        "p50": 0.25431550799982006,
+        "p95": 0.25715566114946287,
+        "p99": 0.28870869239027075
+      },
+      "server_timing.diagnostic_conversion_s": {
+        "sample_count": 50,
+        "min": 2.5599999275982555e-07,
+        "max": 8.279999974547536e-07,
+        "p50": 3.5800000830477074e-07,
+        "p95": 4.78399989845002e-07,
+        "p99": 6.75610007476734e-07
+      },
+      "server_timing.diagnostic_postprocess_s": {
+        "sample_count": 50,
+        "min": 1.1710000080711325e-06,
+        "max": 1.8769999883261335e-06,
+        "p50": 1.4215000021522428e-06,
+        "p95": 1.7141500052275658e-06,
+        "p99": 1.8696499824955025e-06
+      },
+      "server_timing.image_decode_transform_s": {
+        "sample_count": 50,
+        "min": 0.010542631000021174,
+        "max": 0.013529488000017409,
+        "p50": 0.011776853000000642,
+        "p95": 0.012722940999995557,
+        "p99": 0.013241894750006792
+      },
+      "server_timing.inference_s": {
+        "sample_count": 50,
+        "min": 0.3499577679999959,
+        "max": 0.4087709030000042,
+        "p50": 0.3583442989999952,
+        "p95": 0.404768226450004,
+        "p99": 0.40821203546001017
+      },
+      "server_timing.postprocess_s": {
+        "sample_count": 50,
+        "min": 0.0002295349999883456,
+        "max": 0.0003508339999882537,
+        "p50": 0.00027310899999122284,
+        "p95": 0.00033749515001488815,
+        "p99": 0.00034951785999425054
+      },
+      "server_timing.preprocess_s": {
+        "sample_count": 50,
+        "min": 0.01704503099998078,
+        "max": 0.022424247999992986,
+        "p50": 0.019371127999988857,
+        "p95": 0.021261880300005486,
+        "p99": 0.021924785119987574
+      },
+      "server_timing.queue_wait_s": {
+        "sample_count": 50,
+        "min": 2.5869999831229507e-06,
+        "max": 3.7349999786329136e-06,
+        "p50": 3.042000003006251e-06,
+        "p95": 3.526050001312342e-06,
+        "p99": 3.6541499841291623e-06
+      },
+      "server_timing.request_validation_s": {
+        "sample_count": 50,
+        "min": 0.00017472499999371394,
+        "max": 0.00026542300000187424,
+        "p50": 0.0002075900000022557,
+        "p95": 0.00025199799999597866,
+        "p99": 0.00026539506999085917
+      },
+      "server_timing.response_conversion_s": {
+        "sample_count": 50,
+        "min": 2.160999997613544e-05,
+        "max": 4.244300001232659e-05,
+        "p50": 2.509899999836307e-05,
+        "p95": 3.070079998082065e-05,
+        "p99": 3.8676370001837756e-05
+      },
+      "server_timing.response_validation_s": {
+        "sample_count": 50,
+        "min": 0.00014127799997254442,
+        "max": 0.00019100099999036502,
+        "p50": 0.00015175350000617982,
+        "p95": 0.0001768286499910232,
+        "p99": 0.0001842816299966898
+      },
+      "server_timing.saved_postprocess_s": {
+        "sample_count": 50,
+        "min": 0.00022828699999877244,
+        "max": 0.0003493549999973311,
+        "p50": 0.00027167900000790723,
+        "p95": 0.000335937800018371,
+        "p99": 0.0003478511900104308
+      },
+      "server_timing.state_reset_s": {
+        "sample_count": 50,
+        "min": 5.121299997767892e-05,
+        "max": 0.0001213959999972758,
+        "p50": 5.938650001269252e-05,
+        "p95": 9.350505000327301e-05,
+        "p99": 0.00011087814999569896
+      },
+      "server_timing.total_s": {
+        "sample_count": 50,
+        "min": 0.37996285700000954,
+        "max": 0.4424596589999794,
+        "p50": 0.39095103699999356,
+        "p95": 0.43765157584999914,
+        "p99": 0.4423366155899913
+      },
+      "total_request_s": {
+        "sample_count": 50,
+        "min": 0.5840758710000955,
+        "max": 0.7246469720003006,
+        "p50": 0.652747215999625,
+        "p95": 0.7044691576496916,
+        "p99": 0.7155597990100886
+      },
+      "transport_timing.handle_lookup_s": {
+        "sample_count": 50,
+        "min": 0.00015979999989212956,
+        "max": 0.00036716599970532116,
+        "p50": 0.00018221649997940403,
+        "p95": 0.00024319615017702744,
+        "p99": 0.00032195026991757895
+      },
+      "transport_timing.remote_call_s": {
+        "sample_count": 50,
+        "min": 0.5737090660004469,
+        "max": 0.7164280760007387,
+        "p50": 0.6442033435000667,
+        "p95": 0.6946557886497431,
+        "p99": 0.7065760968002905
+      }
+    },
+    "container_instance_count": 1,
+    "queue_depth": null,
+    "underruns": null,
+    "physical_modal_rollout_allowed": false
+  },
+  "optimized_integrated": {
+    "name": "host_modal_qualification",
+    "source": "final LeRobot worker/strategy; fake RGB cameras and fake YAM; real Modal RPC",
+    "measurement_host": {
+      "hostname": "cd13c3ed-f6f",
+      "machine_fingerprint": "282b17c8c1488c65957278b08bbd3775a8a853b8801ebc4777580b39f41c6860"
+    },
+    "injected_delay_cycle_s": null,
+    "fps": 30,
+    "chunk_steps": 30,
+    "image_hw": [
+      480,
+      640
+    ],
+    "elapsed_s": 1.737791914000809,
+    "error": "Remote rollout stopped after an inference fault",
+    "fixture_pattern": "fixed seeded random RGB per camera; fake measured state follows commanded actions",
+    "policy_options": {
+      "image_encoding": "jpeg",
+      "jpeg_quality": 85,
+      "call_mode": "remote",
+      "center_crop": false,
+      "prediction_queue_threshold": 30
+    },
+    "readiness_s": 0.241512010000406,
+    "readiness": {
+      "profile": "molmoact2",
+      "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+      "instance_id": "1868959a-b4d7-4a20-946e-b0194ca96bed",
+      "prediction_count": 59,
+      "compute_region": "us-ashburn-1",
+      "requested_compute_region": "us",
+      "routing_region": "us-west"
+    },
+    "stop_requested_monotonic_s": 4733.082962306,
+    "commands_after_stop": 0,
+    "stop_requested_during_inflight_rpc": false,
+    "all_fake_robots_released": true,
+    "sdk_commands_during_completed_rpc": [
+      0
+    ],
+    "failed": true,
+    "underruns": 0,
+    "queue_depth": 0,
+    "peak_queue_depth": 0,
+    "last_queue_depth_before_stop": 0,
+    "executed_actions": 0,
+    "dequeued_actions": 0,
+    "minimum_execution_queue_depth": null,
+    "minimum_dispatch_margin_s": null,
+    "expired_before_dispatch": 0,
+    "expired_queued_actions": 0,
+    "stop_to_robot_release_s": 0.403357170000163,
+    "stop_timing_basis": "local stop/fault detection to completed no-home robot release",
+    "prediction_samples": [
+      {
+        "prediction_started_monotonic_s": 4732.135961807,
+        "observation_timestamp_monotonic_s": 4732.115750087,
+        "observation_age_at_start_s": 0.02021171999967919,
+        "observation_processing_s": 0.010278622000441828,
+        "queue_depth_at_start": 0,
+        "queue_horizon_at_start_s": 0.0,
+        "queue_deadline_horizon_at_start_s": 0.0,
+        "next_action_margin_at_start_s": null,
+        "prefetch_threshold_steps": 30,
+        "executed_actions_at_start": 0,
+        "expired_prefix_dropped": 30,
+        "overlap_prefix_dropped": 0,
+        "accepted_steps": 0,
+        "prediction_s": 0.9466031669999211,
+        "observation_age_at_return_s": 0.9668148869996003,
+        "remaining_valid_action_horizon_s": 0.033003262000420364,
+        "queue_depth_at_return": 0,
+        "queue_deadline_horizon_at_return_s": 0.0,
+        "next_action_margin_at_return_s": null,
+        "actions_executed_during_prediction": 0,
+        "error": null,
+        "encoding_s": 0.02443575300003431,
+        "image_tensor_transform_s": 0.00596575099916663,
+        "image_serialization_s": 0.018088842999532062,
+        "jpeg_encoding_s": 0.018088842999532062,
+        "per_camera_timing": {
+          "top": {
+            "tensor_transform_s": 0.002288336999299645,
+            "image_encode_s": 0.006082182000682224,
+            "jpeg_encode_s": 0.006082182000682224,
+            "payload_bytes": 232895
+          },
+          "left_wrist": {
+            "tensor_transform_s": 0.0019331690000399249,
+            "image_encode_s": 0.006164552999507578,
+            "jpeg_encode_s": 0.006164552999507578,
+            "payload_bytes": 232656
+          },
+          "right_wrist": {
+            "tensor_transform_s": 0.0017442449998270604,
+            "image_encode_s": 0.005842107999342261,
+            "jpeg_encode_s": 0.005842107999342261,
+            "payload_bytes": 232795
+          }
+        },
+        "queue_depth_at_merge": 0,
+        "queue_deadline_horizon_at_merge_s": 0.0,
+        "queue_horizon_after_merge_s": 0.0,
+        "queue_deadline_horizon_after_merge_s": 0.0
+      }
+    ],
+    "readiness_model_warmup_s": 0.0,
+    "prefetch_threshold_steps": 30,
+    "expired_prefix_dropped": 30,
+    "overlap_prefix_dropped": 0,
+    "expired_chunks": 1,
+    "redundant_chunks": 0,
+    "sample_count": 1,
+    "request_count": 1,
+    "failed_request_count": 0,
+    "failures": [],
+    "first_round_trip_s": 0.921402715000113,
+    "max_observation_age_s": 0.9665569609996965,
+    "warm_sample_count": 0,
+    "warm_round_trip_s": {},
+    "samples": [
+      {
+        "round_trip_s": 0.921402715000113,
+        "observation_timestamp_monotonic_s": 4732.115750087,
+        "observation_age_at_dispatch_s": 0.044912136999300856,
+        "observation_age_s": 0.9665569609996965,
+        "camera_exposure_timestamp_s": null,
+        "timestamp_basis": "local observation receipt; camera exposure is unobservable",
+        "payload_bytes": 698346,
+        "wire_payload_bytes": null,
+        "payload_size_basis": "encoded image bytes; SDK framing size unobservable",
+        "image_encoding": "jpeg",
+        "request_validation_s": 0.00014387699957296718,
+        "response_validation_s": 0.00023171300017565954,
+        "transport_timing": {
+          "network_only_s": null,
+          "modal_queue_s": null,
+          "sdk_response_decode_s": null,
+          "call_mode": "remote",
+          "remote_cancellation_supported": false,
+          "note": "SDK dispatch/wait include serialization and network; separate internals unobservable",
+          "handle_reused": true,
+          "handle_lookup_s": 0.00018551399989519268,
+          "remote_call_s": 0.920865641999626
+        },
+        "server_timing": {
+          "request_validation_s": 0.00025057800002059594,
+          "queue_wait_s": 3.4359999858679657e-06,
+          "modal_queue_s": null,
+          "request_deserialization_s": null,
+          "response_serialization_s": null,
+          "image_decode_transform_s": 0.012779508999983591,
+          "per_camera": {
+            "top": {
+              "decode_s": 0.003719418000002861,
+              "crop_s": 6.906000010076241e-06,
+              "tensor_conversion_s": 0.0006781630000034511
+            },
+            "left_wrist": {
+              "decode_s": 0.0036773770000024797,
+              "crop_s": 5.18600000987135e-06,
+              "tensor_conversion_s": 0.0006886390000033771
+            },
+            "right_wrist": {
+              "decode_s": 0.0035336759999893275,
+              "crop_s": 5.126000019117782e-06,
+              "tensor_conversion_s": 0.00045926399999984824
+            }
+          },
+          "state_reset_s": 0.00012633900001901566,
+          "preprocess_s": 0.021231478000004245,
+          "inference_s": 0.38349145000000817,
+          "preprocess_steps_s": {
+            "0:RenameObservationsProcessorStep": 1.0515999974813894e-05,
+            "1:AddBatchDimensionProcessorStep": 4.5631000006096656e-05,
+            "2:MolmoAct2StateFrameTransformStep": 2.5449999725424277e-06,
+            "3:MolmoAct2MaskedNormalizerProcessorStep": 0.0003258540000103949,
+            "4:MolmoAct2ClampNormalizedProcessorStep": 1.9498999989764343e-05,
+            "5:MolmoAct2PackInputsProcessorStep": 0.019207750999981954,
+            "6:DeviceProcessorStep": 0.0015226379999830897
+          },
+          "postprocess_s": 0.0002722959999914565,
+          "diagnostic_postprocess_s": 1.4279999902555573e-06,
+          "saved_postprocess_s": 0.0002708680000012009,
+          "postprocess_steps_s": {
+            "0:MolmoAct2ClampActionProcessorStep": 2.194000001054519e-05,
+            "1:MolmoAct2MaskedUnnormalizerProcessorStep": 0.00015085299997963375,
+            "2:MolmoAct2ActionFrameTransformStep": 2.874000017527578e-06,
+            "3:DeviceProcessorStep": 5.9171999993168356e-05
+          },
+          "diagnostic_postprocess_steps_s": {},
+          "response_conversion_s": 2.7510999984770024e-05,
+          "total_s": 0.41835844500002395,
+          "diagnostic_conversion_s": 3.619999802140228e-07,
+          "response_validation_s": 0.00016061900001318463
+        },
+        "encoding_s": 0.02443575300003431,
+        "image_tensor_transform_s": 0.00596575099916663,
+        "image_serialization_s": 0.018088842999532062,
+        "jpeg_encoding_s": 0.018088842999532062,
+        "per_camera_timing": {
+          "top": {
+            "tensor_transform_s": 0.002288336999299645,
+            "image_encode_s": 0.006082182000682224,
+            "jpeg_encode_s": 0.006082182000682224,
+            "payload_bytes": 232895
+          },
+          "left_wrist": {
+            "tensor_transform_s": 0.0019331690000399249,
+            "image_encode_s": 0.006164552999507578,
+            "jpeg_encode_s": 0.006164552999507578,
+            "payload_bytes": 232656
+          },
+          "right_wrist": {
+            "tensor_transform_s": 0.0017442449998270604,
+            "image_encode_s": 0.005842107999342261,
+            "jpeg_encode_s": 0.005842107999342261,
+            "payload_bytes": 232795
+          }
+        },
+        "response_tensor_decode_s": 0.0001836159999584197
+      }
+    ]
+  },
+  "optimized_shutdown": {
+    "elapsed_s": 266.51113686499957,
+    "allocation_observed_s": 205.7860329209998,
+    "reason": "finished",
+    "receipt": {
+      "app_name": "yamkit-vla-db2afc162a054ff8",
+      "app_id": "ap-CmStbk9vTIhpWRxCg3GL30",
+      "profile_id": "molmoact2",
+      "revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+      "status": "stopped",
+      "created_at": 1788612838.3745215,
+      "development": false,
+      "gpu": "L40S",
+      "scaledown_window": 300,
+      "region": "us",
+      "routing_region": "us-west",
+      "cache_volume_name": "yamkit-latency-20260905-d3570a79",
+      "memory_mib": 49152,
+      "deployment_started": true,
+      "metadata": {
+        "id": "molmoact2",
+        "repo_id": "lerobot/MolmoAct2-BimanualYAM-LeRobot",
+        "revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+        "policy_type": "molmoact2",
+        "state_names": [
+          "left_joint_1.pos",
+          "left_joint_2.pos",
+          "left_joint_3.pos",
+          "left_joint_4.pos",
+          "left_joint_5.pos",
+          "left_joint_6.pos",
+          "left_gripper.pos",
+          "right_joint_1.pos",
+          "right_joint_2.pos",
+          "right_joint_3.pos",
+          "right_joint_4.pos",
+          "right_joint_5.pos",
+          "right_joint_6.pos",
+          "right_gripper.pos"
+        ],
+        "action_names": [
+          "left_joint_1.pos",
+          "left_joint_2.pos",
+          "left_joint_3.pos",
+          "left_joint_4.pos",
+          "left_joint_5.pos",
+          "left_joint_6.pos",
+          "left_gripper.pos",
+          "right_joint_1.pos",
+          "right_joint_2.pos",
+          "right_joint_3.pos",
+          "right_joint_4.pos",
+          "right_joint_5.pos",
+          "right_joint_6.pos",
+          "right_gripper.pos"
+        ],
+        "image_keys": [
+          "top",
+          "left_wrist",
+          "right_wrist"
+        ],
+        "native_image_keys": [
+          "top",
+          "left",
+          "right"
+        ],
+        "chunk_size": 30,
+        "fps": 30,
+        "mapping_verified": true,
+        "mapping_note": "Source-defined left then right, six joints in radians then gripper 0 closed / 1 open; absolute joint targets. Dataset joint_0..5 maps to yamkit joint_1..6. Requires matching I2RT zero frame, calibrated LINEAR_4310 grippers and physical camera/side verification; this is not robot validation.",
+        "dependency_repo": "allenai/MolmoAct2-BimanualYAM",
+        "dependency_revision": "8dcbed66f2380e4393189c303ea72488eb9e63c2",
+        "native_image_hw": [
+          360,
+          640
+        ],
+        "supports_rtc": false,
+        "profile": "molmoact2",
+        "profile_id": "molmoact2",
+        "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+        "model": "lerobot/MolmoAct2-BimanualYAM-LeRobot",
+        "action_units": "robot",
+        "max_chunk_steps": 30,
+        "lerobot_version": "0.6.1",
+        "physical_validation": "not performed",
+        "mapping_validation": "source conventions only; physical calibration/alignment and cameras unvalidated",
+        "physical_modal_rollout_allowed": false,
+        "physical_modal_rollout_reason": "Physical Modal rollout BLOCKED: integrated real-service queue performance is unvalidated. Recorded Molmo warm RPC (~1.48 s) exceeds its 1 s action horizon; saved-observation inference and fake-robot diagnostics remain available.",
+        "ready": true,
+        "instance_id": "1868959a-b4d7-4a20-946e-b0194ca96bed",
+        "device": "cuda",
+        "load_s": 137.891379196,
+        "fresh_chunk": true,
+        "prediction_count": 0,
+        "runtime_age_s": 0.09993672799998876,
+        "continuation": "unsupported",
+        "image_encoding": "jpeg",
+        "preferred_image_encoding": "jpeg",
+        "supported_image_encodings": [
+          "jpeg",
+          "rgb8"
+        ],
+        "jpeg_quality": 85,
+        "memory": {
+          "process_peak_rss_bytes": 45764771840,
+          "cgroup_memory_peak_bytes": null,
+          "cgroup_memory_current_bytes": null,
+          "cgroup_memory_max_bytes": null,
+          "cuda_peak_allocated_bytes": 21808112128,
+          "cuda_peak_reserved_bytes": 22286434304
+        },
+        "saved_processors": true,
+        "session_state": "reset for every fresh chunk",
+        "gpu": "L40S",
+        "compute_region": "us-ashburn-1",
+        "requested_compute_region": "us",
+        "routing_region": "us-west",
+        "scaledown_window_s": 300,
+        "min_containers": 0,
+        "max_containers": 1,
+        "request_timeout_s": 120,
+        "startup_timeout_s": 600,
+        "requested_memory_mib": 49152,
+        "memory_scope": "Requested memory is host RAM; CUDA telemetry measures GPU memory separately",
+        "container_init_s": 147.214676695,
+        "volume_commit_s": 0.002703808000006802,
+        "supported_call_modes": [
+          "remote"
+        ],
+        "preferred_call_mode": "remote",
+        "observed_compute_region": "us-ashburn-1",
+        "requested_routing_region": "us-west",
+        "observed_routing_region": null,
+        "payload_routing": "Requested SDK routing region; actual routing is not independently observable. Spawned SDK payloads use US storage; use remote for non-default routing."
+      },
+      "remaining_containers": 0,
+      "stopped_at": 1788613104.761103
+    }
+  },
+  "final_app_inventory": [
+    {
+      "app_id": "ap-gt0m8zFqdqzKsxWsiOi2EV",
+      "description": "test_cron_2",
+      "state": "disabled",
+      "tasks": "0",
+      "created_at": "2023-03-14 10:09:20+00:00",
+      "stopped_at": null
+    },
+    {
+      "app_id": "ap-CmStbk9vTIhpWRxCg3GL30",
+      "description": "yamkit-vla-db2afc162a054ff8",
+      "state": "stopped",
+      "tasks": "0",
+      "created_at": "2026-09-05 12:53:58+00:00",
+      "stopped_at": "2026-09-05 12:58:23+00:00"
+    },
+    {
+      "app_id": "ap-0AQySKQodhVXeQEl6DxxYJ",
+      "description": "yamkit-vla-3d2e78e2a09b44cd",
+      "state": "stopped",
+      "tasks": "0",
+      "created_at": "2026-09-05 12:34:30+00:00",
+      "stopped_at": "2026-09-05 12:45:32+00:00"
+    },
+    {
+      "app_id": "ap-l7PUpxEC9QyK70Kg8W7kwm",
+      "description": "yamkit-vla-8eac0c60d52a421e",
+      "state": "stopped",
+      "tasks": "0",
+      "created_at": "2026-09-05 12:31:47+00:00",
+      "stopped_at": "2026-09-05 12:33:02+00:00"
+    },
+    {
+      "app_id": "ap-I0zccTOO8tY1wNDn4VqZei",
+      "description": "yamkit-vla-22b71b5b238f4950",
+      "state": "stopped",
+      "tasks": "0",
+      "created_at": "2026-09-05 12:23:29+00:00",
+      "stopped_at": "2026-09-05 12:28:19+00:00"
+    },
+    {
+      "app_id": "ap-8FIrnfgDkiNTVsvLuLhiZ7",
+      "description": "yamkit-vla-353b002beeae4a29",
+      "state": "stopped",
+      "tasks": "0",
+      "created_at": "2026-09-05 12:01:18+00:00",
+      "stopped_at": "2026-09-05 12:10:10+00:00"
+    },
+    {
+      "app_id": "ap-tjQhbj7WSNELzsN4BO5Ejh",
+      "description": "yamkit-vla-aba99f3c05e84360",
+      "state": "stopped",
+      "tasks": "0",
+      "created_at": "2026-09-05 11:55:22+00:00",
+      "stopped_at": "2026-09-05 12:00:24+00:00"
+    }
+  ],
+  "resource_cleanup": {
+    "all_owned_apps_stopped": true,
+    "test_volume_deleted": "yamkit-latency-20260905-d3570a79",
+    "preexisting_volume_names_unchanged": [
+      "img-demo",
+      "mini-mnist-vol",
+      "mnist-data-vol",
+      "parameter-golf-data",
+      "scpo-dev"
+    ]
+  },
+  "optimized_latency_synthetic_replays": {
+    "measurement": "synthetic replay of measured optimized RPC percentiles; no new Modal calls or model inference",
+    "physical_modal_rollout_allowed": false,
+    "scenarios": [
+      {
+        "name": "optimized_warm_median_replay",
+        "source": "final LeRobot worker/strategy; fake RGB cameras and fake YAM; fake RPC",
+        "measurement_host": {
+          "hostname": "cd13c3ed-f6f",
+          "machine_fingerprint": "282b17c8c1488c65957278b08bbd3775a8a853b8801ebc4777580b39f41c6860"
+        },
+        "injected_delay_cycle_s": [
+          0.644682953
+        ],
+        "fps": 30,
+        "chunk_steps": 30,
+        "image_hw": [
+          480,
+          640
+        ],
+        "elapsed_s": 1.5306593830000566,
+        "error": "Remote action queue underrun; no replay or CPU takeover",
+        "fixture_pattern": "fixed seeded random RGB per camera; fake measured state follows commanded actions",
+        "policy_options": {
+          "image_encoding": "jpeg",
+          "jpeg_quality": 85,
+          "call_mode": "remote",
+          "center_crop": false,
+          "prediction_queue_threshold": 30
+        },
+        "readiness_s": 5.606200011243345e-05,
+        "readiness": {
+          "id": "molmoact2",
+          "repo_id": "lerobot/MolmoAct2-BimanualYAM-LeRobot",
+          "revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+          "policy_type": "molmoact2",
+          "state_names": [
+            "left_joint_1.pos",
+            "left_joint_2.pos",
+            "left_joint_3.pos",
+            "left_joint_4.pos",
+            "left_joint_5.pos",
+            "left_joint_6.pos",
+            "left_gripper.pos",
+            "right_joint_1.pos",
+            "right_joint_2.pos",
+            "right_joint_3.pos",
+            "right_joint_4.pos",
+            "right_joint_5.pos",
+            "right_joint_6.pos",
+            "right_gripper.pos"
+          ],
+          "action_names": [
+            "left_joint_1.pos",
+            "left_joint_2.pos",
+            "left_joint_3.pos",
+            "left_joint_4.pos",
+            "left_joint_5.pos",
+            "left_joint_6.pos",
+            "left_gripper.pos",
+            "right_joint_1.pos",
+            "right_joint_2.pos",
+            "right_joint_3.pos",
+            "right_joint_4.pos",
+            "right_joint_5.pos",
+            "right_joint_6.pos",
+            "right_gripper.pos"
+          ],
+          "image_keys": [
+            "top",
+            "left_wrist",
+            "right_wrist"
+          ],
+          "native_image_keys": [
+            "top",
+            "left",
+            "right"
+          ],
+          "chunk_size": 30,
+          "fps": 30,
+          "mapping_verified": true,
+          "mapping_note": "Source-defined left then right, six joints in radians then gripper 0 closed / 1 open; absolute joint targets. Dataset joint_0..5 maps to yamkit joint_1..6. Requires matching I2RT zero frame, calibrated LINEAR_4310 grippers and physical camera/side verification; this is not robot validation.",
+          "dependency_repo": "allenai/MolmoAct2-BimanualYAM",
+          "dependency_revision": "8dcbed66f2380e4393189c303ea72488eb9e63c2",
+          "native_image_hw": [
+            360,
+            640
+          ],
+          "supports_rtc": false,
+          "profile": "molmoact2",
+          "profile_id": "molmoact2",
+          "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+          "model": "lerobot/MolmoAct2-BimanualYAM-LeRobot",
+          "action_units": "robot",
+          "max_chunk_steps": 30,
+          "lerobot_version": "0.6.1",
+          "physical_validation": "not performed",
+          "mapping_validation": "source conventions only; physical calibration/alignment and cameras unvalidated",
+          "physical_modal_rollout_allowed": false,
+          "physical_modal_rollout_reason": "Physical Modal rollout BLOCKED until this robot host has a matching qualification from the last 24 hours, with accepted mapping and explicit supervised confirmation. Cloud measurements cannot qualify the robot host.",
+          "qualification_required": true,
+          "ready": true,
+          "instance_id": "synthetic-benchmark",
+          "fresh_chunk": true,
+          "saved_processors": true,
+          "image_encoding": "jpeg",
+          "supported_image_encodings": [
+            "jpeg",
+            "rgb8"
+          ],
+          "preferred_image_encoding": "jpeg",
+          "jpeg_quality": 85,
+          "prediction_count": 1
+        },
+        "stop_requested_monotonic_s": 5085.995695354,
+        "commands_after_stop": 0,
+        "stop_requested_during_inflight_rpc": true,
+        "all_fake_robots_released": true,
+        "sdk_commands_during_completed_rpc": [
+          0
+        ],
+        "inference": "unguided_async",
+        "failed": true,
+        "underruns": 1,
+        "queue_depth": 0,
+        "peak_queue_depth": 9,
+        "last_queue_depth_before_stop": 0,
+        "executed_actions": 9,
+        "dequeued_actions": 9,
+        "minimum_execution_queue_depth": 0,
+        "minimum_dispatch_margin_s": 0.028017441999509174,
+        "expired_before_dispatch": 0,
+        "expired_queued_actions": 0,
+        "stop_to_robot_release_s": 0.40061500200044975,
+        "stop_timing_basis": "local stop/fault detection to completed no-home robot release",
+        "prediction_samples": [
+          {
+            "prediction_started_monotonic_s": 5085.006097069,
+            "observation_timestamp_monotonic_s": 5084.990192294,
+            "observation_age_at_start_s": 0.01590477500030829,
+            "observation_processing_s": 0.005978142999992997,
+            "queue_depth_at_start": 0,
+            "queue_horizon_at_start_s": 0.0,
+            "queue_deadline_horizon_at_start_s": 0.0,
+            "next_action_margin_at_start_s": null,
+            "prefetch_threshold_steps": 30,
+            "executed_actions_at_start": 0,
+            "expired_prefix_dropped": 21,
+            "overlap_prefix_dropped": 0,
+            "accepted_steps": 9,
+            "prediction_s": 0.6743923989997711,
+            "observation_age_at_return_s": 0.6902971740000794,
+            "remaining_valid_action_horizon_s": 0.30950348599981226,
+            "queue_depth_at_return": 0,
+            "queue_deadline_horizon_at_return_s": 0.0,
+            "next_action_margin_at_return_s": null,
+            "actions_executed_during_prediction": 0,
+            "error": null,
+            "encoding_s": 0.028775957999641832,
+            "image_tensor_transform_s": 0.005676004000633839,
+            "image_serialization_s": 0.02276083499964443,
+            "jpeg_encoding_s": 0.02276083499964443,
+            "per_camera_timing": {
+              "top": {
+                "tensor_transform_s": 0.0020574420004777494,
+                "image_encode_s": 0.010977320999700169,
+                "jpeg_encode_s": 0.010977320999700169,
+                "payload_bytes": 232895
+              },
+              "left_wrist": {
+                "tensor_transform_s": 0.0018588660004752455,
+                "image_encode_s": 0.006054468999536766,
+                "jpeg_encode_s": 0.006054468999536766,
+                "payload_bytes": 232656
+              },
+              "right_wrist": {
+                "tensor_transform_s": 0.0017596959996808437,
+                "image_encode_s": 0.0057290450004074955,
+                "jpeg_encode_s": 0.0057290450004074955,
+                "payload_bytes": 232795
+              }
+            },
+            "queue_depth_at_merge": 0,
+            "queue_deadline_horizon_at_merge_s": 0.0,
+            "queue_horizon_after_merge_s": 0.3,
+            "queue_deadline_horizon_after_merge_s": 0.30950348599981226
+          },
+          {
+            "prediction_started_monotonic_s": 5085.685817729,
+            "observation_timestamp_monotonic_s": 5085.659733509,
+            "observation_age_at_start_s": 0.026084219999574998,
+            "observation_processing_s": 0.004867540999839548,
+            "queue_depth_at_start": 9,
+            "queue_horizon_at_start_s": 0.3,
+            "queue_deadline_horizon_at_start_s": 0.30437456500021653,
+            "next_action_margin_at_start_s": 0.0377078983337924,
+            "prefetch_threshold_steps": 30,
+            "executed_actions_at_start": 0,
+            "expired_prefix_dropped": 0,
+            "overlap_prefix_dropped": 0,
+            "accepted_steps": 0,
+            "prediction_s": 0.3100636460003443,
+            "observation_age_at_return_s": 0.3361478659999193,
+            "remaining_valid_action_horizon_s": 0.6638521340000807,
+            "queue_depth_at_return": 0,
+            "queue_deadline_horizon_at_return_s": 0.0,
+            "next_action_margin_at_return_s": null,
+            "actions_executed_during_prediction": 9,
+            "error": "invalidated",
+            "encoding_s": 0.025489607000054093,
+            "image_tensor_transform_s": 0.007323197000005166,
+            "image_serialization_s": 0.01807254599953012,
+            "jpeg_encoding_s": 0.01807254599953012,
+            "per_camera_timing": {
+              "top": {
+                "tensor_transform_s": 0.0023815229997126153,
+                "image_encode_s": 0.006298553999840806,
+                "jpeg_encode_s": 0.006298553999840806,
+                "payload_bytes": 232895
+              },
+              "left_wrist": {
+                "tensor_transform_s": 0.003153644000121858,
+                "image_encode_s": 0.006202056999427441,
+                "jpeg_encode_s": 0.006202056999427441,
+                "payload_bytes": 232656
+              },
+              "right_wrist": {
+                "tensor_transform_s": 0.0017880300001706928,
+                "image_encode_s": 0.005571935000261874,
+                "jpeg_encode_s": 0.005571935000261874,
+                "payload_bytes": 232795
+              }
+            }
+          }
+        ],
+        "readiness_model_warmup_s": 0.0,
+        "prefetch_threshold_steps": 30,
+        "expired_prefix_dropped": 21,
+        "overlap_prefix_dropped": 0,
+        "expired_chunks": 0,
+        "redundant_chunks": 0,
+        "sample_count": 1,
+        "request_count": 2,
+        "failed_request_count": 1,
+        "failures": [
+          {
+            "elapsed_s": 0.2844513279997045,
+            "reason": "InvalidatedRequest",
+            "round_trip_s": null,
+            "observation_age_s": 0.3361271599997053,
+            "payload_bytes": 698346,
+            "server_timing": {},
+            "transport_timing": {
+              "network_only_s": null,
+              "modal_queue_s": null,
+              "source": "injected fake RPC sleep; no real SDK dispatch"
+            }
+          }
+        ],
+        "first_round_trip_s": 0.6448665120005899,
+        "max_observation_age_s": 0.6900344240002596,
+        "warm_sample_count": 0,
+        "warm_round_trip_s": {},
+        "samples": [
+          {
+            "round_trip_s": 0.6448665120005899,
+            "observation_timestamp_monotonic_s": 5084.990192294,
+            "observation_age_at_dispatch_s": 0.04492666399983136,
+            "observation_age_s": 0.6900344240002596,
+            "camera_exposure_timestamp_s": null,
+            "timestamp_basis": "local observation receipt; camera exposure is unobservable",
+            "payload_bytes": 698346,
+            "wire_payload_bytes": null,
+            "payload_size_basis": "encoded image bytes; SDK framing size unobservable",
+            "image_encoding": "jpeg",
+            "request_validation_s": 0.00015868100035731914,
+            "response_validation_s": 0.00023116400006983895,
+            "transport_timing": {
+              "network_only_s": null,
+              "modal_queue_s": null,
+              "source": "injected fake RPC sleep; no real SDK dispatch"
+            },
+            "server_timing": {
+              "preprocess_s": 0.0,
+              "inference_s": 0.0,
+              "postprocess_s": 0.0,
+              "total_s": 0.0
+            },
+            "encoding_s": 0.028775957999641832,
+            "image_tensor_transform_s": 0.005676004000633839,
+            "image_serialization_s": 0.02276083499964443,
+            "jpeg_encoding_s": 0.02276083499964443,
+            "per_camera_timing": {
+              "top": {
+                "tensor_transform_s": 0.0020574420004777494,
+                "image_encode_s": 0.010977320999700169,
+                "jpeg_encode_s": 0.010977320999700169,
+                "payload_bytes": 232895
+              },
+              "left_wrist": {
+                "tensor_transform_s": 0.0018588660004752455,
+                "image_encode_s": 0.006054468999536766,
+                "jpeg_encode_s": 0.006054468999536766,
+                "payload_bytes": 232656
+              },
+              "right_wrist": {
+                "tensor_transform_s": 0.0017596959996808437,
+                "image_encode_s": 0.0057290450004074955,
+                "jpeg_encode_s": 0.0057290450004074955,
+                "payload_bytes": 232795
+              }
+            },
+            "response_tensor_decode_s": 0.000192936000530608,
+            "queue_depth": 9
+          }
+        ]
+      },
+      {
+        "name": "optimized_warm_p95_replay",
+        "source": "final LeRobot worker/strategy; fake RGB cameras and fake YAM; fake RPC",
+        "measurement_host": {
+          "hostname": "cd13c3ed-f6f",
+          "machine_fingerprint": "282b17c8c1488c65957278b08bbd3775a8a853b8801ebc4777580b39f41c6860"
+        },
+        "injected_delay_cycle_s": [
+          0.695181443
+        ],
+        "fps": 30,
+        "chunk_steps": 30,
+        "image_hw": [
+          480,
+          640
+        ],
+        "elapsed_s": 1.5247523369998817,
+        "error": "Remote action queue underrun; no replay or CPU takeover",
+        "fixture_pattern": "fixed seeded random RGB per camera; fake measured state follows commanded actions",
+        "policy_options": {
+          "image_encoding": "jpeg",
+          "jpeg_quality": 85,
+          "call_mode": "remote",
+          "center_crop": false,
+          "prediction_queue_threshold": 30
+        },
+        "readiness_s": 5.708299977413844e-05,
+        "readiness": {
+          "id": "molmoact2",
+          "repo_id": "lerobot/MolmoAct2-BimanualYAM-LeRobot",
+          "revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+          "policy_type": "molmoact2",
+          "state_names": [
+            "left_joint_1.pos",
+            "left_joint_2.pos",
+            "left_joint_3.pos",
+            "left_joint_4.pos",
+            "left_joint_5.pos",
+            "left_joint_6.pos",
+            "left_gripper.pos",
+            "right_joint_1.pos",
+            "right_joint_2.pos",
+            "right_joint_3.pos",
+            "right_joint_4.pos",
+            "right_joint_5.pos",
+            "right_joint_6.pos",
+            "right_gripper.pos"
+          ],
+          "action_names": [
+            "left_joint_1.pos",
+            "left_joint_2.pos",
+            "left_joint_3.pos",
+            "left_joint_4.pos",
+            "left_joint_5.pos",
+            "left_joint_6.pos",
+            "left_gripper.pos",
+            "right_joint_1.pos",
+            "right_joint_2.pos",
+            "right_joint_3.pos",
+            "right_joint_4.pos",
+            "right_joint_5.pos",
+            "right_joint_6.pos",
+            "right_gripper.pos"
+          ],
+          "image_keys": [
+            "top",
+            "left_wrist",
+            "right_wrist"
+          ],
+          "native_image_keys": [
+            "top",
+            "left",
+            "right"
+          ],
+          "chunk_size": 30,
+          "fps": 30,
+          "mapping_verified": true,
+          "mapping_note": "Source-defined left then right, six joints in radians then gripper 0 closed / 1 open; absolute joint targets. Dataset joint_0..5 maps to yamkit joint_1..6. Requires matching I2RT zero frame, calibrated LINEAR_4310 grippers and physical camera/side verification; this is not robot validation.",
+          "dependency_repo": "allenai/MolmoAct2-BimanualYAM",
+          "dependency_revision": "8dcbed66f2380e4393189c303ea72488eb9e63c2",
+          "native_image_hw": [
+            360,
+            640
+          ],
+          "supports_rtc": false,
+          "profile": "molmoact2",
+          "profile_id": "molmoact2",
+          "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+          "model": "lerobot/MolmoAct2-BimanualYAM-LeRobot",
+          "action_units": "robot",
+          "max_chunk_steps": 30,
+          "lerobot_version": "0.6.1",
+          "physical_validation": "not performed",
+          "mapping_validation": "source conventions only; physical calibration/alignment and cameras unvalidated",
+          "physical_modal_rollout_allowed": false,
+          "physical_modal_rollout_reason": "Physical Modal rollout BLOCKED until this robot host has a matching qualification from the last 24 hours, with accepted mapping and explicit supervised confirmation. Cloud measurements cannot qualify the robot host.",
+          "qualification_required": true,
+          "ready": true,
+          "instance_id": "synthetic-benchmark",
+          "fresh_chunk": true,
+          "saved_processors": true,
+          "image_encoding": "jpeg",
+          "supported_image_encodings": [
+            "jpeg",
+            "rgb8"
+          ],
+          "preferred_image_encoding": "jpeg",
+          "jpeg_quality": 85,
+          "prediction_count": 1
+        },
+        "stop_requested_monotonic_s": 5087.524879121,
+        "commands_after_stop": 0,
+        "stop_requested_during_inflight_rpc": true,
+        "all_fake_robots_released": true,
+        "sdk_commands_during_completed_rpc": [
+          0
+        ],
+        "inference": "unguided_async",
+        "failed": true,
+        "underruns": 1,
+        "queue_depth": 0,
+        "peak_queue_depth": 8,
+        "last_queue_depth_before_stop": 0,
+        "executed_actions": 8,
+        "dequeued_actions": 8,
+        "minimum_execution_queue_depth": 0,
+        "minimum_dispatch_margin_s": 0.029293254666299617,
+        "expired_before_dispatch": 0,
+        "expired_queued_actions": 0,
+        "stop_to_robot_release_s": 0.4005046319998655,
+        "stop_timing_basis": "local stop/fault detection to completed no-home robot release",
+        "prediction_samples": [
+          {
+            "prediction_started_monotonic_s": 5086.535323204,
+            "observation_timestamp_monotonic_s": 5086.521149625,
+            "observation_age_at_start_s": 0.01417357899936178,
+            "observation_processing_s": 0.004244725999342336,
+            "queue_depth_at_start": 0,
+            "queue_horizon_at_start_s": 0.0,
+            "queue_deadline_horizon_at_start_s": 0.0,
+            "next_action_margin_at_start_s": null,
+            "prefetch_threshold_steps": 30,
+            "executed_actions_at_start": 0,
+            "expired_prefix_dropped": 22,
+            "overlap_prefix_dropped": 0,
+            "accepted_steps": 8,
+            "prediction_s": 0.7185359590002918,
+            "observation_age_at_return_s": 0.7327095379996535,
+            "remaining_valid_action_horizon_s": 0.26718598200022825,
+            "queue_depth_at_return": 0,
+            "queue_deadline_horizon_at_return_s": 0.0,
+            "next_action_margin_at_return_s": null,
+            "actions_executed_during_prediction": 0,
+            "error": null,
+            "encoding_s": 0.02262136199988163,
+            "image_tensor_transform_s": 0.00505737300045439,
+            "image_serialization_s": 0.0174439029997302,
+            "jpeg_encoding_s": 0.0174439029997302,
+            "per_camera_timing": {
+              "top": {
+                "tensor_transform_s": 0.0017633990000831545,
+                "image_encode_s": 0.005907289999413479,
+                "jpeg_encode_s": 0.005907289999413479,
+                "payload_bytes": 232895
+              },
+              "left_wrist": {
+                "tensor_transform_s": 0.00161101600042457,
+                "image_encode_s": 0.005665574999511591,
+                "jpeg_encode_s": 0.005665574999511591,
+                "payload_bytes": 232656
+              },
+              "right_wrist": {
+                "tensor_transform_s": 0.001682957999946666,
+                "image_encode_s": 0.005871038000805129,
+                "jpeg_encode_s": 0.005871038000805129,
+                "payload_bytes": 232795
+              }
+            },
+            "queue_depth_at_merge": 0,
+            "queue_deadline_horizon_at_merge_s": 0.0,
+            "queue_horizon_after_merge_s": 0.26666666666666666,
+            "queue_deadline_horizon_after_merge_s": 0.26718598200022825
+          },
+          {
+            "prediction_started_monotonic_s": 5087.262000717,
+            "observation_timestamp_monotonic_s": 5087.224045741,
+            "observation_age_at_start_s": 0.03795497600003728,
+            "observation_processing_s": 0.007844015000046056,
+            "queue_depth_at_start": 7,
+            "queue_horizon_at_start_s": 0.23333333333333334,
+            "queue_deadline_horizon_at_start_s": 0.2591489080004976,
+            "next_action_margin_at_start_s": 0.05914890800067951,
+            "prefetch_threshold_steps": 30,
+            "executed_actions_at_start": 1,
+            "expired_prefix_dropped": 0,
+            "overlap_prefix_dropped": 0,
+            "accepted_steps": 0,
+            "prediction_s": 0.26306786500026647,
+            "observation_age_at_return_s": 0.30102284100030374,
+            "remaining_valid_action_horizon_s": 0.6989771589996963,
+            "queue_depth_at_return": 0,
+            "queue_deadline_horizon_at_return_s": 0.0,
+            "next_action_margin_at_return_s": null,
+            "actions_executed_during_prediction": 7,
+            "error": "invalidated",
+            "encoding_s": 0.022118521999800578,
+            "image_tensor_transform_s": 0.004843896001148096,
+            "image_serialization_s": 0.01718273299957218,
+            "jpeg_encoding_s": 0.01718273299957218,
+            "per_camera_timing": {
+              "top": {
+                "tensor_transform_s": 0.0019740350007850793,
+                "image_encode_s": 0.006013473999701091,
+                "jpeg_encode_s": 0.006013473999701091,
+                "payload_bytes": 232895
+              },
+              "left_wrist": {
+                "tensor_transform_s": 0.0016210490002777078,
+                "image_encode_s": 0.005613241999526508,
+                "jpeg_encode_s": 0.005613241999526508,
+                "payload_bytes": 232656
+              },
+              "right_wrist": {
+                "tensor_transform_s": 0.0012488120000853087,
+                "image_encode_s": 0.005556017000344582,
+                "jpeg_encode_s": 0.005556017000344582,
+                "payload_bytes": 232795
+              }
+            }
+          }
+        ],
+        "readiness_model_warmup_s": 0.0,
+        "prefetch_threshold_steps": 30,
+        "expired_prefix_dropped": 22,
+        "overlap_prefix_dropped": 0,
+        "expired_chunks": 0,
+        "redundant_chunks": 0,
+        "sample_count": 1,
+        "request_count": 2,
+        "failed_request_count": 1,
+        "failures": [
+          {
+            "elapsed_s": 0.2408396430000721,
+            "reason": "InvalidatedRequest",
+            "round_trip_s": null,
+            "observation_age_s": 0.30099684900051216,
+            "payload_bytes": 698346,
+            "server_timing": {},
+            "transport_timing": {
+              "network_only_s": null,
+              "modal_queue_s": null,
+              "source": "injected fake RPC sleep; no real SDK dispatch"
+            }
+          }
+        ],
+        "first_round_trip_s": 0.6953187569997681,
+        "max_observation_age_s": 0.7325077609993969,
+        "warm_sample_count": 0,
+        "warm_round_trip_s": {},
+        "samples": [
+          {
+            "round_trip_s": 0.6953187569997681,
+            "observation_timestamp_monotonic_s": 5086.521149625,
+            "observation_age_at_dispatch_s": 0.03699995099941589,
+            "observation_age_s": 0.7325077609993969,
+            "camera_exposure_timestamp_s": null,
+            "timestamp_basis": "local observation receipt; camera exposure is unobservable",
+            "payload_bytes": 698346,
+            "wire_payload_bytes": null,
+            "payload_size_basis": "encoded image bytes; SDK framing size unobservable",
+            "image_encoding": "jpeg",
+            "request_validation_s": 0.0001299619998462731,
+            "response_validation_s": 0.00017961599951377138,
+            "transport_timing": {
+              "network_only_s": null,
+              "modal_queue_s": null,
+              "source": "injected fake RPC sleep; no real SDK dispatch"
+            },
+            "server_timing": {
+              "preprocess_s": 0.0,
+              "inference_s": 0.0,
+              "postprocess_s": 0.0,
+              "total_s": 0.0
+            },
+            "encoding_s": 0.02262136199988163,
+            "image_tensor_transform_s": 0.00505737300045439,
+            "image_serialization_s": 0.0174439029997302,
+            "jpeg_encoding_s": 0.0174439029997302,
+            "per_camera_timing": {
+              "top": {
+                "tensor_transform_s": 0.0017633990000831545,
+                "image_encode_s": 0.005907289999413479,
+                "jpeg_encode_s": 0.005907289999413479,
+                "payload_bytes": 232895
+              },
+              "left_wrist": {
+                "tensor_transform_s": 0.00161101600042457,
+                "image_encode_s": 0.005665574999511591,
+                "jpeg_encode_s": 0.005665574999511591,
+                "payload_bytes": 232656
+              },
+              "right_wrist": {
+                "tensor_transform_s": 0.001682957999946666,
+                "image_encode_s": 0.005871038000805129,
+                "jpeg_encode_s": 0.005871038000805129,
+                "payload_bytes": 232795
+              }
+            },
+            "response_tensor_decode_s": 0.0001409739998052828,
+            "queue_depth": 8
+          }
+        ]
+      }
+    ]
+  },
+  "changed_files": [
+    "README.md",
+    "docs/INFERENCE_MODELS.md",
+    "docs/MODAL.md",
+    "docs/MODAL_LATENCY.md",
+    "docs/MODAL_VALIDATION.md",
+    "docs/REMOTE_LEROBOT_AUDIT.md",
+    "docs/REMOTE_PERFORMANCE.md",
+    "docs/acceptance-test.md",
+    "docs/integration-yamkit-v1.md",
+    "docs/modal-latency.json",
+    "scripts/benchmark_remote.py",
+    "src/yamkit/cli.py",
+    "src/yamkit/deployment.py",
+    "src/yamkit/inference/client.py",
+    "src/yamkit/inference/modal_service.py",
+    "src/yamkit/inference/performance.py",
+    "src/yamkit/inference/protocol.py",
+    "src/yamkit/inference/qualification.py",
+    "src/yamkit/inference/service.py",
+    "src/yamkit/inference_check.py",
+    "src/yamkit/modal_ops.py",
+    "src/yamkit/modal_qualification.py",
+    "src/yamkit/probe_runner.py",
+    "src/yamkit/remote_policy/configuration_yamkit_remote.py",
+    "src/yamkit/remote_policy/modeling_yamkit_remote.py",
+    "src/yamkit/remote_rollout.py",
+    "src/yamkit/ui/server.py",
+    "tests/test_benchmark_remote.py",
+    "tests/test_deployment.py",
+    "tests/test_inference_service.py",
+    "tests/test_modal_ops.py",
+    "tests/test_modal_qualification.py",
+    "tests/test_modal_transport.py",
+    "tests/test_probe_runner.py",
+    "tests/test_qualification.py",
+    "tests/test_remote_performance.py",
+    "tests/test_remote_policy.py"
+  ],
+  "validation": {
+    "pytest_passed": 1028,
+    "warnings": 4,
+    "ruff": "passed",
+    "diff_check": "passed",
+    "hardware": "fake only"
+  }
+}

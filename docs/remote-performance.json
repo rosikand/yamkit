@@ -1,0 +1,242 @@
+{
+  "measured_on": "2026-09-05",
+  "source": "synthetic delay reproduction; NOT new Modal/network/model measurements",
+  "hardware": "FakeRobot and generated zero RGB frames only",
+  "model": "fake finite 30x14 chunk; no model inference or Modal SDK calls",
+  "fps": 30,
+  "chunk_steps": 30,
+  "image_hw": [
+    480,
+    640
+  ],
+  "historical_real_service_warm_sample_count": 2,
+  "physical_modal_rollout_allowed": false,
+  "scenarios": [
+    {
+      "name": "healthy_50ms",
+      "injected_delay_cycle_s": [
+        0.05
+      ],
+      "elapsed_s": 32.42894416399986,
+      "sample_count": 69,
+      "warm_sample_count": 68,
+      "warm_round_trip_s": {
+        "p50": 0.050126185499948406,
+        "p95": 0.05025306584998361,
+        "p99": 0.05041249072995015
+      },
+      "failed": false,
+      "underruns": 0,
+      "executed_actions": 955,
+      "expired_prefix_dropped": 197,
+      "overlap_prefix_dropped": 901,
+      "expired_chunks": 0,
+      "peak_queue_depth": 28,
+      "all_fake_robots_released": true,
+      "error": null,
+      "warm_start_depth_range": [
+        15,
+        15
+      ],
+      "warm_return_depth_range": [
+        13,
+        14
+      ],
+      "actions_executed_during_prediction_range": [
+        0,
+        2
+      ],
+      "valid_horizon_s_range": [
+        0.9251559620001899,
+        0.9373278389998632
+      ],
+      "raw_rgb_payload_bytes": 2764800,
+      "overlapping_completed_predictions": 68
+    },
+    {
+      "name": "healthy_jitter",
+      "injected_delay_cycle_s": [
+        0.05,
+        0.12,
+        0.08,
+        0.2,
+        0.06,
+        0.15,
+        0.09,
+        0.25
+      ],
+      "elapsed_s": 32.42637465200005,
+      "sample_count": 69,
+      "warm_sample_count": 68,
+      "warm_round_trip_s": {
+        "p50": 0.1051374334999764,
+        "p95": 0.2501448122003012,
+        "p99": 0.2501661939001815
+      },
+      "failed": false,
+      "underruns": 0,
+      "executed_actions": 955,
+      "expired_prefix_dropped": 336,
+      "overlap_prefix_dropped": 757,
+      "expired_chunks": 0,
+      "peak_queue_depth": 28,
+      "all_fake_robots_released": true,
+      "error": null,
+      "warm_start_depth_range": [
+        15,
+        15
+      ],
+      "warm_return_depth_range": [
+        7,
+        14
+      ],
+      "actions_executed_during_prediction_range": [
+        0,
+        8
+      ],
+      "valid_horizon_s_range": [
+        0.7288342860001649,
+        0.9338717850000648
+      ],
+      "raw_rgb_payload_bytes": 2764800,
+      "overlapping_completed_predictions": 68
+    },
+    {
+      "name": "late_jitter_after_overlap",
+      "injected_delay_cycle_s": [
+        0.05,
+        0.05,
+        0.05,
+        0.7
+      ],
+      "elapsed_s": 2.4223871119997966,
+      "sample_count": 3,
+      "warm_sample_count": 2,
+      "warm_round_trip_s": {
+        "p50": 0.05014635249995081,
+        "p95": 0.05015886204985236,
+        "p99": 0.05015997400984361
+      },
+      "failed": true,
+      "underruns": 1,
+      "executed_actions": 54,
+      "expired_prefix_dropped": 8,
+      "overlap_prefix_dropped": 28,
+      "expired_chunks": 0,
+      "peak_queue_depth": 28,
+      "all_fake_robots_released": true,
+      "error": "Remote action queue underrun; no replay or CPU takeover",
+      "warm_start_depth_range": [
+        15,
+        15
+      ],
+      "warm_return_depth_range": [
+        0,
+        14
+      ],
+      "actions_executed_during_prediction_range": [
+        0,
+        15
+      ],
+      "valid_horizon_s_range": [
+        0.46494263700014926,
+        0.9346914910001942
+      ],
+      "raw_rgb_payload_bytes": 2764800,
+      "overlapping_completed_predictions": 2
+    },
+    {
+      "name": "historical_molmo_delay_1.48",
+      "injected_delay_cycle_s": [
+        1.48
+      ],
+      "elapsed_s": 2.023411543000293,
+      "sample_count": 1,
+      "warm_sample_count": 0,
+      "warm_round_trip_s": {},
+      "failed": true,
+      "underruns": 0,
+      "executed_actions": 0,
+      "expired_prefix_dropped": 30,
+      "overlap_prefix_dropped": 0,
+      "expired_chunks": 1,
+      "peak_queue_depth": 0,
+      "all_fake_robots_released": true,
+      "error": "Remote rollout stopped after an inference fault",
+      "warm_start_depth_range": null,
+      "warm_return_depth_range": null,
+      "actions_executed_during_prediction_range": [
+        0,
+        0
+      ],
+      "valid_horizon_s_range": [
+        0.0,
+        0.0
+      ],
+      "raw_rgb_payload_bytes": 2764800,
+      "overlapping_completed_predictions": 0
+    },
+    {
+      "name": "historical_molmo_delay_2.378",
+      "injected_delay_cycle_s": [
+        2.378
+      ],
+      "elapsed_s": 2.9150464429999374,
+      "sample_count": 0,
+      "warm_sample_count": 0,
+      "warm_round_trip_s": {},
+      "failed": true,
+      "underruns": 0,
+      "executed_actions": 0,
+      "expired_prefix_dropped": 0,
+      "overlap_prefix_dropped": 0,
+      "expired_chunks": 0,
+      "peak_queue_depth": 0,
+      "all_fake_robots_released": true,
+      "error": "Remote rollout stopped after an inference fault",
+      "warm_start_depth_range": null,
+      "warm_return_depth_range": null,
+      "actions_executed_during_prediction_range": [
+        0,
+        0
+      ],
+      "valid_horizon_s_range": [
+        0.0,
+        0.0
+      ],
+      "raw_rgb_payload_bytes": 2764800,
+      "overlapping_completed_predictions": 0
+    },
+    {
+      "name": "historical_molmo_delay_3.166",
+      "injected_delay_cycle_s": [
+        3.166
+      ],
+      "elapsed_s": 3.706523715000003,
+      "sample_count": 0,
+      "warm_sample_count": 0,
+      "warm_round_trip_s": {},
+      "failed": true,
+      "underruns": 0,
+      "executed_actions": 0,
+      "expired_prefix_dropped": 0,
+      "overlap_prefix_dropped": 0,
+      "expired_chunks": 0,
+      "peak_queue_depth": 0,
+      "all_fake_robots_released": true,
+      "error": "Remote rollout stopped after an inference fault",
+      "warm_start_depth_range": null,
+      "warm_return_depth_range": null,
+      "actions_executed_during_prediction_range": [
+        0,
+        0
+      ],
+      "valid_horizon_s_range": [
+        0.0,
+        0.0
+      ],
+      "raw_rgb_payload_bytes": 2764800,
+      "overlapping_completed_predictions": 0
+    }
+  ]
+}

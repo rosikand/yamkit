@@ -15,11 +15,18 @@ from lerobot.utils.decorators import check_if_already_connected, check_if_not_co
 
 from yamkit.arm import YamArm, go_home_all, resolve_channel
 from yamkit.config import N_JOINTS, RigConfig
+from yamkit.teleop_control import LeaderAction, disconnect_home, position_vector, vector_action
 
 from .config_yam_leader import BiYamLeaderConfig, YamLeaderConfig
 
 logger = logging.getLogger(__name__)
 JOINT_NAMES = [f"joint_{i}" for i in range(1, N_JOINTS + 1)]
+
+
+def _validate_rig(rig: RigConfig) -> None:
+    problems = rig.validate()
+    if problems:
+        raise ValueError("invalid rig: " + "; ".join(problems))
 
 
 class _LeaderHandle:
@@ -28,6 +35,8 @@ class _LeaderHandle:
         if self.spec.role != "leader":
             raise ValueError(f"{arm_name!r} is a {self.spec.role}, expected a leader")
         self.names = JOINT_NAMES + (["gripper"] if self.spec.has_handle else [])
+        self.max_joint_speed = rig.control.max_joint_speed
+        self.max_gripper_speed = rig.control.max_gripper_speed
         self.home_speed = rig.control.leader_home_speed if rig.control.home_speed > 0 else 0.0  # leaders park (compliantly, gently) on connect/disconnect
         self.arm: YamArm | None = None
 
@@ -40,38 +49,58 @@ class _LeaderHandle:
         return (self.arm, {"speed": self.home_speed, "compliant": True, "release": True}) if self.arm is not None and self.home_speed > 0 else None
 
     def connect(self, home: bool = True) -> None:
-        self.arm = YamArm.connect(self.spec, resolve_channel(self.spec))
+        if self.arm is not None:
+            raise RuntimeError(f"{self.spec.name}: already open")
+        self.arm = YamArm.connect(self.spec, resolve_channel(self.spec), max_joint_speed=self.max_joint_speed, max_gripper_speed=self.max_gripper_speed)
         if home and self.home_job:
             self.arm.go_home(self.home_speed, compliant=True, release=True)
 
     def action(self) -> dict[str, float]:
         st = self.arm.read()
-        act = {f"{n}.pos": float(v) for n, v in zip(JOINT_NAMES, st.q)}
-        if self.spec.has_handle:
-            act["gripper.pos"] = float(st.gripper if st.gripper is not None else 1.0)
-        return act
+        if self.spec.has_handle and st.gripper is None:
+            raise ValueError(f"{self.spec.name}: teaching-handle trigger is missing")
+        return LeaderAction(vector_action(position_vector(st.q, st.gripper if self.spec.has_handle else None)),
+                            buttons={"": st.buttons})
 
     def disconnect(self, home: bool = True) -> None:
         if self.arm is None:
             return
+        arm = self.arm
         try:
-            if home and self.home_job:
-                self.arm.go_home(self.home_speed, compliant=True, release=True)
-        except KeyboardInterrupt:
-            logger.warning("%s: home move aborted — releasing here", self.spec.name)
+            if home and self.home_speed > 0:
+                arm.go_home(self.home_speed, compliant=True, release=True)
         finally:
-            self.arm.close()
-            self.arm = None
+            try:
+                arm.close()
+            finally:
+                if arm._closed:
+                    self.arm = None
 
 
 def _home_together(handles) -> None:
     """Park several leaders at the same time (bimanual teleoperator)."""
     jobs = [h.home_job for h in handles if h.home_job]
     if jobs:
+        go_home_all(jobs)
+
+
+def _disconnect(handles, *, home: bool) -> None:
+    """Finish every close, including after a failed or cancelled home move."""
+    errors: list[BaseException] = []
+    if home:
         try:
-            go_home_all(jobs)
-        except KeyboardInterrupt:
-            logger.warning("home move aborted — releasing the arms where they are")
+            _home_together(handles)
+        except BaseException as e:  # noqa: BLE001 — re-raised after every arm is closed
+            errors.append(e)
+    for h in handles:
+        try:
+            h.disconnect(home=False)
+        except BaseException as e:  # noqa: BLE001 — re-raised after every arm is closed
+            errors.append(e)
+    if errors:
+        for e in errors[1:]:
+            logger.error("additional cleanup failure: %s", e, exc_info=(type(e), e, e.__traceback__))
+        raise errors[0]
 
 
 class YamLeader(Teleoperator):
@@ -82,7 +111,9 @@ class YamLeader(Teleoperator):
         super().__init__(config)
         self.config = config
         self.rig = RigConfig.load(config.rig)
+        _validate_rig(self.rig)
         self._h = _LeaderHandle(self.rig, config.arm)
+        config._runtime_teleop = self
 
     @cached_property
     def action_features(self) -> dict:
@@ -98,7 +129,17 @@ class YamLeader(Teleoperator):
 
     @check_if_already_connected
     def connect(self, calibrate: bool = True) -> None:
-        self._h.connect()
+        _validate_rig(self.rig)
+        if self._h.arm is not None:
+            raise RuntimeError("previous arm remains open; call disconnect(home=False) before reconnecting")
+        try:
+            self._h.connect()
+        except BaseException:
+            try:
+                self.disconnect(home=False)
+            except BaseException:
+                logger.exception("cleanup after leader startup failure")
+            raise
         logger.info("%s connected on %s", self, self._h.arm.channel)
 
     @property
@@ -118,9 +159,9 @@ class YamLeader(Teleoperator):
     def send_feedback(self, feedback: dict) -> None:  # bilateral feedback is handled by `yamkit teleop`
         pass
 
-    @check_if_not_connected
-    def disconnect(self) -> None:
-        self._h.disconnect()
+    def disconnect(self, *, home: bool | None = None) -> None:
+        """Release all resources; ``home=False`` skips the normal return-home move."""
+        _disconnect([self._h], home=disconnect_home(home))
         logger.info("%s disconnected", self)
 
 
@@ -132,7 +173,11 @@ class BiYamLeader(Teleoperator):
         super().__init__(config)
         self.config = config
         self.rig = RigConfig.load(config.rig)
+        _validate_rig(self.rig)
+        if config.left == config.right:
+            raise ValueError("bimanual leader needs two different arms")
         self._sides = {"left": _LeaderHandle(self.rig, config.left), "right": _LeaderHandle(self.rig, config.right)}
+        config._runtime_teleop = self
 
     @cached_property
     def action_features(self) -> dict:
@@ -148,15 +193,18 @@ class BiYamLeader(Teleoperator):
 
     @check_if_already_connected
     def connect(self, calibrate: bool = True) -> None:
-        connected = []
+        _validate_rig(self.rig)
+        if any(h.arm is not None for h in self._sides.values()):
+            raise RuntimeError("previous arms remain open; call disconnect(home=False) before reconnecting")
         try:
             for h in self._sides.values():
                 h.connect(home=False)
-                connected.append(h)
-            _home_together(connected)  # both leaders park at the same time
-        except Exception:
-            for h in connected:
-                h.disconnect(home=False)
+            _home_together(self._sides.values())  # both leaders park at the same time
+        except BaseException:
+            try:
+                self.disconnect(home=False)
+            except BaseException:
+                logger.exception("cleanup after bimanual leader startup failure")
             raise
         logger.info("%s connected", self)
 
@@ -172,14 +220,16 @@ class BiYamLeader(Teleoperator):
 
     @check_if_not_connected
     def get_action(self) -> RobotAction:
-        return {f"{side}_{k}": v for side, h in self._sides.items() for k, v in h.action().items()}
+        actions = {side: handle.action() for side, handle in self._sides.items()}
+        return LeaderAction(
+            {f"{side}_{key}": value for side, action in actions.items() for key, value in action.items()},
+            buttons={f"{side}_": action.buttons[""] for side, action in actions.items()},
+        )
 
     def send_feedback(self, feedback: dict) -> None:
         pass
 
-    @check_if_not_connected
-    def disconnect(self) -> None:
-        _home_together(self._sides.values())  # both leaders park at the same time
-        for h in self._sides.values():
-            h.disconnect(home=False)
+    def disconnect(self, *, home: bool | None = None) -> None:
+        """Release all resources; ``home=False`` skips the normal return-home move."""
+        _disconnect(self._sides.values(), home=disconnect_home(home))
         logger.info("%s disconnected", self)

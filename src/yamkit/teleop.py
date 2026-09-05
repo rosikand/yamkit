@@ -17,12 +17,14 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from .arm import ArmState, YamArm, go_home_all, resolve_channel
-from .config import RigConfig
+from .arm import ArmState, YamArm, close_all, go_home_all, resolve_channel
+from .config import ControlSpec, RigConfig
+from .teleop_control import PairGate, position_vector
+from .validation import finite_scalar
 
 log = logging.getLogger(__name__)
 
@@ -32,10 +34,18 @@ class TeleopPair:
     name: str
     leader: YamArm
     follower: YamArm
-    engaged: bool = False
-    _button_prev: bool = False
+    _gate: PairGate = field(default_factory=PairGate)
+    _feedback: bool = False
     last_leader: ArmState | None = None
     last_follower: ArmState | None = None
+
+    @property
+    def engaged(self) -> bool:
+        return self._gate.engaged
+
+    @engaged.setter
+    def engaged(self, value: bool) -> None:
+        self._gate = replace(self._gate, engaged=value, target=self._gate.target if value else None)
 
     @property
     def tracking_error(self) -> float:
@@ -70,6 +80,16 @@ class TeleopSession:
         leader_home_speed: float | None = None,
         on_tick: Callable[[TeleopSession], None] | None = None,
     ) -> None:
+        home_speed = finite_scalar(home_speed, "home_speed", minimum=0)
+        leader_home_speed = home_speed / 2 if leader_home_speed is None else leader_home_speed
+        ControlSpec(
+            teleop_hz=hz, sync_seconds=sync_seconds, bilateral_kp=bilateral_kp,
+            engage_button=engage_button, home_speed=home_speed, leader_home_speed=leader_home_speed,
+        ).validate()
+        if not isinstance(auto_engage, bool):
+            raise TypeError("auto_engage must be a boolean")
+        if on_tick is not None and not callable(on_tick):
+            raise ValueError("on_tick must be callable")
         self.pairs = pairs
         self.hz = hz
         self.sync_seconds = sync_seconds
@@ -77,42 +97,52 @@ class TeleopSession:
         self.engage_button = engage_button
         self.auto_engage = auto_engage
         self.home_speed = home_speed
-        self.leader_home_speed = home_speed / 2 if leader_home_speed is None else leader_home_speed
+        self.leader_home_speed = leader_home_speed
         self.on_tick = on_tick
         self.stats = TeleopStats()
         self.stop_event = threading.Event()
         self._home_aborted = False
+        self._shutdown_started = False
 
     # ----- construction helpers ---------------------------------------------------------------
     @classmethod
     def from_rig(cls, rig: RigConfig, pair_names: list[str] | None = None, **kw) -> TeleopSession:
         """Connect every (or the selected) leader/follower pair of the rig."""
+        if problems := rig.validate():
+            raise ValueError("invalid rig: " + "; ".join(problems))
         ctrl = rig.control
         wanted = rig.pairs if not pair_names else [p for p in rig.pairs if p.follower in pair_names or p.leader in pair_names]
         if not wanted:
             raise RuntimeError("rig has no leader/follower pairs to teleoperate")
-        pairs: list[TeleopPair] = []
-        try:
-            for p in wanted:
-                lspec, fspec = rig.arm(p.leader), rig.arm(p.follower)
-                leader = YamArm.connect(lspec, resolve_channel(lspec))
-                follower = YamArm.connect(
-                    fspec, resolve_channel(fspec),
-                    max_joint_speed=ctrl.max_joint_speed, max_gripper_speed=ctrl.max_gripper_speed,
-                )
-                pairs.append(TeleopPair(name=f"{p.leader}->{p.follower}", leader=leader, follower=follower))
-        except Exception:
-            for pr in pairs:
-                pr.leader.close()
-                pr.follower.close()
-            raise
+        if pair_names and (unknown := set(pair_names) - {n for p in wanted for n in (p.leader, p.follower)}):
+            raise ValueError(f"unknown teleop pair arm(s): {sorted(unknown)}")
         kw.setdefault("hz", ctrl.teleop_hz)
         kw.setdefault("sync_seconds", ctrl.sync_seconds)
         kw.setdefault("bilateral_kp", ctrl.bilateral_kp)
         kw.setdefault("engage_button", ctrl.engage_button)
         kw.setdefault("home_speed", ctrl.home_speed)
         kw.setdefault("leader_home_speed", ctrl.leader_home_speed)
-        return cls(pairs, **kw)
+        session = cls([], **kw)  # validate every override before any arm is enabled
+        specs = [(rig.arm(p.leader), rig.arm(p.follower)) for p in wanted]
+        channels = [(resolve_channel(l), resolve_channel(f)) for l, f in specs]
+        opened: list[YamArm] = []
+        try:
+            for (lspec, fspec), (lchannel, fchannel) in zip(specs, channels, strict=True):
+                leader = YamArm.connect(
+                    lspec, lchannel,
+                    max_joint_speed=ctrl.max_joint_speed, max_gripper_speed=ctrl.max_gripper_speed,
+                )
+                opened.append(leader)
+                follower = YamArm.connect(
+                    fspec, fchannel,
+                    max_joint_speed=ctrl.max_joint_speed, max_gripper_speed=ctrl.max_gripper_speed,
+                )
+                opened.append(follower)
+                session.pairs.append(TeleopPair(name=f"{lspec.name}->{fspec.name}", leader=leader, follower=follower))
+        except BaseException:
+            close_all(opened)
+            raise
+        return session
 
     # ----- home -----------------------------------------------------------------------------
     def home_all(self, why: str) -> None:
@@ -123,7 +153,8 @@ class TeleopSession:
         jobs: list[tuple[YamArm, dict]] = []
         for pair in self.pairs:
             jobs.append((pair.follower, {"speed": self.home_speed}))
-            jobs.append((pair.leader, {"speed": self.leader_home_speed, "compliant": True, "release": True}))
+            if self.leader_home_speed > 0:
+                jobs.append((pair.leader, {"speed": self.leader_home_speed, "compliant": True, "release": True}))
         try:
             go_home_all(jobs)
         except KeyboardInterrupt:
@@ -132,44 +163,103 @@ class TeleopSession:
 
     # ----- engage / disengage ---------------------------------------------------------------
     def engage(self, pair: TeleopPair) -> None:
+        if self.stop_event.is_set():
+            return
         lead = pair.leader.read()
-        log.info("[%s] engaging: follower syncing to leader over %.1fs", pair.name, self.sync_seconds)
-        pair.follower.move_to(lead.q, lead.gripper, duration=self.sync_seconds)
+        foll = pair.follower.read()
+        pair.follower.validate_command(lead.q, lead.gripper)
         if self.bilateral_kp > 0:
-            pair.leader.scale_gains(self.bilateral_kp, 0.0)
-        pair.engaged = True
-        log.info("[%s] engaged", pair.name)
+            pair.leader.validate_command(foll.q, None, limit_speed=False)
+        log.info("[%s] engaging: follower syncing to leader over %.1fs", pair.name, self.sync_seconds)
+        if self.stop_event.is_set():
+            return
+        pair._gate, _, _ = self._advance(pair, lead, foll, time.monotonic(), engage=True)
 
     def disengage(self, pair: TeleopPair) -> None:
-        pair.engaged = False
         pair.follower.hold()
+        state = pair.follower.read()
+        pair._gate = PairGate(button_prev=pair._gate.button_prev, hold=position_vector(
+            state.q, state.gripper if pair.follower.spec.has_motor_gripper else None), previous_t=time.monotonic())
         pair.leader.gravity_idle()
         pair.leader.restore_gains()
+        pair._feedback = False
         log.info("[%s] disengaged (follower holding, leader free)", pair.name)
+
+    def _advance(self, pair, lead, foll, now, *, engage=None):
+        grip = pair.follower.spec.has_motor_gripper
+        pressed = bool(lead.buttons[self.engage_button]) if lead.buttons and len(lead.buttons) > self.engage_button else False
+        return pair._gate.advance(
+            position_vector(lead.q, lead.gripper if grip else None),
+            position_vector(foll.q, foll.gripper if grip else None), pressed=pressed, now=now,
+            period=1 / self.hz, sync_seconds=self.sync_seconds, joint_speed=pair.follower.max_joint_speed,
+            gripper_speed=pair.follower.max_gripper_speed, engage=engage,
+        )
 
     # ----- loop -----------------------------------------------------------------------------
     def step(self) -> None:
+        if self._shutdown_started:
+            raise RuntimeError("teleop session is closed")
+        if self.stop_event.is_set():
+            return
+        pending = []
+        now = time.monotonic()
         for pair in self.pairs:
             lead = pair.leader.read()
             foll = pair.follower.read()
             pair.last_leader, pair.last_follower = lead, foll
-            pressed = bool(lead.buttons[self.engage_button]) if lead.buttons and len(lead.buttons) > self.engage_button else False
-            if pressed and not pair._button_prev:  # rising edge toggles
-                self.disengage(pair) if pair.engaged else self.engage(pair)
-            pair._button_prev = pressed
-            if pair.engaged:
-                pair.follower.command(lead.q, lead.gripper)
+            gate, command, capture = self._advance(pair, lead, foll, now)
+            pending.append((pair, lead, foll, gate, command, capture))
+        # Validate the complete tick before engaging, restoring gains or commanding any pair.
+        for pair, lead, foll, gate, command, capture in pending:
+            if gate.engaged:
+                pair.follower.validate_command(lead.q, lead.gripper)
                 if self.bilateral_kp > 0:
-                    pair.leader.command(foll.q, None, limit_speed=False)
+                    pair.leader.validate_command(foll.q, None, limit_speed=False)
+            pair.follower.validate_command(command[:6], command[6] if len(command) > 6 else None,
+                                           limit_speed=not capture)
+        for pair, lead, foll, gate, command, capture in pending:
+            if self.stop_event.is_set():
+                return
+            released = pair.engaged and not gate.engaged
+            if capture:
+                measured = pair.follower.read()
+                command = position_vector(measured.q, measured.gripper if pair.follower.spec.has_motor_gripper else None)
+                gate = gate.acknowledge_hold(command, joint_speed=pair.follower.max_joint_speed,
+                                             gripper_speed=pair.follower.max_gripper_speed)
+            pair._gate = gate
+            pair.follower.command(command[:6], command[6] if len(command) > 6 else None, limit_speed=not capture)
+            if self.stop_event.is_set():
+                return
+            if released:
+                pair.leader.gravity_idle()
+                pair.leader.restore_gains()
+                pair._feedback = False
+            if gate.engaged and not gate.syncing and self.bilateral_kp > 0:
+                if not pair._feedback:
+                    pair.leader.scale_gains(self.bilateral_kp, 0.0)
+                    pair._feedback = True
+                pair.leader.command(foll.q, None, limit_speed=False)
 
     def run(self, duration: float | None = None) -> TeleopStats:
-        period = 1.0 / self.hz
-        t_end = None if duration is None else time.monotonic() + duration
-        self.stats = TeleopStats()
+        failed = False
         try:
+            if self._shutdown_started:
+                raise RuntimeError("teleop session is closed")
+            if duration is not None:
+                duration = finite_scalar(duration, "duration", minimum=0)
+            period = 1.0 / self.hz
+            t_end = None if duration is None else time.monotonic() + duration
+            self.stats = TeleopStats()
             self.home_all("start")
-            if self.auto_engage:
+            if self.auto_engage and not self.stop_event.is_set():
                 for pair in self.pairs:
+                    lead = pair.leader.read()
+                    pair.follower.validate_command(lead.q, lead.gripper)
+                    if self.bilateral_kp > 0:
+                        pair.leader.validate_command(pair.follower.read().q, None, limit_speed=False)
+                for pair in self.pairs:
+                    if self.stop_event.is_set():
+                        break
                     self.engage(pair)
             next_t = time.monotonic()
             while not self.stop_event.is_set():
@@ -188,21 +278,32 @@ class TeleopSession:
                     next_t = time.monotonic()
         except KeyboardInterrupt:
             log.info("teleop interrupted")
+        except BaseException:
+            failed = True
+            raise
         finally:
-            self.shutdown()
+            self.shutdown(home=not failed)
         return self.stats
 
-    def shutdown(self) -> None:
+    def shutdown(self, *, home: bool = True) -> None:
+        """Release and close every arm; ``home=False`` skips hold and return-home commands.
+
+        Return-home behavior is unchanged by default. Repeated teardown never repeats the move.
+        """
+        first_shutdown = not self._shutdown_started
+        self._shutdown_started = True
+        self.stop_event.set()
         try:
-            for pair in self.pairs:
-                if pair.engaged:
-                    self.disengage(pair)
-            if not self._home_aborted:
-                self.home_all("stop")
+            if first_shutdown and home:
+                for pair in self.pairs:
+                    if pair.engaged:
+                        self.disengage(pair)
+                if not self._home_aborted:
+                    self.home_all("stop")
         except KeyboardInterrupt:
             log.warning("home move aborted — releasing the arms where they are")
         finally:
             for pair in self.pairs:
-                pair.leader.close()
-                pair.follower.close()
+                pair.engaged = False
+            close_all([arm for pair in self.pairs for arm in (pair.leader, pair.follower)])
         log.info("teleop session closed (%d ticks, %.1f Hz, %d overruns)", self.stats.ticks, self.stats.rate_hz, self.stats.overruns)
