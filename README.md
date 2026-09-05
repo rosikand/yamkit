@@ -234,7 +234,7 @@ rollout because they lack a reviewed YAM mapping. Guided remote RTC is unsupport
 
 For a small multimodal LLM controller, see [the agent guide](docs/AGENT.md). `yamkit agent` offers
 an offline fixture mode and paid OpenAI calls with fixtures; live execution is disabled pending
-the documented plugin cleanup and observation freshness fixes. VLA `rollout` is unchanged.
+verified sensor acquisition freshness (hardened no-home cleanup is available). VLA `rollout` is unchanged.
 
 ## 8. Web UI
 

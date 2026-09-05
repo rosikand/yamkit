@@ -1,0 +1,473 @@
+{
+  "environment": {
+    "platform": "Linux-6.18.40-x86_64-with-glibc2.34",
+    "python": "3.12.14",
+    "cpus": 8
+  },
+  "method": {
+    "sources": 3,
+    "shape": [
+      480,
+      640,
+      3
+    ],
+    "color": "RGB uint8",
+    "source_hz": 30,
+    "preview_fps_target": 10,
+    "warmup_s": 1.0,
+    "duration_s": 10.0,
+    "seed": 20260905,
+    "slow_viewer_bytes_per_second": 10240,
+    "slow_viewer_receive_buffer_requested_bytes": 4096,
+    "cpu_scope": "publisher plus synthetic acquisition and loopback client threads"
+  },
+  "results": [
+    {
+      "scenario": "off",
+      "duration_s": 10.033,
+      "ticks": 301,
+      "source_hz": 30.0,
+      "viewer_count": 0,
+      "active_viewers_at_end": {
+        "top": 0,
+        "left_wrist": 0,
+        "right_wrist": 0
+      },
+      "handoff_us": {
+        "p50": 1.123,
+        "p95": 3.4447,
+        "p99": 4.6324
+      },
+      "loop_work_ms": {
+        "p50": 0.5602,
+        "p95": 0.9655,
+        "p99": 1.2743
+      },
+      "loop_interval_ms": {
+        "p50": 33.333,
+        "p95": 33.3576,
+        "p99": 34.9158
+      },
+      "cpu_s": 0.22,
+      "cpu_percent_one_core": 2.19,
+      "rss_initial_mib": 52.69,
+      "rss_measurement_start_mib": 60.6,
+      "rss_peak_sampled_mib": 60.68,
+      "rss_final_mib": 61.3,
+      "rss_process_high_water_mib": 61.21,
+      "counters": {
+        "offered": 0,
+        "accepted": 0,
+        "copied": 0,
+        "encoded": 0,
+        "rate_skipped": 0,
+        "replayed": 0,
+        "dropped": 0,
+        "errors": 0
+      },
+      "cameras": {
+        "top": {
+          "offered": 0,
+          "accepted": 0,
+          "copied": 0,
+          "encoded": 0,
+          "rate_skipped": 0,
+          "replayed": 0,
+          "dropped": 0,
+          "errors": 0
+        },
+        "left_wrist": {
+          "offered": 0,
+          "accepted": 0,
+          "copied": 0,
+          "encoded": 0,
+          "rate_skipped": 0,
+          "replayed": 0,
+          "dropped": 0,
+          "errors": 0
+        },
+        "right_wrist": {
+          "offered": 0,
+          "accepted": 0,
+          "copied": 0,
+          "encoded": 0,
+          "rate_skipped": 0,
+          "replayed": 0,
+          "dropped": 0,
+          "errors": 0
+        }
+      },
+      "viewers": [],
+      "opencv": "4.13.0",
+      "numpy": "2.2.6",
+      "cleanup_s": 0.025,
+      "viewer_threads_alive_after_cleanup": 0
+    },
+    {
+      "scenario": "on",
+      "duration_s": 10.033,
+      "ticks": 301,
+      "source_hz": 30.0,
+      "viewer_count": 3,
+      "active_viewers_at_end": {
+        "top": 1,
+        "left_wrist": 1,
+        "right_wrist": 1
+      },
+      "handoff_us": {
+        "p50": 4.553,
+        "p95": 135.0468,
+        "p99": 162.0832
+      },
+      "loop_work_ms": {
+        "p50": 0.9361,
+        "p95": 1.8153,
+        "p99": 2.5606
+      },
+      "loop_interval_ms": {
+        "p50": 33.3331,
+        "p95": 33.3491,
+        "p99": 33.3577
+      },
+      "cpu_s": 1.401,
+      "cpu_percent_one_core": 13.97,
+      "rss_initial_mib": 52.78,
+      "rss_measurement_start_mib": 66.47,
+      "rss_peak_sampled_mib": 69.37,
+      "rss_final_mib": 70.14,
+      "rss_process_high_water_mib": 70.0,
+      "counters": {
+        "offered": 903,
+        "accepted": 303,
+        "copied": 303,
+        "encoded": 303,
+        "rate_skipped": 600,
+        "replayed": 0,
+        "dropped": 0,
+        "errors": 0
+      },
+      "cameras": {
+        "top": {
+          "offered": 301,
+          "accepted": 101,
+          "copied": 101,
+          "encoded": 101,
+          "rate_skipped": 200,
+          "replayed": 0,
+          "dropped": 0,
+          "errors": 0
+        },
+        "left_wrist": {
+          "offered": 301,
+          "accepted": 101,
+          "copied": 101,
+          "encoded": 101,
+          "rate_skipped": 200,
+          "replayed": 0,
+          "dropped": 0,
+          "errors": 0
+        },
+        "right_wrist": {
+          "offered": 301,
+          "accepted": 101,
+          "copied": 101,
+          "encoded": 101,
+          "rate_skipped": 200,
+          "replayed": 0,
+          "dropped": 0,
+          "errors": 0
+        }
+      },
+      "viewers": [
+        {
+          "camera": "top",
+          "frames": 101,
+          "bytes": 16875339,
+          "connections": 0,
+          "disconnects": 0,
+          "errors": []
+        },
+        {
+          "camera": "left_wrist",
+          "frames": 101,
+          "bytes": 16876901,
+          "connections": 0,
+          "disconnects": 0,
+          "errors": []
+        },
+        {
+          "camera": "right_wrist",
+          "frames": 101,
+          "bytes": 16881998,
+          "connections": 0,
+          "disconnects": 0,
+          "errors": []
+        }
+      ],
+      "opencv": "4.13.0",
+      "numpy": "2.2.6",
+      "cleanup_s": 0.05,
+      "viewer_threads_alive_after_cleanup": 0
+    },
+    {
+      "scenario": "slow",
+      "duration_s": 10.0,
+      "ticks": 300,
+      "source_hz": 30.0,
+      "viewer_count": 3,
+      "active_viewers_at_end": {
+        "top": 0,
+        "left_wrist": 0,
+        "right_wrist": 0
+      },
+      "handoff_us": {
+        "p50": 1.7345,
+        "p95": 96.7869,
+        "p99": 165.1597
+      },
+      "loop_work_ms": {
+        "p50": 0.5522,
+        "p95": 1.5406,
+        "p99": 1.9307
+      },
+      "loop_interval_ms": {
+        "p50": 33.3326,
+        "p95": 33.3503,
+        "p99": 33.3756
+      },
+      "cpu_s": 0.684,
+      "cpu_percent_one_core": 6.84,
+      "rss_initial_mib": 52.71,
+      "rss_measurement_start_mib": 66.81,
+      "rss_peak_sampled_mib": 69.56,
+      "rss_final_mib": 68.58,
+      "rss_process_high_water_mib": 69.05,
+      "counters": {
+        "offered": 372,
+        "accepted": 126,
+        "copied": 126,
+        "encoded": 126,
+        "rate_skipped": 246,
+        "replayed": 0,
+        "dropped": 0,
+        "errors": 0
+      },
+      "cameras": {
+        "top": {
+          "offered": 124,
+          "accepted": 42,
+          "copied": 42,
+          "encoded": 42,
+          "rate_skipped": 82,
+          "replayed": 0,
+          "dropped": 0,
+          "errors": 0
+        },
+        "left_wrist": {
+          "offered": 124,
+          "accepted": 42,
+          "copied": 42,
+          "encoded": 42,
+          "rate_skipped": 82,
+          "replayed": 0,
+          "dropped": 0,
+          "errors": 0
+        },
+        "right_wrist": {
+          "offered": 124,
+          "accepted": 42,
+          "copied": 42,
+          "encoded": 42,
+          "rate_skipped": 82,
+          "replayed": 0,
+          "dropped": 0,
+          "errors": 0
+        }
+      },
+      "viewers": [
+        {
+          "camera": "top",
+          "frames": 0,
+          "bytes": 63488,
+          "connections": 0,
+          "disconnects": 0,
+          "errors": []
+        },
+        {
+          "camera": "left_wrist",
+          "frames": 0,
+          "bytes": 63488,
+          "connections": 0,
+          "disconnects": 0,
+          "errors": []
+        },
+        {
+          "camera": "right_wrist",
+          "frames": 0,
+          "bytes": 63488,
+          "connections": 0,
+          "disconnects": 0,
+          "errors": []
+        }
+      ],
+      "opencv": "4.13.0",
+      "numpy": "2.2.6",
+      "cleanup_s": 0.023,
+      "viewer_threads_alive_after_cleanup": 0
+    },
+    {
+      "scenario": "multiple",
+      "duration_s": 10.0,
+      "ticks": 300,
+      "source_hz": 30.0,
+      "viewer_count": 9,
+      "active_viewers_at_end": {
+        "top": 3,
+        "left_wrist": 3,
+        "right_wrist": 3
+      },
+      "handoff_us": {
+        "p50": 5.167,
+        "p95": 133.1172,
+        "p99": 166.159
+      },
+      "loop_work_ms": {
+        "p50": 1.0128,
+        "p95": 1.8056,
+        "p99": 2.1632
+      },
+      "loop_interval_ms": {
+        "p50": 33.3332,
+        "p95": 33.3618,
+        "p99": 33.3931
+      },
+      "cpu_s": 1.848,
+      "cpu_percent_one_core": 18.48,
+      "rss_initial_mib": 52.74,
+      "rss_measurement_start_mib": 67.09,
+      "rss_peak_sampled_mib": 70.0,
+      "rss_final_mib": 68.84,
+      "rss_process_high_water_mib": 70.43,
+      "counters": {
+        "offered": 900,
+        "accepted": 300,
+        "copied": 300,
+        "encoded": 300,
+        "rate_skipped": 600,
+        "replayed": 0,
+        "dropped": 0,
+        "errors": 0
+      },
+      "cameras": {
+        "top": {
+          "offered": 300,
+          "accepted": 100,
+          "copied": 100,
+          "encoded": 100,
+          "rate_skipped": 200,
+          "replayed": 0,
+          "dropped": 0,
+          "errors": 0
+        },
+        "left_wrist": {
+          "offered": 300,
+          "accepted": 100,
+          "copied": 100,
+          "encoded": 100,
+          "rate_skipped": 200,
+          "replayed": 0,
+          "dropped": 0,
+          "errors": 0
+        },
+        "right_wrist": {
+          "offered": 300,
+          "accepted": 100,
+          "copied": 100,
+          "encoded": 100,
+          "rate_skipped": 200,
+          "replayed": 0,
+          "dropped": 0,
+          "errors": 0
+        }
+      },
+      "viewers": [
+        {
+          "camera": "top",
+          "frames": 100,
+          "bytes": 16707492,
+          "connections": 0,
+          "disconnects": 0,
+          "errors": []
+        },
+        {
+          "camera": "top",
+          "frames": 100,
+          "bytes": 16707492,
+          "connections": 0,
+          "disconnects": 0,
+          "errors": []
+        },
+        {
+          "camera": "top",
+          "frames": 100,
+          "bytes": 16707492,
+          "connections": 0,
+          "disconnects": 0,
+          "errors": []
+        },
+        {
+          "camera": "left_wrist",
+          "frames": 100,
+          "bytes": 16709044,
+          "connections": 0,
+          "disconnects": 0,
+          "errors": []
+        },
+        {
+          "camera": "left_wrist",
+          "frames": 100,
+          "bytes": 16709044,
+          "connections": 0,
+          "disconnects": 0,
+          "errors": []
+        },
+        {
+          "camera": "left_wrist",
+          "frames": 100,
+          "bytes": 16709044,
+          "connections": 0,
+          "disconnects": 0,
+          "errors": []
+        },
+        {
+          "camera": "right_wrist",
+          "frames": 100,
+          "bytes": 16714100,
+          "connections": 0,
+          "disconnects": 0,
+          "errors": []
+        },
+        {
+          "camera": "right_wrist",
+          "frames": 100,
+          "bytes": 16714100,
+          "connections": 0,
+          "disconnects": 0,
+          "errors": []
+        },
+        {
+          "camera": "right_wrist",
+          "frames": 100,
+          "bytes": 16714100,
+          "connections": 0,
+          "disconnects": 0,
+          "errors": []
+        }
+      ],
+      "opencv": "4.13.0",
+      "numpy": "2.2.6",
+      "cleanup_s": 0.018,
+      "viewer_threads_alive_after_cleanup": 0
+    }
+  ]
+}

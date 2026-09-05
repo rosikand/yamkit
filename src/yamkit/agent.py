@@ -1,7 +1,7 @@
 """Bounded, synchronous tool decisions above the LeRobot robot interface.
 
 No hardware lifecycle or servo lives here. Live construction is deliberately blocked in
-agent_robot until the plugin can guarantee timestamped observations and no-home cleanup.
+agent_robot until the plugin can guarantee state/image acquisition freshness.
 """
 
 from __future__ import annotations
@@ -196,8 +196,8 @@ def fixed_target_operation(adapter, name, args, config, episode_deadline, log,
               bounded_delta=bounded_delta, **observation_record(start))
     while True:
         _check(deadline, clock, cancelled)
-        sent_at = clock()
         sent = adapter.send(dict(target))
+        sent_at = clock()
         # Bound submission cadence and require feedback acquired after this command.
         _pause(0.1, deadline, clock, sleep, cancelled)
         measured = adapter.observe(after=sent_at)

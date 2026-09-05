@@ -2,8 +2,9 @@
 
 `yamkit agent` runs a small synchronous controller alongside the existing LeRobot VLA `rollout`.
 The available modes use **labeled synthetic robot state and RGB images**. Live execution is
-disabled because the current robot interface cannot provide the required fault cleanup and
-capture freshness guarantees; the exact blockers are below.
+disabled because the current robot interface cannot verify state and image acquisition
+freshness. Hardware hardening supplies public cleanup without homing; the remaining blocker
+is described below.
 
 ## Install and run without hardware or API calls
 
@@ -122,29 +123,33 @@ exit status, and cancellation returns `130`.
 
 ## Why live execution is disabled
 
-These are existing integration gaps, not issues a CLI flag can safely bypass:
+The integrated [`YamFollower`](../plugins/lerobot_robot_yamkit/lerobot_robot_yamkit/yam_follower.py)
+now exposes `disconnect(home=False)`. It attempts camera/preview cleanup and every arm release
+even when another resource raises an exception or cancellation. Partial startup failure uses
+this no-home path. Fake-resource integration tests cover single and bimanual cleanup after
+camera faults and cancellation; neither path adds a home command.
 
-* [`YamFollower.disconnect()`](../plugins/lerobot_robot_yamkit/lerobot_robot_yamkit/yam_follower.py#L163)
-  has no public no-home option. It disconnects cameras before releasing the arm, so a camera
-  teardown exception skips arm cleanup. `_FollowerHandle.disconnect()` defaults to starting a
-  home trajectory. The private handle's `home=False` parameter does not satisfy a public,
-  verified fault-cleanup contract.
-* [`YamFollower.connect()`](../plugins/lerobot_robot_yamkit/lerobot_robot_yamkit/yam_follower.py#L131)
-  enables the arm and normally homes it before camera startup. Camera startup failure calls
-  the same homing cleanup. [`YamArm.connect()`](../src/yamkit/arm.py#L83) can also perform a
-  gripper open/close auto-calibration when limits are absent. The public `calibrate` argument
-  does not suppress these effects.
-* [`YamFollower.get_observation()`](../plugins/lerobot_robot_yamkit/lerobot_robot_yamkit/yam_follower.py#L152)
-  returns camera `read_latest()` arrays without capture timestamps or frame sequence IDs.
-  Joint observations likewise lack sensor acquisition metadata: the timestamp in
-  [`YamArm.read()`](../src/yamkit/arm.py#L128) is generated when cached SDK state is read, not
-  when hardware feedback was acquired. Re-reading an array after settling cannot prove freshness.
+The remaining requirement is acquisition evidence. `YamFollower.get_observation()` still
+returns camera `read_latest()` arrays without capture timestamps or frame sequence IDs in the
+observation. Preview timestamps are optional diagnostics, not a freshness contract for the
+controller. Joint observations also lack sensor acquisition metadata: the timestamp in
+[`YamArm.read()`](../src/yamkit/arm.py) is generated when cached SDK state is read. Re-reading
+state or an image after settling cannot prove that either was acquired after the action.
 
-Live support needs public cleanup that always releases connected resources without starting a
-home move, plus verifiable state/frame acquisition freshness through the observation boundary.
-This feature leaves plugins, `control.home_speed`, speed limits, and the 400 ms motor firmware
-timeout unchanged. It does not provide collision checking, IK, Cartesian tools, bimanual
-control, or independently verified task success. Fixtures verify software behavior only.
+Accordingly, `make_live_robot()` still fails before plugin construction, hardware activation,
+or an API call. Live support requires acquisition metadata for state and every image, with
+strictly advancing sequences and acquisition times after the command completes and after
+settling. Fixture tests prove that each completed tool action supplies new state/images to the
+next decision, and that stale, invalid, or cached feedback stops further commands. They do not
+establish physical sensor freshness.
+
+Future live construction must also account for the ordinary plugin startup effects:
+`YamFollower.connect()` enables and normally homes the arm;
+[`YamArm.connect()`](../src/yamkit/arm.py) may auto-calibrate a gripper without saved limits.
+Its public `calibrate` argument does not suppress those effects. The LLM gate prevents these
+paths from being reached. Speed limits and the 400 ms motor firmware timeout remain unchanged.
+The agent does not provide collision checking, IK, Cartesian tools, bimanual control, or
+independently verified task success. Fixtures verify software behavior only.
 
 ## Development checks
 

@@ -1,7 +1,7 @@
 """Small Robot observation/action boundary for the experimental LLM controller.
 
-The current YAM plugin cannot supply verifiable frame freshness or fault cleanup
-without homing. Live construction is deliberately blocked before plugin import.
+The hardened YAM plugin supports fault cleanup without homing, but cannot supply
+verifiable state/frame freshness. Live construction is blocked before plugin import.
 The fixture is a hardware-free LeRobot-shaped object, not a physical simulator.
 """
 
@@ -27,12 +27,12 @@ METADATA_KEY = "__yamkit_agent_observation__"
 OBSERVATION_CONTRACT = "yamkit.agent.observation.v1"
 
 LIVE_BLOCKER = (
-    "Live agent execution is disabled: YamFollower.disconnect() has no public no-home option, "
-    "homes the arm by default, and a camera disconnect failure can skip arm cleanup. "
+    "Live agent execution is disabled: sensor acquisition freshness is unavailable. "
+    "The hardened YamFollower.disconnect(home=False) supports cleanup without homing, but "
     "YamFollower.get_observation() uses camera.read_latest() and exposes no acquisition "
     "timestamps or frame sequence, so fresh post-action images/state cannot be verified. "
-    "YamFollower.connect() enables motors, may calibrate the gripper, and homes by default; "
-    "its camera-error cleanup can also home. No arm or camera was opened."
+    "YamArm.read() timestamps cached-state retrieval, not sensor acquisition. "
+    "No arm or camera was opened."
 )
 
 
@@ -277,6 +277,6 @@ def validate_rig(rig_path: str | Path, arm: str) -> RigConfig:
 
 
 def make_live_robot(rig_path: str | Path, arm: str) -> RobotAdapter:
-    """Fail before plugin construction until public freshness/cleanup support exists."""
+    """Fail before plugin construction until state/image acquisition is verifiably fresh."""
     validate_rig(rig_path, arm)
     raise LiveIntegrationError(LIVE_BLOCKER)

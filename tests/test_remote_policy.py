@@ -391,6 +391,10 @@ def test_upstream_local_sync_strategy_with_fake_robot_is_preserved(rollout_confi
                       dim_model=32, n_heads=4, dim_feedforward=64, n_encoder_layers=1, n_decoder_layers=1,
                       use_vae=False, pretrained_backbone_weights=None)
     policy = ACTPolicy(local)
+    # An untrained random head can exceed A's verified raw joint bounds. Keep a
+    # genuine ACT forward pass, with deterministic valid robot-unit predictions.
+    torch.nn.init.zeros_(policy.model.action_head.weight)
+    torch.nn.init.constant_(policy.model.action_head.bias, 0.2)
     pre, post = make_pre_post_processors(local, dataset_stats={"observation.state": {
         "mean": torch.zeros(14), "std": torch.ones(14)}, "action": {"mean": torch.zeros(14), "std": torch.ones(14)},
         "observation.images.top": {"mean": torch.zeros(3, 1, 1), "std": torch.ones(3, 1, 1)}})

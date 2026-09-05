@@ -308,21 +308,36 @@ class PreviewPublisher:
     def close(self, timeout: float = CLOSE_TIMEOUT_S) -> None:
         """Stop publishing, close the server and join the worker — bounded by `timeout`."""
         deadline = time.monotonic() + max(0.0, timeout)
+        errors = []
+
+        def attempt(operation):
+            try:
+                operation()
+                return True
+            except BaseException as exc:  # noqa: BLE001 — attempt every resource before propagating cancellation
+                errors.append(exc)
+                return False
+
         self._stopping = True
         self._wake.set()
         for s in self._slots.values():
-            s.wake_viewers()
-        srv, self._server = self._server, None
+            attempt(s.wake_viewers)
+        srv = self._server
         if srv is not None:
-            srv.request_stop()
-            srv.close_connections()
-            srv.server_close()
+            attempt(srv.request_stop)
+            attempt(srv.close_connections)
+            if attempt(srv.server_close):
+                self._server = None
         if self._server_thread is not None and self._server_thread.ident is not None:
-            self._server_thread.join(max(0.0, deadline - time.monotonic()))
+            attempt(lambda: self._server_thread.join(max(0.0, deadline - time.monotonic())))
         if self._worker is not None and self._worker.ident is not None:
-            self._worker.join(max(0.0, deadline - time.monotonic()))
+            attempt(lambda: self._worker.join(max(0.0, deadline - time.monotonic())))
         for slot in self._slots.values():
-            slot.clear()
+            attempt(slot.clear)
+        if errors:
+            # A later cancellation must not be hidden by an earlier optional
+            # preview error, which callers ordinarily suppress.
+            raise next((exc for exc in errors if not isinstance(exc, Exception)), errors[0])
 
     # ----- observation thread -----------------------------------------------------------------
     def offer(self, key: str, frame: Any, *, source_time: float | None = None) -> None:
@@ -696,10 +711,12 @@ def start_from_env(
         pub.announce()
         log.info("live previews on 127.0.0.1:%s for %s", pub.port, ", ".join(pub.cameras))
         return pub
-    except Exception as e:  # noqa: BLE001
-        log.warning("live previews disabled: %s", e)
+    except BaseException as e:  # partially started publishers must also close on cancellation
         try:
             pub.close(0.5)
         except Exception:  # noqa: BLE001, S110 — startup failure must not prevent recording
             pass
+        if not isinstance(e, Exception):
+            raise
+        log.warning("live previews disabled: %s", e)
         return NullPreview()

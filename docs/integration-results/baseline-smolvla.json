@@ -1,0 +1,252 @@
+{
+  "profile_id": "smolvla",
+  "revision": "c83c3163b8ca9b7e67c509fffd9121e66cb96205",
+  "backend": "local",
+  "source": "checkpoint-native synthetic fixture; no physical YAM compatibility implied",
+  "action_units": "checkpoint_native",
+  "mapping_verified": false,
+  "mapping_note": "Six native dimensions have no published YAM joint/gripper mapping; forward-pass fixtures only.",
+  "readiness_s": 35.241650274999984,
+  "metadata": {
+    "id": "smolvla",
+    "repo_id": "lerobot/smolvla_base",
+    "revision": "c83c3163b8ca9b7e67c509fffd9121e66cb96205",
+    "policy_type": "smolvla",
+    "state_names": [
+      "native_state_0",
+      "native_state_1",
+      "native_state_2",
+      "native_state_3",
+      "native_state_4",
+      "native_state_5"
+    ],
+    "action_names": [
+      "native_action_0",
+      "native_action_1",
+      "native_action_2",
+      "native_action_3",
+      "native_action_4",
+      "native_action_5"
+    ],
+    "image_keys": [
+      "camera1",
+      "camera2",
+      "camera3"
+    ],
+    "native_image_keys": [
+      "camera1",
+      "camera2",
+      "camera3"
+    ],
+    "chunk_size": 50,
+    "fps": 30,
+    "mapping_verified": false,
+    "mapping_note": "Six native dimensions have no published YAM joint/gripper mapping; forward-pass fixtures only.",
+    "dependency_repo": "HuggingFaceTB/SmolVLM2-500M-Video-Instruct",
+    "dependency_revision": "7b375e1b73b11138ff12fe22c8f2822d8fe03467",
+    "native_image_hw": [
+      256,
+      256
+    ],
+    "supports_rtc": false,
+    "profile": "smolvla",
+    "profile_id": "smolvla",
+    "model_revision": "c83c3163b8ca9b7e67c509fffd9121e66cb96205",
+    "model": "lerobot/smolvla_base",
+    "action_units": "checkpoint_native",
+    "max_chunk_steps": 50,
+    "lerobot_version": "0.6.1",
+    "physical_validation": "Operator calibration/alignment and supervised probe still required",
+    "ready": true,
+    "instance_id": "8ee8e95d-fc98-4c9d-9913-effdab886b12",
+    "device": "cpu",
+    "load_s": 23.324738712,
+    "fresh_chunk": true,
+    "continuation": "unsupported",
+    "image_encoding": "rgb8",
+    "saved_processors": true,
+    "session_state": "reset for every fresh chunk"
+  },
+  "fresh_chunks": [
+    {
+      "sequence_id": 0,
+      "round_trip_s": 3.7842174369999952,
+      "encoding_s": 0.0010749660000328731,
+      "payload_bytes": 589824,
+      "shape": [
+        50,
+        6
+      ],
+      "finite": true,
+      "min": -0.5984929800033569,
+      "max": 1.1524666547775269,
+      "server": {
+        "preprocess_s": 0.0019308359999854474,
+        "inference_s": 3.7817454689999863,
+        "postprocess_s": 6.1118000019178e-05,
+        "total_s": 3.783737422999991
+      },
+      "transforms": {
+        "camera1": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        },
+        "camera2": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        },
+        "camera3": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        }
+      },
+      "observation_age_s": 3.785292403000028
+    },
+    {
+      "sequence_id": 1,
+      "round_trip_s": 3.6772689180000384,
+      "encoding_s": 0.0009457170000359838,
+      "payload_bytes": 589824,
+      "shape": [
+        50,
+        6
+      ],
+      "finite": true,
+      "min": -0.6185489892959595,
+      "max": 0.9316298961639404,
+      "server": {
+        "preprocess_s": 0.0009654209999894192,
+        "inference_s": 3.6755080789999965,
+        "postprocess_s": 0.00014346300002898715,
+        "total_s": 3.676616963000015
+      },
+      "transforms": {
+        "camera1": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        },
+        "camera2": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        },
+        "camera3": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        }
+      },
+      "observation_age_s": 3.6782146350000744
+    },
+    {
+      "sequence_id": 2,
+      "round_trip_s": 4.496994452000024,
+      "encoding_s": 0.0011039970000297217,
+      "payload_bytes": 589824,
+      "shape": [
+        50,
+        6
+      ],
+      "finite": true,
+      "min": -0.9728079438209534,
+      "max": 1.373767375946045,
+      "server": {
+        "preprocess_s": 0.0013917089999608834,
+        "inference_s": 4.49502498999999,
+        "postprocess_s": 0.00015080200000738841,
+        "total_s": 4.496567500999959
+      },
+      "transforms": {
+        "camera1": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        },
+        "camera2": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        },
+        "camera3": {
+          "crop": "none",
+          "input_hw": [
+            256,
+            256
+          ],
+          "output_hw": [
+            256,
+            256
+          ]
+        }
+      },
+      "observation_age_s": 4.498098449000054
+    }
+  ],
+  "readiness_and_first_call": {
+    "sample_count": 1,
+    "p50_s": 39.02586771199998,
+    "p95_s": 39.02586771199998,
+    "p99_s": 39.02586771199998
+  },
+  "warm": {
+    "sample_count": 2,
+    "p50_s": 4.087131685000031,
+    "p95_s": 4.456008175300025,
+    "p99_s": 4.488797196660024
+  },
+  "queue_depth": null,
+  "underruns": null,
+  "measurement_note": "Small diagnostic sample. Readiness may reuse a warm pool; this is not a cold-container latency measurement. No hardware queue exercised."
+}

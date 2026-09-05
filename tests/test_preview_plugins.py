@@ -106,10 +106,18 @@ def test_preview_start_failure_does_not_release_cameras(preview_robot, monkeypat
 def test_failed_camera_release_keeps_lease(preview_robot, monkeypatch):
     robot, camera, _, events = preview_robot
     robot.connect()
+    lease = robot._camera_lease
+    disconnect = camera.disconnect
     monkeypatch.setattr(camera, "disconnect", lambda: (_ for _ in ()).throw(RuntimeError("busy")))
     with pytest.raises(RuntimeError, match="busy"):
         robot.disconnect()
     assert "release" not in events
+    assert robot._camera_lease is lease and robot._opened_cameras == [camera]
+    with pytest.raises(RuntimeError, match="previous resources"):
+        robot.connect()
+    monkeypatch.setattr(camera, "disconnect", disconnect)
+    robot.disconnect_no_home()
+    assert events[-1] == "release" and robot._camera_lease is None
 
 
 def test_partial_camera_connect_releases_before_propagating(preview_robot, monkeypatch):
@@ -123,6 +131,66 @@ def test_partial_camera_connect_releases_before_propagating(preview_robot, monke
     with pytest.raises(RuntimeError, match="partial acquisition"):
         robot.connect()
     assert not camera.is_connected and events[-1] == "release"
+
+
+def test_preview_start_cancellation_releases_camera_lease_and_arms(preview_robot, fake_connect, monkeypatch):
+    from lerobot_robot_yamkit import yam_follower as module
+
+    robot, camera, _, events = preview_robot
+
+    def cancel(*args, **kwargs):
+        raise KeyboardInterrupt("cancel preview startup")
+
+    monkeypatch.setattr(module, "start_from_env", cancel)
+    with pytest.raises(KeyboardInterrupt, match="cancel preview startup"):
+        robot.connect()
+    assert not camera.is_connected and events[-1] == "release"
+    assert robot._camera_lease is None and robot._opened_cameras == []
+    assert all(arm.closed and not arm.commands for arm in fake_connect.values())
+
+
+def test_no_home_alias_releases_lease_and_arms_when_preview_close_is_cancelled(
+    preview_robot, fake_connect, monkeypatch,
+):
+    robot, camera, preview, events = preview_robot
+    robot.connect()
+    handles = robot._sides.values() if hasattr(robot, "_sides") else [robot._h]
+    for handle in handles:
+        handle.home_speed = 1
+
+    def cancel():
+        raise KeyboardInterrupt("cancel preview cleanup")
+
+    monkeypatch.setattr(preview, "close", cancel)
+    with pytest.raises(KeyboardInterrupt, match="cancel preview cleanup"):
+        robot.disconnect_no_home()
+    assert not camera.is_connected and events[-1] == "release"
+    assert robot._camera_lease is None and robot._opened_cameras == []
+    assert all(arm.closed and not arm.commands for arm in fake_connect.values())
+
+
+def test_retained_lease_blocks_reconnect_until_release_retried(preview_robot, fake_connect, monkeypatch):
+    robot, camera, _, events = preview_robot
+    robot.connect()
+    lease = robot._camera_lease
+    release = lease.release
+
+    def cancel():
+        raise KeyboardInterrupt("cancel lease release")
+
+    monkeypatch.setattr(lease, "release", cancel)
+    with pytest.raises(KeyboardInterrupt, match="cancel lease release"):
+        robot.disconnect_no_home()
+    assert not camera.is_connected and robot._opened_cameras == []
+    assert robot._camera_lease is lease
+    assert all(arm.closed and not arm.commands for arm in fake_connect.values())
+    before = events.copy()
+    with pytest.raises(RuntimeError, match="previous resources"):
+        robot.connect()
+    assert events == before
+    monkeypatch.setattr(lease, "release", release)
+    robot.disconnect_no_home()
+    assert robot._camera_lease is None and events[-1] == "release"
 
 
 def test_installed_lerobot_record_and_reset_both_publish(preview_robot, monkeypatch):

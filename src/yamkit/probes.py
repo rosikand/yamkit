@@ -134,7 +134,7 @@ def preflight_live_probe(
 
 
 @contextmanager
-def _preview_ownership(camera_hub: Any | None):
+def _preview_ownership(camera_hub: Any | None, cleanup_failed: list | None = None):
     """Use the existing UI hub when called in-process; CLI children use SessionManager's hook."""
     if camera_hub is None:
         yield
@@ -148,7 +148,7 @@ def _preview_ownership(camera_hub: Any | None):
             raise RuntimeError("camera preview did not release its device; active read was not started")
         yield
     finally:
-        if camera_hub.suspended_by == owner:
+        if camera_hub.suspended_by == owner and not cleanup_failed:
             camera_hub.resume()
 
 
@@ -160,12 +160,14 @@ def _make_cameras(configs: dict[str, dict[str, Any]]) -> dict[str, Any]:
     return make_cameras_from_configs(camera_configs_from_dicts(configs))
 
 
-def _close_camera(camera: Any) -> None:
+def _close_camera(camera: Any, cleanup_failed: list) -> None:
     # A camera can fail partway through connect. LeRobot disconnect releases partial resources.
     try:
         camera.disconnect()
-    except Exception:
+    except BaseException:
+        cleanup_failed.append(camera)
         log.exception("camera cleanup failed during active-read probe")
+        raise
 
 
 def capture_live_observation(
@@ -178,8 +180,8 @@ def capture_live_observation(
 ) -> ProbeObservation:
     """Capture one explicitly approved gravity-compensation read, then close before inference.
 
-    Caller must prepare/validate its predictor first and hold the existing session ownership for
-    the entire operation. UI subprocess callers suspend previews through CAMERA_MODES; direct
+    Caller must prepare/validate its predictor first. UI subprocess callers use the same explicit
+    camera ownership handshake as recording; direct
     in-process UI callers supply their existing CameraHub. No separate camera/driver framework
     is created here. No policy target, move_to or home command is issued.
     """
@@ -187,15 +189,21 @@ def capture_live_observation(
         raise PermissionError(f"explicit operator approval required for {ACTIVE_READ_LABEL}")
     specs, names = preflight_live_probe(rig, arm_names, expected_state_names=expected_state_names)
     from .arm import YamArm, resolve_channel
+    from .camera_ownership import claim_from_env
 
     # Resolve every bus before activation too (lookup only, no SDK construction).
     channels = [resolve_channel(spec) for spec in specs]
     log.warning("%s: motors are energised; arms can move. No policy positions or homing.", ACTIVE_READ_LABEL)
-    with _preview_ownership(camera_hub), ExitStack() as cleanup:
+    cleanup_failed = []
+    with _preview_ownership(camera_hub, cleanup_failed), ExitStack() as cleanup:
         cameras = _make_cameras(rig.cameras)
+        lease = claim_from_env(list(cameras))
+        # Registered first, released last, after every camera and arm. A failed
+        # camera close retains ownership until the session process exits.
+        cleanup.callback(lambda: lease.release() if not cleanup_failed else None)
         # Open cameras before arms: a busy/invalid capture device cannot trigger motor activation.
         for camera in cameras.values():
-            cleanup.callback(_close_camera, camera)
+            cleanup.callback(_close_camera, camera, cleanup_failed)
             camera.connect()
             camera.async_read(timeout_ms=2000)
         arms = []

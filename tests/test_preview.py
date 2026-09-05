@@ -452,3 +452,62 @@ def test_partial_startup_thread_failure_closes_listener(monkeypatch):
     env = {preview.ENV_SESSION: "s", preview.ENV_TOKEN: "t"}
     assert isinstance(preview.start_from_env({"top": "rgb"}, env), preview.NullPreview)
     assert publishers[0].port is None
+
+
+@pytest.mark.parametrize("phase", ["http", "encoder", "announce"])
+def test_startup_cancellation_closes_partial_publisher(monkeypatch, phase):
+    pub = preview.PreviewPublisher("s", "t", {"top": "rgb"})
+    monkeypatch.setattr(preview, "from_env", lambda *args, **kwargs: pub)
+    start_thread = threading.Thread.start
+    listeners = []
+
+    def interrupt_thread(thread):
+        if thread.name == f"yamkit-preview-{phase}":
+            listeners.append(pub._server)
+            raise KeyboardInterrupt("cancel preview startup")
+        start_thread(thread)
+
+    def interrupt_announce():
+        listeners.append(pub._server)
+        raise KeyboardInterrupt("cancel preview startup")
+
+    monkeypatch.setattr(threading.Thread, "start", interrupt_thread)
+    if phase == "announce":
+        monkeypatch.setattr(pub, "announce", interrupt_announce)
+    try:
+        with pytest.raises(KeyboardInterrupt, match="cancel preview startup"):
+            preview.start_from_env({"top": "rgb"})
+        assert len(listeners) == 1 and listeners[0].socket.fileno() == -1
+        assert pub.port is None
+        assert pub._worker is None or not pub._worker.is_alive()
+        assert pub._server_thread is None or not pub._server_thread.is_alive()
+    finally:
+        pub.close()
+
+
+@pytest.mark.parametrize("earlier_error", [False, True])
+def test_close_cancellation_still_closes_listener_and_encoder(monkeypatch, earlier_error):
+    pub = preview.PreviewPublisher("s", "t", {"top": "rgb"}).start()
+    server = pub._server
+    close_connections = server.close_connections
+    request_stop = server.request_stop
+
+    def interrupt_connections():
+        close_connections()
+        raise KeyboardInterrupt("cancel preview cleanup")
+
+    def stop_with_error():
+        request_stop()
+        raise OSError("earlier optional preview error")
+
+    monkeypatch.setattr(server, "close_connections", interrupt_connections)
+    if earlier_error:
+        monkeypatch.setattr(server, "request_stop", stop_with_error)
+    try:
+        with pytest.raises(KeyboardInterrupt, match="cancel preview cleanup"):
+            pub.close()
+        assert server.socket.fileno() == -1 and pub.port is None
+        assert not pub._server_thread.is_alive() and not pub._worker.is_alive()
+        assert pub.slot("top").latest is None and pub.slot("top")._pending is None
+    finally:
+        pub.close()

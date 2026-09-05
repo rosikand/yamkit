@@ -123,7 +123,7 @@ def test_no_command_name_ownership_and_popen_failure(monkeypatch):
         raise OSError("cannot start")
 
     monkeypatch.setattr(subprocess, "Popen", fail)
-    with pytest.raises(OSError, match="cannot start"):
+    with pytest.raises(RuntimeError, match="could not start the requested CLI process"):
         manager.start("record", ["missing"])
     assert not manager.active and not manager.cameras_owned
     assert manager.preview_registration() is None

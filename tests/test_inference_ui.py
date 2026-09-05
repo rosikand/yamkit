@@ -3,6 +3,7 @@
 import json
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,7 +43,12 @@ def inference_ui(rig, tmp_path, monkeypatch):
 
     def argv(*args):
         state.seen.append(args)
-        return [sys.executable, "-u", "-c", state.child]
+        child = state.child
+        if args[0] == "policy-probe" and "--live" in args:
+            child = ("from yamkit.camera_ownership import claim_from_env; "
+                     "lease=claim_from_env(['top','left_wrist','right_wrist']); "
+                     "print('CAMERA_ACQUIRED',flush=True); " + child)
+        return [sys.executable, "-u", "-c", child]
 
     monkeypatch.setattr(manager, "yamkit_argv", argv)
     app = server.create_app(rig.path, datasets_dir=tmp_path / "datasets", outputs_dir=tmp_path / "outputs",
@@ -116,7 +122,12 @@ def test_explicit_live_probe_uses_shared_cli_flags_and_owns_preview_cameras(infe
     args = inference_ui.seen[-1]
     assert args[0] == "policy-probe"
     assert "--live" in args and "--approve-active-read" in args
-    assert all(cam["suspended_by"] == "policy-probe-live" for cam in inference_ui.client.get("/api/cameras").json())
+    deadline = time.monotonic() + 5
+    while "CAMERA_ACQUIRED" not in inference_ui.manager.log and time.monotonic() < deadline:
+        time.sleep(.01)
+    assert "CAMERA_ACQUIRED" in inference_ui.manager.log
+    assert inference_ui.manager.cameras_owned
+    assert all(cam["suspended_by"] for cam in inference_ui.client.get("/api/cameras").json())
     assert inference_ui.client.get("/api/cameras/top/stream").status_code == 409
 
 
@@ -175,11 +186,11 @@ def test_prior_process_output_must_drain_before_new_operation(inference_ui, monk
     entered, release = threading.Event(), threading.Event()
     original = manager._read_output
 
-    def gated(proc):
+    def gated(proc, session, group_gone):
         proc.wait(timeout=5)
         entered.set()
         assert release.wait(timeout=5)
-        original(proc)
+        original(proc, session, group_gone)
 
     monkeypatch.setattr(manager, "_read_output", gated)
     inference_ui.child = "print('[yamkit-result] {\"operation\": \"old\"}')"
@@ -187,7 +198,7 @@ def test_prior_process_output_must_drain_before_new_operation(inference_ui, monk
     assert first.status_code == 200
     try:
         assert entered.wait(timeout=5)
-        assert not manager.active
+        assert manager.active  # ownership remains held until output and descendants drain
         response = inference_ui.client.post("/api/session/policy-check", json=payload(task="new"))
         assert response.status_code == 409
         assert manager.meta["operation_id"] == first.json()["meta"]["operation_id"]
@@ -217,14 +228,16 @@ def test_incomplete_or_unknown_probe_arm_names_are_validation_errors(inference_u
     assert inference_ui.manager._proc is None
 
 
-def test_preview_that_did_not_release_prevents_hardware_child(inference_ui, monkeypatch):
+def test_preview_that_did_not_release_denies_child_camera_acquisition(inference_ui, monkeypatch):
     from yamkit.ui.camstream import _Camera
 
     monkeypatch.setattr(_Camera, "running", property(lambda self: True))
     monkeypatch.setattr(_Camera, "stop", lambda *args, **kwargs: None)
     response = inference_ui.client.post("/api/session/policy-probe", json=payload(live=True, confirm_active_read=True))
-    assert response.status_code == 409
-    assert inference_ui.manager._proc is None
+    assert response.status_code == 200  # launcher may start, acquisition handshake gates cameras
+    assert inference_ui.manager.wait(timeout=5) != 0
+    assert "CAMERA_ACQUIRED" not in inference_ui.manager.log
+    assert any("acquisition denied" in line for line in inference_ui.manager.log)
 
 
 def test_local_children_exclude_unrelated_secrets(inference_ui, monkeypatch):

@@ -143,7 +143,7 @@ def test_execute_reports_blockers_before_provider_or_hardware(agent_cli_rig, mon
     assert result.exit_code == 1, result.output
     output = " ".join(result.output.split())
     assert "Live agent execution is disabled" in output
-    assert "no public no-home option" in output
+    assert "sensor acquisition freshness is unavailable" in output
     assert "No arm or camera was opened" in output
 
 

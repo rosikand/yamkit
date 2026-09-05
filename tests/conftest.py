@@ -1,9 +1,15 @@
+from pathlib import Path
 from typing import ClassVar
 
 import numpy as np
 import pytest
 
 from yamkit.config import ArmSpec, ControlSpec, PairSpec, RigConfig
+
+
+def pytest_configure(config):
+    # pytest's explicit --basetemp does not create its parent on a fresh clone.
+    (Path(__file__).resolve().parents[1] / ".pytest_cache").mkdir(exist_ok=True)
 
 
 @pytest.fixture(autouse=True)

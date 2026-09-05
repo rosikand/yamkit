@@ -197,6 +197,66 @@ def test_camera_failure_cleans_up_and_does_not_activate(rig, monkeypatch):
     assert hub.events == ["suspend", "resume"]
 
 
+def test_live_probe_camera_lease_denial_prevents_activation(rig, fake_connect, monkeypatch):
+    for spec in rig.followers():
+        spec.gripper_limits = [0, 6.5]
+    monkeypatch.setattr(probes, "_make_cameras", lambda _: {"top": SimpleNamespace(
+        connect=lambda: pytest.fail("opened a camera without ownership"))})
+
+    def denied(names):
+        assert names == ["top"]
+        raise RuntimeError("preview still owns camera")
+
+    monkeypatch.setattr("yamkit.camera_ownership.claim_from_env", denied)
+    with pytest.raises(RuntimeError, match="preview still owns"):
+        probes.capture_live_observation(rig, approved=True)
+    assert not fake_connect
+
+
+@pytest.mark.parametrize("failed_cleanup", [False, True])
+def test_live_probe_releases_camera_lease_only_after_confirmed_cleanup(
+    rig, fake_connect, monkeypatch, failed_cleanup,
+):
+    for spec in rig.followers():
+        spec.gripper_limits = [0, 6.5]
+    events = []
+
+    class Camera:
+        def connect(self):
+            assert events == ["claim"]
+            events.append("connect")
+
+        def async_read(self, **kwargs):
+            return np.zeros((8, 8, 3), dtype=np.uint8)
+
+        read_latest = async_read
+
+        def disconnect(self):
+            assert all(robot.closed for robot in fake_connect.values())
+            events.append("disconnect")
+            if failed_cleanup:
+                raise RuntimeError("camera close failed")
+
+    def claim(names):
+        assert names == ["top"]
+        events.append("claim")
+        return SimpleNamespace(release=lambda: events.append("release"))
+
+    monkeypatch.setattr(probes, "_make_cameras", lambda _: {"top": Camera()})
+    monkeypatch.setattr("yamkit.camera_ownership.claim_from_env", claim)
+    hub = FakeHub()
+    if failed_cleanup:
+        with pytest.raises(RuntimeError, match="camera close failed"):
+            probes.capture_live_observation(rig, approved=True, camera_hub=hub)
+        assert events == ["claim", "connect", "disconnect"]
+        assert hub.suspended_by == "policy-probe-live"
+    else:
+        probes.capture_live_observation(rig, approved=True, camera_hub=hub)
+        assert events == ["claim", "connect", "disconnect", "release"]
+        assert hub.suspended_by is None
+    assert all(robot.closed and not robot.commands for robot in fake_connect.values())
+
+
 def test_report_keeps_unclipped_targets_signed_deltas_and_full_chunk_extrema():
     obs = snapshot()
     actions = np.tile(obs.state, (3, 1))

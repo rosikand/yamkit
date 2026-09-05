@@ -1,6 +1,3 @@
-import ast
-from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
@@ -200,7 +197,7 @@ def test_live_construction_blocked_before_import_or_open(rig, monkeypatch):
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
-    with pytest.raises(LiveIntegrationError, match="no public no-home option") as error:
+    with pytest.raises(LiveIntegrationError, match="sensor acquisition freshness is unavailable") as error:
         make_live_robot(rig.path, "left_follower")
     assert "read_latest()" in str(error.value)
     assert "No arm or camera was opened" in str(error.value)
@@ -240,42 +237,56 @@ def test_invalid_camera_structure_is_a_configuration_error(rig, cameras):
         validate_rig(rig.path, "left_follower")
 
 
-def _plugin_method(name):
-    """Execute only a public method's body against mocks; never import the driver."""
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "plugins/lerobot_robot_yamkit/lerobot_robot_yamkit/yam_follower.py"
-    )
-    module = ast.parse(path.read_text())
-    robot_class = next(node for node in module.body if isinstance(node, ast.ClassDef) and node.name == "YamFollower")
-    method = next(node for node in robot_class.body if isinstance(node, ast.FunctionDef) and node.name == name)
-    method.decorator_list = []
-    method.returns = None
-    namespace = {"logger": Mock()}
-    exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), "exec"), namespace)  # noqa: S102 - repo method only
-    return namespace[name]
+@pytest.mark.parametrize("bimanual", [False, True])
+@pytest.mark.parametrize("failure", [RuntimeError, KeyboardInterrupt])
+def test_public_plugin_no_home_cleanup_releases_arms_despite_camera_fault(
+    rig, fake_connect, monkeypatch, bimanual, failure,
+):
+    from lerobot_robot_yamkit import BiYamFollowerConfig, YamFollowerConfig
+    from lerobot_robot_yamkit.yam_follower import BiYamFollower, YamFollower
+
+    rig.control.home_speed = 0
+    rig.save()
+    robot = (BiYamFollower(BiYamFollowerConfig(rig=str(rig.path))) if bimanual else
+             YamFollower(YamFollowerConfig(rig=str(rig.path), arm="left_follower")))
+    robot.connect()
+    handles = list(robot._sides.values()) if bimanual else [robot._h]
+    for handle in handles:
+        handle.home_speed = 1  # cleanup must skip an otherwise enabled home move
+        monkeypatch.setattr(handle.arm, "go_home", Mock(side_effect=AssertionError("unexpected home")))
+    healthy = Mock(is_connected=False, thread=None)
+    broken = Mock(disconnect=Mock(side_effect=failure("camera failed")), thread=None)
+    robot._opened_cameras[:] = [broken, healthy]
+    preview = robot._preview = Mock()
+    commands_before = {name: len(arm.commands) for name, arm in fake_connect.items()}
+
+    with pytest.raises(failure, match="camera failed"):
+        robot.disconnect(home=False)
+
+    healthy.disconnect.assert_called_once()
+    broken.disconnect.assert_called_once()
+    preview.close.assert_called_once()
+    assert all(arm.closed for arm in fake_connect.values())
+    assert {name: len(arm.commands) for name, arm in fake_connect.items()} == commands_before
+    assert all(handle.arm is None for handle in handles)
 
 
-def test_public_plugin_fault_cleanup_can_skip_arm_cleanup():
-    disconnect = _plugin_method("disconnect")
-    broken_camera = Mock(disconnect=Mock(side_effect=RuntimeError("camera failed")))
-    robot = SimpleNamespace(cameras={"top": broken_camera}, _h=Mock())
-    with pytest.raises(TypeError):
-        disconnect(robot, home=False)
-    with pytest.raises(RuntimeError, match="camera failed"):
-        disconnect(robot)
-    robot._h.disconnect.assert_not_called()
+def test_public_plugin_observation_cannot_prove_cached_frame_freshness(rig, fake_connect):
+    from lerobot_robot_yamkit import YamFollowerConfig
+    from lerobot_robot_yamkit.yam_follower import YamFollower
 
-
-def test_public_plugin_observation_cannot_prove_cached_frame_freshness():
-    get_observation = _plugin_method("get_observation")
+    rig.control.home_speed = 0
+    rig.save()
+    robot = YamFollower(YamFollowerConfig(rig=str(rig.path), arm="left_follower"))
+    robot.connect()
     cached = np.zeros((5, 5, 3), dtype=np.uint8)
-    camera = Mock(read_latest=Mock(return_value=cached))
-    state = {key: 0.0 for key in JOINT_KEYS} | {GRIPPER_KEY: 0.5}
-    robot = SimpleNamespace(cameras={"top": camera}, _h=Mock(observation=Mock(return_value=state.copy())))
-    raw = get_observation(robot)
-    assert raw["top"] is cached
-    assert METADATA_KEY not in raw
-    robot_boundary = Mock(get_observation=Mock(return_value=raw))
-    with pytest.raises(ObservationError, match="acquisition freshness contract"):
-        RobotAdapter(robot_boundary, clock=Clock()).observe()
+    robot.cameras = {"top": Mock(read_latest=Mock(return_value=cached), is_connected=True)}
+    try:
+        raw = robot.get_observation()
+        assert raw["top"] is cached
+        assert METADATA_KEY not in raw
+        with pytest.raises(ObservationError, match="acquisition freshness contract"):
+            RobotAdapter(robot, clock=Clock()).observe()
+        assert fake_connect["left_follower"].commands == []
+    finally:
+        robot.disconnect(home=False)

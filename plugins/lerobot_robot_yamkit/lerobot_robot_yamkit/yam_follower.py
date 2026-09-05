@@ -169,18 +169,14 @@ class _CameraPreview:
         # A UI child waits here until every direct capture has released its device.
         # Camera-free commands never claim ownership, regardless of command name.
         self._camera_lease = claim_from_env(list(self.cameras))
-        try:
-            for cam in self.cameras.values():
-                self._opened_cameras.append(cam)  # include a partially failed connect in cleanup
-                _check_session_stop(self.config)
-                cam.connect()
-                _check_session_stop(self.config)
-        except BaseException:
-            try:
-                self._disconnect_cameras()
-            except BaseException:  # noqa: BLE001 — preserve the original acquisition failure
-                logger.warning("camera startup cleanup incomplete; ownership retained until process exit")
-            raise
+        # The public connect() owns fault teardown for both cameras and arms. A
+        # failed cleanup stays available for an explicit retry, not a second
+        # immediate attempt from two nested exception handlers.
+        for cam in self.cameras.values():
+            _check_session_stop(self.config)
+            self._opened_cameras.append(cam)  # include a partially failed connect in cleanup
+            cam.connect()
+            _check_session_stop(self.config)
         try:
             modes = {key: getattr(cfg, "color_mode", "rgb") for key, cfg in self.camera_configs.items()}
             self._preview = start_from_env(modes, owner=self._camera_lease.owner)
@@ -223,10 +219,12 @@ class _CameraPreview:
                 failure = failure or exc
                 failed_cameras.append(cam)
         self._opened_cameras[:] = failed_cameras
+        preview_interrupt = None
         try:
             self._preview.close()
-        except Exception:  # noqa: BLE001, S110 — preview cleanup must not retain camera ownership
-            pass
+        except BaseException as exc:  # noqa: BLE001 — release camera ownership even on cancellation
+            if not isinstance(exc, Exception):
+                preview_interrupt = exc
         self._preview = NullPreview()
         if failure is not None:
             # The parent keeps direct capture suspended until process exit in this case.
@@ -235,6 +233,8 @@ class _CameraPreview:
         if self._camera_lease is not None:
             self._camera_lease.release()
             self._camera_lease = None
+        if preview_interrupt is not None:
+            raise preview_interrupt
 
 
 class YamFollower(_CameraPreview, Robot):
@@ -277,7 +277,7 @@ class YamFollower(_CameraPreview, Robot):
     @check_if_already_connected
     def connect(self, calibrate: bool = True) -> None:
         _validate_rig(self.rig)
-        if self._h.arm is not None or self._opened_cameras:
+        if self._h.arm is not None or self._opened_cameras or self._camera_lease is not None:
             raise RuntimeError("previous resources remain open; call disconnect(home=False) before reconnecting")
         _check_session_stop(self.config)
         try:
@@ -370,7 +370,7 @@ class BiYamFollower(_CameraPreview, Robot):
     @check_if_already_connected
     def connect(self, calibrate: bool = True) -> None:
         _validate_rig(self.rig)
-        if any(h.arm is not None for h in self._sides.values()) or self._opened_cameras:
+        if any(h.arm is not None for h in self._sides.values()) or self._opened_cameras or self._camera_lease is not None:
             raise RuntimeError("previous resources remain open; call disconnect(home=False) before reconnecting")
         try:
             for h in self._sides.values():

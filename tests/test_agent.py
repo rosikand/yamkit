@@ -1,11 +1,12 @@
 import json
 from dataclasses import replace
 
+import numpy as np
 import pytest
 
 from yamkit.agent import AgentConfig, JsonlLog, run_episode, validate_tool
 from yamkit.agent_openai import Decision, ToolCall
-from yamkit.agent_robot import FixtureRobot, RobotAdapter
+from yamkit.agent_robot import METADATA_KEY, FixtureRobot, RobotAdapter
 
 
 class Clock:
@@ -118,6 +119,84 @@ def test_gripper_preserves_all_starting_joints(episode, name, target):
     assert result["status"] == "finished"
     assert robot.commands[0] == {**dict.fromkeys([f"joint_{i}.pos" for i in range(1, 7)], 0.),
                                  "gripper.pos": target}
+
+
+def test_every_completed_tool_supplies_new_state_and_images_to_next_decision(episode):
+    result, robot, provider, events = episode([
+        [call("move_joints", {"delta": [.05, 0, 0, 0, 0, 0]}, "move")],
+        [call("open_gripper", call_id="open")],
+        [call("close_gripper", call_id="close")],
+        [finish()],
+    ])
+    assert result["status"] == "finished" and len(robot.commands) == 3
+    completed = [event for event in events if event["event"] == "action_complete"]
+    assert len(completed) == 3
+    for before, after, action in zip(
+        provider.observations[:-1], provider.observations[1:], completed, strict=True,
+    ):
+        assert after.state == action["post_settle"]["state"] == action["bounded"]
+        assert after.sequence == action["post_settle"]["sequence"] > before.sequence
+        assert after.captured_at == action["post_settle"]["captured_at"] > before.captured_at
+        assert not np.array_equal(after.images["fixture_top"], before.images["fixture_top"])
+        assert not np.shares_memory(after.images["fixture_top"], before.images["fixture_top"])
+
+
+def test_feedback_acquired_during_send_does_not_satisfy_post_action_boundary(episode):
+    class CachedDuringSend(FixtureRobot):
+        during_send = None
+
+        def send_action(self, action):
+            sent = super().send_action(action)
+            self.during_send = self.clock()
+            self.clock.sleep(.2)  # a sensor acquired while the command was still running
+            return sent
+
+        def get_observation(self):
+            raw = super().get_observation()
+            if self.during_send is not None:
+                raw[METADATA_KEY]["captured_at"] = self.during_send
+            return raw
+
+    result, robot, provider, events = episode([
+        [call("move_joints", {"delta": [.05, 0, 0, 0, 0, 0]})], [finish()],
+    ], CachedDuringSend)
+    assert result["status"] == "error" and robot.closed
+    assert len(robot.commands) == len(provider.observations) == 1
+    assert not any(event["event"] == "readback" for event in events)
+    assert not any(event["event"] == "action_complete" for event in events)
+
+
+@pytest.mark.parametrize("feedback", ["cached", "state", "image", "metadata"])
+@pytest.mark.parametrize("phase", ["readback", "settled"])
+def test_bad_feedback_prevents_another_motion_or_decision(episode, feedback, phase):
+    class BrokenFeedback(FixtureRobot):
+        reads_after_send = 0
+        cached = None
+
+        def get_observation(self):
+            raw = super().get_observation()
+            if self.commands:
+                self.reads_after_send += 1
+                fail_at = 1 if phase == "readback" else 2
+                if self.reads_after_send == fail_at:
+                    if feedback == "cached":
+                        return self.cached
+                    if feedback == "state":
+                        raw["joint_1.pos"] = float("nan")
+                    elif feedback == "image":
+                        raw["fixture_top"] = None
+                    else:
+                        del raw[METADATA_KEY]
+            self.cached = raw
+            return raw
+
+    result, robot, provider, events = episode([
+        [call("move_joints", {"delta": [.05, 0, 0, 0, 0, 0]})],
+        [call("open_gripper", call_id="later")],
+    ], BrokenFeedback)
+    assert result["status"] == "error" and robot.closed
+    assert len(robot.commands) == len(provider.observations) == 1
+    assert not any(event["event"] == "action_complete" for event in events)
 
 
 def test_multiple_duplicate_malformed_and_empty_decisions_consume_budget(episode):
