@@ -606,6 +606,7 @@ pages.inference = {
   async render(el, args) {
     if (args.length) return renderRunDetail(el, decodeURIComponent(args[0]));
     this._submitted = null;
+    this._previews = false;
     el.innerHTML = `
       ${pageHead("Inference", "check, prepare, probe, then explicitly start a policy run")}
       <div class="sect"><div class="sect-head">Policy deployment</div><div class="panel pad">
@@ -638,7 +639,10 @@ pages.inference = {
         <div class="hint warn">Live probe is GRAVITY-COMPENSATION ACTIVE READ: motors are active and this is not guaranteed motion-free. All gripper calibrations must be valid first. A successful probe never approves motion or replays its chunk.</div>
       </div></div>
       <div class="sect"><div class="sect-head">Operation</div><div id="inf-status" class="panel pad">No operation for this selection.</div><pre id="inf-result" class="log tall"></pre></div>
-      <div class="sect"><div class="sect-head">Cameras</div><div id="cams-slot">${camsHTML()}</div></div>
+      <div class="sect"><div class="sect-head">Cameras</div>
+        <button id="btn-inf-cameras">Show camera previews</button>
+        <div class="hint">Showing previews opens the cameras and sends no motor commands.</div>
+        <div id="inf-cams-content"></div></div>
       <div class="sect"><div class="sect-head">Runs</div><div id="run-list">loading…</div></div>`;
     this._profiles = [];
     api("/inference/profiles").then((data) => { this._profiles = data.profiles; this.syncForm(); }).catch(() => {});
@@ -660,6 +664,13 @@ pages.inference = {
     $("#btn-probe-live").onclick = (e) => {
       if (!confirm("Approve GRAVITY-COMPENSATION ACTIVE READ? Motors will be active. This is not guaranteed motion-free. No predicted position will be executed.")) return;
       this.launch("/session/policy-probe", { live: true, confirm_active_read: true }, e.target);
+    };
+    $("#btn-inf-cameras").onclick = () => {
+      this._previews = !this._previews;
+      const slot = $("#inf-cams-content");
+      slot.querySelectorAll("img").forEach((img) => img.removeAttribute("src"));
+      slot.innerHTML = this._previews ? `<div id="cams-slot">${camsHTML()}</div>` : "";
+      $("#btn-inf-cameras").textContent = this._previews ? "Hide camera previews" : "Show camera previews";
     };
     $("#btn-inf-stop").onclick = (e) => doPost("/session/stop", {}, e.target);
     $("#btn-cloud-stop").onclick = (e) => doPost("/session/modal-shutdown", {}, e.target);
@@ -684,10 +695,12 @@ pages.inference = {
     if (!modal) $("#inf-crop").checked = false;
     const selected = this.selection();
     const profile = this._profiles.find((p) => p.id === selected.policy || p.repo_id === selected.policy);
-    $("#inf-profile-note").textContent = profile ? `Revision ${profile.revision}. ${profile.mapping_note}` : "Custom checkpoints use the existing local LeRobot path; verify their rig compatibility before motion.";
+    const modalBlocked = modal && profile?.physical_modal_rollout_allowed !== true;
+    const profileNote = profile ? `Revision ${profile.revision}. ${profile.mapping_note}` : "Custom checkpoints use the existing local LeRobot path; verify their rig compatibility before motion.";
+    $("#inf-profile-note").textContent = profileNote + (modalBlocked ? ` ${profile?.physical_modal_rollout_reason || "Physical Modal rollout is blocked pending queue performance qualification."}` : "");
     ["btn-pc", "btn-prepare", "btn-ro", "btn-probe-saved", "btn-probe-live", "btn-cloud-stop"].forEach((id) => { document.getElementById(id).disabled = session.active || this._launching; });
     $("#btn-prepare").disabled ||= !modal;
-    $("#btn-ro").disabled ||= !!profile && (!profile.mapping_verified || (profile.id === "molmoact2" && selected.rtc));
+    $("#btn-ro").disabled ||= modalBlocked || !!profile && (!profile.mapping_verified || (profile.id === "molmoact2" && selected.rtc));
     $("#btn-inf-stop").disabled = !session.active;
     const submitted = this._submitted;
     const matches = submitted && submitted.selection === JSON.stringify(selected) && submitted.saved === $("#inf-saved").value && submitted.id === session.meta?.operation_id;

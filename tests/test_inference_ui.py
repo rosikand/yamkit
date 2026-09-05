@@ -94,7 +94,7 @@ def test_activation_and_mode_confirmations_enforced_before_launch(inference_ui, 
 
 
 @pytest.mark.parametrize("route,extra", [("policy-probe", {"live": True, "confirm_active_read": True}),
-                                         ("rollout", {"backend": "modal", "confirm_motion": True})])
+                                         ("rollout", {"backend": "local", "confirm_motion": True})])
 def test_missing_second_arm_calibration_rejected_before_child_launch(inference_ui, route, extra):
     inference_ui.rig.arm("right_follower").gripper_limits = None
     inference_ui.rig.save()
@@ -152,8 +152,16 @@ def test_duplicate_clicks_and_recording_conflicts_allow_only_one_child(inference
     assert inference_ui.client.get("/api/session").json()["pid"] == first_pid
 
 
-def test_stop_stops_the_local_rollout_child_and_does_not_shutdown_cloud(inference_ui):
+def test_physical_modal_performance_gate_blocks_before_launch(inference_ui):
     result = inference_ui.client.post("/api/session/rollout", json=payload(backend="modal", confirm_motion=True))
+    assert result.status_code == 422
+    assert "Physical Modal rollout BLOCKED" in result.text
+    assert not inference_ui.seen
+    assert not inference_ui.manager.active
+
+
+def test_stop_stops_the_local_rollout_child_and_does_not_shutdown_cloud(inference_ui):
+    result = inference_ui.client.post("/api/session/rollout", json=payload(backend="local", confirm_motion=True))
     assert result.status_code == 200
     assert inference_ui.manager.active
     stopped = inference_ui.client.post("/api/session/stop")
@@ -377,3 +385,16 @@ def test_custom_local_check_forwards_selected_arm(inference_ui):
     assert response.status_code == 200
     argv = inference_ui.seen[-1]
     assert argv[argv.index('--arms') + 1] == 'left'
+
+
+def test_browser_modal_start_stays_disabled_after_ready_result(inference_js):
+    ctx = inference_js
+    ctx.eval("""
+        pages.inference._profiles=[{id:'molmoact2',mapping_verified:true,
+          physical_modal_rollout_allowed:false,physical_modal_rollout_reason:'Physical Modal rollout BLOCKED'}];
+        $('#inf-backend').value='modal';
+        session={active:false,meta:{},parsed:{result:{ready:true}}};
+        pages.inference.syncForm();
+    """)
+    assert ctx.eval("$('#btn-ro').disabled")
+    assert "BLOCKED" in ctx.eval("$('#inf-profile-note').textContent")

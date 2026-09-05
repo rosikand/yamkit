@@ -266,8 +266,11 @@ def run(work: Path) -> dict:
         def finish_operation(button, command):
             browser.wait(f"!document.querySelector({json.dumps(button)}).disabled")
             before = len(seen)
+            previous_operation = manager.meta.get("operation_id")
             browser.click(button)
             wait_for(lambda: len(seen) > before and seen[-1][0] == command, description=command)
+            wait_for(lambda: manager.meta.get("operation_id") != previous_operation,
+                     description=f"{command} operation registered")
             wait_for(lambda: manager.wait(timeout=0.05) is not None, description=f"{command} finish")
             operation = json.dumps(manager.meta["operation_id"])
             browser.wait(f"!session.active && session.meta.operation_id === {operation} && document.querySelector('#inf-result').textContent.includes('fixture')")
@@ -276,8 +279,12 @@ def run(work: Path) -> dict:
             navigation = browser.call("Page.navigate", {"url": base + "/#/inference"})
             assert "errorText" not in navigation, navigation
             browser.wait("document.querySelector('#inf-backend') && pages.inference._profiles.length === 3")
+            check("Inference page load starts no cameras, motors, weights, session or paid API",
+                  not seen and not forbidden_calls and not direct_starts
+                  and browser.evaluate("document.querySelectorAll('.cam img').length === 0"))
+            browser.click("#btn-inf-cameras")
             cameras("direct")
-            check("Inference page load starts no session, model, motors or paid API", not seen and not forbidden_calls)
+            check("Camera previews start only after explicit Show camera previews")
             check("Local backend default and unsupported base mapping visible", browser.evaluate("document.querySelector('#inf-backend').value === 'local' && document.querySelector('#btn-ro').disabled && document.querySelector('#inf-profile-note').textContent.length > 30"))
             finish_operation("#btn-pc", "policy-check")
             check("Policy check uses shared CLI and displays fixture readiness")
@@ -300,6 +307,9 @@ def run(work: Path) -> dict:
             browser.evaluate("smokeAccept = true")
             finish_operation("#btn-probe-live", "policy-probe")
             check("Confirmed active-read uses explicit CLI approval", "--approve-active-read" in seen[-1])
+            check("Physical Modal rollout remains blocked after readiness and probes",
+                  browser.evaluate("document.querySelector('#btn-ro').disabled && document.querySelector('#inf-profile-note').textContent.includes('BLOCKED')"))
+            browser.value("#inf-backend", "local")
             browser.click("#btn-ro")
             wait_for(lambda: manager.active and manager.mode == "rollout", description="fixture rollout")
             browser.wait("session.active && !document.querySelector('#btn-inf-stop').disabled")

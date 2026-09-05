@@ -161,9 +161,18 @@ def _make_cameras(configs: dict[str, dict[str, Any]]) -> dict[str, Any]:
 
 
 def _close_camera(camera: Any, cleanup_failed: list) -> None:
-    # A camera can fail partway through connect. LeRobot disconnect releases partial resources.
+    from lerobot.utils.errors import DeviceNotConnectedError
+
+    # LeRobot can time out joining its reader, clear camera.thread and return
+    # from disconnect(). Keep that reader reference until release is confirmed.
     try:
-        camera.disconnect()
+        reader = getattr(camera, "thread", None)
+        try:
+            camera.disconnect()
+        except DeviceNotConnectedError:
+            pass  # a failed connect may already have cleaned its partial resources
+        if camera.is_connected or (reader is not None and reader.is_alive()):
+            raise RuntimeError("camera release could not be confirmed after active-read probe")
     except BaseException:
         cleanup_failed.append(camera)
         log.exception("camera cleanup failed during active-read probe")

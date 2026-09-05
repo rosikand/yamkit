@@ -104,6 +104,8 @@ def test_saved_local_probe_uses_saved_pipeline_before_clamp_with_no_hardware(tmp
     assert result["saved_postprocessor_clamp"] is True
     assert result["backend"] == "local"
     assert result["motion_approved"] is False
+    assert result["physical_validation"] == "not performed"
+    assert "source conventions only" in result["mapping_validation_basis"]
 
 
 def test_live_capture_is_after_confirmed_readiness(calibrated_rig, observation, runtime, monkeypatch):

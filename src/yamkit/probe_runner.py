@@ -181,6 +181,8 @@ def run_profile_probe(
     result.update(
         backend=backend, readiness_s=readiness_s, metadata=metadata,
         mapping_note=profile.mapping_note, camera_rename_map=CAMERA_RENAME_MAP,
+        mapping_validation_basis="source conventions only; not supervised physical validation",
+        physical_validation="not performed",
         **response_metadata,
     )
     return result

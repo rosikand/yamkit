@@ -182,6 +182,8 @@ def test_camera_failure_cleans_up_and_does_not_activate(rig, monkeypatch):
     events = []
 
     class Camera:
+        is_connected = False
+
         def connect(self):
             events.append("connect")
             raise RuntimeError("camera busy")
@@ -222,9 +224,12 @@ def test_live_probe_releases_camera_lease_only_after_confirmed_cleanup(
     events = []
 
     class Camera:
+        is_connected = False
+
         def connect(self):
             assert events == ["claim"]
             events.append("connect")
+            self.is_connected = True
 
         def async_read(self, **kwargs):
             return np.zeros((8, 8, 3), dtype=np.uint8)
@@ -236,6 +241,7 @@ def test_live_probe_releases_camera_lease_only_after_confirmed_cleanup(
             events.append("disconnect")
             if failed_cleanup:
                 raise RuntimeError("camera close failed")
+            self.is_connected = False
 
     def claim(names):
         assert names == ["top"]
@@ -255,6 +261,79 @@ def test_live_probe_releases_camera_lease_only_after_confirmed_cleanup(
         assert events == ["claim", "connect", "disconnect", "release"]
         assert hub.suspended_by is None
     assert all(robot.closed and not robot.commands for robot in fake_connect.values())
+
+
+@pytest.mark.parametrize("defect", ["connected", "reader_alive"])
+def test_silent_camera_close_failure_retains_owners_and_closes_every_other_resource(
+    rig, fake_connect, monkeypatch, defect,
+):
+    for spec in rig.followers():
+        spec.gripper_limits = [0, 6.5]
+    events = []
+
+    class Camera:
+        def __init__(self, name):
+            self.name = name
+            self.is_connected = False
+            self.reader_alive = False
+            self.thread = SimpleNamespace(is_alive=lambda: self.reader_alive)
+
+        def connect(self):
+            self.is_connected = self.reader_alive = True
+            events.append("connect:" + self.name)
+
+        def async_read(self, **kwargs):
+            return np.zeros((8, 8, 3), dtype=np.uint8)
+
+        read_latest = async_read
+
+        def disconnect(self):
+            assert len(fake_connect) == 2 and all(robot.closed for robot in fake_connect.values())
+            events.append("disconnect:" + self.name)
+            self.is_connected = self.name == "broken" and defect == "connected"
+            self.reader_alive = self.name == "broken" and defect == "reader_alive"
+            self.thread = None  # pinned cameras drop their reference even if the reader survives
+
+    cameras = {name: Camera(name) for name in ("healthy", "broken")}
+    monkeypatch.setattr(probes, "_make_cameras", lambda _: cameras)
+    monkeypatch.setattr("yamkit.camera_ownership.claim_from_env", lambda _: SimpleNamespace(
+        release=lambda: events.append("release")))
+    hub = FakeHub()
+    with pytest.raises(RuntimeError, match="camera release could not be confirmed"):
+        probes.capture_live_observation(rig, approved=True, camera_hub=hub)
+    assert events == ["connect:healthy", "connect:broken", "disconnect:broken", "disconnect:healthy"]
+    assert hub.events == ["suspend"] and hub.suspended_by == "policy-probe-live"
+    assert all(robot.closed and not robot.commands for robot in fake_connect.values())
+
+
+def test_camera_cleaned_during_failed_connect_releases_lease_without_hardware_activation(
+    rig, fake_connect, monkeypatch,
+):
+    from lerobot.utils.errors import DeviceNotConnectedError
+
+    for spec in rig.followers():
+        spec.gripper_limits = [0, 6.5]
+    events = []
+
+    class Camera:
+        is_connected = False
+        thread = None
+
+        def connect(self):
+            raise RuntimeError("camera setup failed after own cleanup")
+
+        def disconnect(self):
+            events.append("disconnect")
+            raise DeviceNotConnectedError("already disconnected")
+
+    monkeypatch.setattr(probes, "_make_cameras", lambda _: {"top": Camera()})
+    monkeypatch.setattr("yamkit.camera_ownership.claim_from_env", lambda _: SimpleNamespace(
+        release=lambda: events.append("release")))
+    hub = FakeHub()
+    with pytest.raises(RuntimeError, match="camera setup failed after own cleanup"):
+        probes.capture_live_observation(rig, approved=True, camera_hub=hub)
+    assert events == ["disconnect", "release"] and not fake_connect
+    assert hub.events == ["suspend", "resume"] and hub.suspended_by is None
 
 
 def test_report_keeps_unclipped_targets_signed_deltas_and_full_chunk_extrema():
