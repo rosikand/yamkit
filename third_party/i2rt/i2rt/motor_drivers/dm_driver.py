@@ -144,11 +144,12 @@ class DMSingleMotorCanInterface(CanInterface):
         name: str = "default_can_DM_interface",
         use_buffered_reader: bool = False,
     ):
+        cmd_idoffset = ControlMode.get_id_offset(control_mode)
         super().__init__(
             channel, bustype, bitrate, receive_mode=receive_mode, name=name, use_buffered_reader=use_buffered_reader
         )
         self.control_mode = control_mode
-        self.cmd_idoffset = ControlMode.get_id_offset(self.control_mode)
+        self.cmd_idoffset = cmd_idoffset
         self.receive_mode = receive_mode
 
     def _get_frame_id(self, motor_id: int) -> int:
@@ -439,66 +440,79 @@ class DMChainCanInterface(MotorChain):
             # left in the wrong mode cannot be commanded at all. --survey-only is the caller that says False.
             repair=True,
         )
-        if "can" in channel:
-            self.motor_interface = DMSingleMotorCanInterface(
-                channel=channel,
-                bustype="socketcan",
-                receive_mode=receive_mode,
-                name=motor_chain_name,
-                control_mode=control_mode,
-                use_buffered_reader=use_buffered_reader,
-            )
-        else:
-            self.motor_interface = DMSingleMotorCanInterface(
-                channel=channel,
-                bitrate=bitrate,
-                name=motor_chain_name,
-                use_buffered_reader=use_buffered_reader,
-            )
-        # CAN bus bandwidth check with 1.1x safety factor
-        CAN_FRAME_BITS = 130  # approximate bits per CAN 2.0A frame including overhead
-        frames_per_cycle = len(motor_list) * 2  # send + receive per motor
-        bits_per_second = frames_per_cycle * CAN_FRAME_BITS * control_freq
-        max_bits_per_second = bitrate / 1.1
-        if bits_per_second > max_bits_per_second:
-            max_safe_freq = max_bits_per_second / (frames_per_cycle * CAN_FRAME_BITS)
-            logging.warning(
-                f"CAN bus bandwidth exceeded: {bits_per_second:.0f} bps > {max_bits_per_second:.0f} bps "
-                f"(bitrate={bitrate}, motors={len(motor_list)}, freq={control_freq}Hz). "
-                f"Max safe frequency: {max_safe_freq:.0f} Hz"
-            )
-
-        self.state = None
-        self.state_lock = threading.Lock()
-        self._report_interval = report_interval
-        self._rate_recorder = RateRecorder(name=self, report_interval=report_interval)
-
-        self.same_bus_device_states = None
-        self.same_bus_device_lock = threading.Lock()
-
-        with self.same_bus_device_lock:
-            if get_same_bus_device_driver is not None:
-                self.same_bus_device_driver = get_same_bus_device_driver(self.motor_interface)
+        # yamkit patch: retain resources even if activation or cancellation fails midway.
+        self.running = False
+        self._closed = False
+        self._control_thread = None
+        self.motor_interface = None
+        try:
+            if "can" in channel:
+                self.motor_interface = DMSingleMotorCanInterface(
+                    channel=channel,
+                    bustype="socketcan",
+                    receive_mode=receive_mode,
+                    name=motor_chain_name,
+                    control_mode=control_mode,
+                    use_buffered_reader=use_buffered_reader,
+                )
             else:
-                self.same_bus_device_driver = None
+                self.motor_interface = DMSingleMotorCanInterface(
+                    channel=channel,
+                    bitrate=bitrate,
+                    name=motor_chain_name,
+                    use_buffered_reader=use_buffered_reader,
+                )
+            # CAN bus bandwidth check with 1.1x safety factor
+            CAN_FRAME_BITS = 130  # approximate bits per CAN 2.0A frame including overhead
+            frames_per_cycle = len(motor_list) * 2  # send + receive per motor
+            bits_per_second = frames_per_cycle * CAN_FRAME_BITS * control_freq
+            max_bits_per_second = bitrate / 1.1
+            if bits_per_second > max_bits_per_second:
+                max_safe_freq = max_bits_per_second / (frames_per_cycle * CAN_FRAME_BITS)
+                logging.warning(
+                    f"CAN bus bandwidth exceeded: {bits_per_second:.0f} bps > {max_bits_per_second:.0f} bps "
+                    f"(bitrate={bitrate}, motors={len(motor_list)}, freq={control_freq}Hz). "
+                    f"Max safe frequency: {max_safe_freq:.0f} Hz"
+                )
 
-            if self.same_bus_device_driver is not None:
-                drained = self.motor_interface._drain_bus(timeout_s=0.2)
-                if drained:
-                    logging.info(f"Drained {drained} stale frames before motor bring-up")
+            self.state = None
+            self.state_lock = threading.Lock()
+            self._report_interval = report_interval
+            self._rate_recorder = RateRecorder(name=self, report_interval=report_interval)
 
-            self.absolute_positions = None
-            self._motor_on()
-        starting_command = []
-        for motor_state in self.state:
-            starting_command.append(MotorCmd(torque=motor_state.torque))
-        logging.info(f"Initializing motorchain with starting command: {starting_command}")
-        self.commands = starting_command
-        self.command_lock = threading.RLock()
+            self.same_bus_device_states = None
+            self.same_bus_device_lock = threading.Lock()
 
-        self.start_thread_flag = False
-        if start_thread:
-            self.start_thread()
+            with self.same_bus_device_lock:
+                if get_same_bus_device_driver is not None:
+                    self.same_bus_device_driver = get_same_bus_device_driver(self.motor_interface)
+                else:
+                    self.same_bus_device_driver = None
+
+                if self.same_bus_device_driver is not None:
+                    drained = self.motor_interface._drain_bus(timeout_s=0.2)
+                    if drained:
+                        logging.info(f"Drained {drained} stale frames before motor bring-up")
+
+                self.absolute_positions = None
+                self._motor_on()
+            starting_command = []
+            for motor_state in self.state:
+                starting_command.append(MotorCmd(torque=motor_state.torque))
+            logging.info(f"Initializing motorchain with starting command: {starting_command}")
+            self.commands = starting_command
+            self.command_lock = threading.RLock()
+
+            self.start_thread_flag = False
+            if start_thread:
+                self.start_thread()
+        except BaseException as error:
+            try:
+                self.close()
+            except BaseException as cleanup_error:
+                error._yamkit_cleanup_failed = True
+                error.add_note(f"CAN startup cleanup also failed: {cleanup_error!r}")
+            raise
 
     @property
     def comm_freq(self) -> float:
@@ -565,8 +579,8 @@ class DMChainCanInterface(MotorChain):
         if self.start_thread_flag:
             return
         logging.info("starting separate thread for control loop")
-        thread = threading.Thread(target=self._set_torques_and_update_state)
-        thread.start()
+        self._control_thread = threading.Thread(target=self._set_torques_and_update_state)
+        self._control_thread.start()
         self.start_thread_flag = True
         time.sleep(0.1)
         while self.state is None:
@@ -780,8 +794,27 @@ class DMChainCanInterface(MotorChain):
             return self.same_bus_device_states
 
     def close(self) -> None:
+        """Stop the transmitter before closing its socket; safe after partial init."""
+        if self._closed:
+            return
         self.running = False
-        self.motor_interface.close()
+        errors = []
+        thread = self._control_thread
+        try:
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=2.0)
+        except BaseException as error:
+            errors.append(error)
+        try:
+            if self.motor_interface is not None:
+                self.motor_interface.close()
+        except BaseException as error:
+            errors.append(error)
+        if thread is not None and thread.is_alive():
+            errors.append(RuntimeError("CAN transmitter did not stop; retain arm ownership"))
+        if errors:
+            raise errors[0]
+        self._closed = True
 
 
 class MultiDMChainCanInterface(MotorChain):

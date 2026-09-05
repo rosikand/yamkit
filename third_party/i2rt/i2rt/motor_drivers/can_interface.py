@@ -18,22 +18,46 @@ class CanInterface:
         use_buffered_reader: bool = False,
     ):
         self.channel = channel
-        self.bus = can.interface.Bus(bustype=bustype, channel=channel, bitrate=bitrate)
-        self.busstate = self.bus.state
         self.name = name
         self.receive_mode = receive_mode
         self.use_buffered_reader = use_buffered_reader
-        logging.info(f"Can interface {self.name} use_buffered_reader: {use_buffered_reader}")
-        if use_buffered_reader:
-            # Initialize BufferedReader for asynchronous message handling
-            self.buffered_reader = can.BufferedReader()
-            self.notifier = can.Notifier(self.bus, [self.buffered_reader])
+        self.bus = None
+        self.notifier = None
+        self._closed = False
+        try:
+            self.bus = can.interface.Bus(bustype=bustype, channel=channel, bitrate=bitrate)
+            self.busstate = self.bus.state
+            logging.info(f"Can interface {self.name} use_buffered_reader: {use_buffered_reader}")
+            if use_buffered_reader:
+                # Initialize BufferedReader for asynchronous message handling
+                self.buffered_reader = can.BufferedReader()
+                self.notifier = can.Notifier(self.bus, [self.buffered_reader])
+        except BaseException as error:
+            try:
+                self.close()
+            except BaseException as cleanup_error:
+                error._yamkit_cleanup_failed = True
+                error.add_note(f"CAN socket startup cleanup also failed: {cleanup_error!r}")
+            raise
 
     def close(self) -> None:
-        """Shut down the CAN bus."""
-        if self.use_buffered_reader:
-            self.notifier.stop()
-        self.bus.shutdown()
+        """Shut down every resource, even after partial init or notifier failure."""
+        if self._closed:
+            return
+        errors = []
+        if self.notifier is not None:
+            try:
+                self.notifier.stop()
+            except BaseException as error:
+                errors.append(error)
+        if self.bus is not None:
+            try:
+                self.bus.shutdown()
+            except BaseException as error:
+                errors.append(error)
+        if errors:
+            raise errors[0]
+        self._closed = True
 
     def _send_message_get_response(
         self, id: int, motor_id: int, data: List[int], max_retry: int = 5, expected_id: Optional[int] = None
