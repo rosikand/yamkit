@@ -166,11 +166,26 @@ def cameras(rig: RigOpt = DEFAULT_RIG) -> None:
 
 
 # ------------------------------------------------------------------------------------- arms --
-def _connect(rig_path: Path, name: str):
-    from .arm import YamArm, resolve_channel
+def _active_rig(rig_path: Path):
     from .config import RigConfig
 
     rig = RigConfig.load(rig_path)
+    if problems := rig.validate():
+        raise ValueError("invalid rig: " + "; ".join(problems))
+    return rig
+
+
+def _duration(duration: float | None) -> None:
+    from .validation import finite_scalar
+
+    if duration is not None:
+        finite_scalar(duration, "duration", minimum=0)
+
+
+def _connect(rig_path: Path, name: str):
+    from .arm import YamArm, resolve_channel
+
+    rig = _active_rig(rig_path)
     spec = rig.arm(name)
     return rig, YamArm.connect(spec, resolve_channel(spec), max_joint_speed=rig.control.max_joint_speed, max_gripper_speed=rig.control.max_gripper_speed)
 
@@ -183,10 +198,15 @@ def read(
     duration: Annotated[float | None, typer.Option(help="seconds; default runs until Ctrl-C")] = None,
 ) -> None:
     """Connect (gravity-compensation mode, arm stays free to move) and stream joint state."""
-    from .config import RigConfig
+    from .arm import close_all
+    from .validation import finite_scalar
 
-    cfg = RigConfig.load(rig)
+    finite_scalar(hz, "hz", positive=True)
+    _duration(duration)
+    cfg = _active_rig(rig)
     names = arms or list(cfg.arms)
+    for name in names:
+        cfg.arm(name)  # reject a later unknown name before opening the first arm
     connected = []
     try:
         for n in names:
@@ -205,8 +225,7 @@ def read(
     except KeyboardInterrupt:
         pass
     finally:
-        for a in connected:
-            a.close()
+        close_all(connected)
 
 
 @app.command()
@@ -224,10 +243,10 @@ def teleop(
 
     On start every arm moves slowly to its home pose; on Ctrl-C every arm returns there before being
     released (a second Ctrl-C releases them immediately). `control.home_speed` sets the pace."""
-    from .config import RigConfig
     from .teleop import TeleopSession
 
-    cfg = RigConfig.load(rig)
+    _duration(duration)
+    cfg = _active_rig(rig)
     kw = {"auto_engage": auto_engage}
     if no_home:
         kw["home_speed"] = 0.0
@@ -258,18 +277,19 @@ def teleop(
                     console.print(f"{arm.name:>16} q=[{q}] grip={sg}{b}")
 
     session = TeleopSession.from_rig(cfg, pairs, on_tick=status, **kw)
-    if not auto_engage:
-        console.print("[cyan]Press the top button on a teaching handle to engage its follower; press again to release. Ctrl-C to quit.[/]")
-    stats = session.run(duration=duration)
+    try:
+        if not auto_engage:
+            console.print("[cyan]Press the top button on a teaching handle to engage its follower; press again to release. Ctrl-C to quit.[/]")
+        stats = session.run(duration=duration)
+    finally:
+        session.shutdown(home=False)  # also covers cancellation before run starts
     console.print(f"done: {stats.ticks} ticks at {stats.rate_hz:.1f} Hz ({stats.overruns} overruns)")
 
 
 @app.command("calibrate-gripper")
 def calibrate_gripper(arm: str, rig: RigOpt = DEFAULT_RIG) -> None:
     """Run the SDK gripper limit auto-calibration once and store the limits in the rig (skipped afterwards)."""
-    from .config import RigConfig
-
-    cfg = RigConfig.load(rig)
+    cfg = _active_rig(rig)
     spec = cfg.arm(arm)
     if not spec.has_motor_gripper:
         err.print(f"[red]{arm} has no motorised gripper[/]")
@@ -367,9 +387,11 @@ def set_rest(arm: str, rig: RigOpt = DEFAULT_RIG) -> None:
     cfg, a = _connect(rig, arm)
     try:
         q = a.read().q
+        a.validate_command(q, None, limit_speed=False)
     finally:
         a.close()
-    cfg.arm(arm).rest_pose = [round(float(x), 4) for x in q]
+    # Keep the sample's precision: rounding a value at a joint bound can move it outside.
+    cfg.arm(arm).rest_pose = [float(x) for x in q]
     cfg.save()
     console.print(f"[green]{arm}: rest_pose = {cfg.arm(arm).rest_pose} saved[/]")
 
@@ -384,16 +406,23 @@ def rest(
 
     Home is `rest_pose` if stored (`yamkit set-rest`), otherwise all joints at 0 — the folded pose.
     Leaders move compliantly (a hand on the handle wins). Ctrl-C releases the arms where they are."""
-    from .arm import go_home_all
-    from .config import RigConfig
+    from .arm import close_all, go_home_all
+    from .validation import finite_scalar
 
-    cfg = RigConfig.load(rig)
+    cfg = _active_rig(rig)
+    if speed is not None:
+        finite_scalar(speed, "speed", positive=True)
     if speed is None and cfg.control.home_speed <= 0:
         err.print("[red]home_speed is 0 in the rig — pass --speed (rad/s)[/]")
         raise typer.Exit(1)
+    names = arms or list(cfg.arms)
+    for name in names:
+        spec = cfg.arm(name)
+        if speed is None and spec.role == "leader" and cfg.control.leader_home_speed <= 0:
+            raise ValueError("leader_home_speed is 0 in the rig — pass --speed (rad/s)")
     connected = []
     try:
-        for n in arms or list(cfg.arms):
+        for n in names:
             _, a = _connect(rig, n)
             connected.append(a)
         jobs = []
@@ -407,8 +436,7 @@ def rest(
         console.print("[yellow]aborted — arms released where they are[/]")
         raise typer.Exit(130) from None
     finally:
-        for a in connected:
-            a.close()
+        close_all(connected)
 
 
 def _joint_stops(spec):
@@ -441,10 +469,11 @@ def align(
     are then moved back home before being released."""
     import numpy as np
 
-    from .arm import YamArm, resolve_channel
-    from .config import RigConfig
+    from .arm import YamArm, close_all, resolve_channel
+    from .validation import finite_scalar
 
-    cfg = RigConfig.load(rig)
+    cfg = _active_rig(rig)
+    tol = np.radians(finite_scalar(STOP_TOL_DEG, "alignment stop tolerance", positive=True))
     pair = cfg.pair_for(arm)
     if pair is None:
         err.print(f"[red]{arm!r} is not part of a leader/follower pair in the rig[/]")
@@ -453,13 +482,13 @@ def align(
     previous = np.zeros(6) if reset or not lspec.joint_offsets else np.asarray(lspec.joint_offsets, dtype=float)
     lspec.joint_offsets = None  # measure the raw motor frame
     stops = _joint_stops(fspec)
-    leader = YamArm.connect(lspec, resolve_channel(lspec))
+    lchannel, fchannel = resolve_channel(lspec), resolve_channel(fspec)
+    connected = []
     try:
-        follower = YamArm.connect(fspec, resolve_channel(fspec))
-    except Exception:
-        leader.close()
-        raise
-    try:
+        leader = YamArm.connect(lspec, lchannel, max_joint_speed=cfg.control.max_joint_speed, max_gripper_speed=cfg.control.max_gripper_speed)
+        connected.append(leader)
+        follower = YamArm.connect(fspec, fchannel, max_joint_speed=cfg.control.max_joint_speed, max_gripper_speed=cfg.control.max_gripper_speed)
+        connected.append(follower)
         console.print(f"[cyan]{pair.leader} and {pair.follower} are free to move. Push EVERY joint of BOTH arms against a stop, the same way on both:[/]")
         console.print("  shoulder + elbow folded all the way in · base turned all the way to one side · each wrist joint turned all the way the same way")
         if not yes and not typer.confirm("Every joint against its stop on both arms, and holding still?", default=True):
@@ -477,13 +506,11 @@ def align(
         except KeyboardInterrupt:
             console.print("[yellow]home move aborted — turn the bases back toward the front by hand before powering up again[/]")
     finally:
-        leader.close()
-        follower.close()
+        close_all(connected)
 
     def near(q: float, lim: float) -> bool:  # distance on the circle: a base at +183° may read -177°
         return abs((q - lim + np.pi) % (2 * np.pi) - np.pi) < tol
 
-    tol = np.radians(STOP_TOL_DEG)
     offsets = previous.copy()
     t = Table(title=f"align {pair.leader} → {pair.follower}")
     for c in ("joint", "leader (deg)", "follower (deg)", "stops (deg)", "result"):
@@ -505,6 +532,7 @@ def align(
         err.print("[red]no joint was against a stop on both arms — nothing saved[/]")
         raise typer.Exit(1)
     lspec.joint_offsets = [round(float(x), 4) for x in offsets]
+    lspec.validate()  # the new alignment must still admit the configured home pose
     cfg.save()
     console.print(f"[green]{pair.leader}: joint_offsets saved to {cfg.path}[/] ({len(aligned)} of 6 joints measured)")
     if skipped:
