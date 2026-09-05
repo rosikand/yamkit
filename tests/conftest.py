@@ -6,6 +6,12 @@ import pytest
 from yamkit.config import ArmSpec, ControlSpec, PairSpec, RigConfig
 
 
+@pytest.fixture(autouse=True)
+def no_hub_credentials(monkeypatch):
+    """Hardware-free tests must not use the machine's Hub sign-in or list its repos."""
+    monkeypatch.setattr("yamkit.hub.get_token", lambda: None)
+
+
 class FakeRobot:
     """Stand-in for i2rt.MotorChainRobot: enough surface for YamArm + plugins."""
 

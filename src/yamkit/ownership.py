@@ -56,6 +56,20 @@ def _lock_directory() -> Path:
     return LOCK_DIR
 
 
+def _open_lock(path: Path) -> int:
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    while True:
+        try:
+            # Avoid O_CREAT on existing inodes: Linux fs.protected_regular may
+            # reject it in a sticky directory when another user created the file.
+            return os.open(path, flags)
+        except FileNotFoundError:
+            try:
+                return os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o644)
+            except FileExistsError:
+                continue  # another process won creation; acquire that same inode
+
+
 class ArmOwnership:
     """One adapter lease, held from before SDK construction until SDK shutdown.
 
@@ -78,7 +92,8 @@ class ArmOwnership:
         with _registry_lock:
             # Read-only flock also works on Linux, allowing a different user to
             # acquire the same permanent inode. O_NOFOLLOW rejects symlink paths.
-            fd = os.open(path, os.O_CREAT | os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, 0o644)
+            fd = _open_lock(path)
+            lease = None
             try:
                 if not stat.S_ISREG(os.fstat(fd).st_mode):
                     raise RuntimeError(f"Ownership lock is not a regular file: {path}")
@@ -98,6 +113,9 @@ class ArmOwnership:
                 _leases.add(lease)
                 return lease
             except BaseException:
+                if lease is not None:
+                    _leases.discard(lease)
+                    lease._fd = None
                 os.close(fd)
                 raise
 

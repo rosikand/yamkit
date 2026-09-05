@@ -251,3 +251,20 @@ def test_symlink_lock_file_is_rejected(locks, tmp_path):
     path.symlink_to(target)
     with pytest.raises(OSError):
         ownership.ArmOwnership.acquire("A")
+
+
+def test_existing_locks_work_with_linux_protected_regular(locks, monkeypatch):
+    lease = ownership.ArmOwnership.acquire("A")
+    lease.release()
+    real_open = os.open
+
+    def protected_open(path, flags, mode=0o777):
+        # Emulate fs.protected_regular on an inode created by another local user.
+        if flags & os.O_CREAT and not flags & os.O_EXCL:
+            raise PermissionError("protected regular file in sticky directory")
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(ownership.os, "open", protected_open)
+    reacquired = ownership.ArmOwnership.acquire("A")
+    reacquired.check_owner()
+    reacquired.release()
