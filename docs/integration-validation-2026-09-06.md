@@ -34,6 +34,10 @@ The complete hardware-free suite passed **1,157 tests** in 151.31 seconds, with 
 Starlette/fork deprecation warnings. `make lint`, Ruff on all three diagnostic scripts,
 the offline lockfile check and `git diff --check` passed.
 
+The subsequent standalone teleop profiler passed 14 dedicated hardware-free tests; those
+tests plus the existing teleop suite passed **66 tests** in 41.14 seconds. `make lint` and
+explicit Ruff checking of the script passed. The production control code was unchanged.
+
 Actual Chrome passed **31 checks**, with zero JavaScript exceptions or attempted real
 hardware/service calls. The browser harness additionally plays a three-camera episode from
 its concatenated-video offset and a chart-only episode, then verifies resource release after
@@ -250,18 +254,65 @@ seconds, zero RX/TX errors, unchanged counters on the unused right pair and the 
 checksum. The local log is `.context/validation/left-teleop-03.txt`; matching preflight/postflight
 JSON is in the Lenovo validation directory.
 
+## Approved 90-second two-pair teleop: left disengaged hold and timing limitation
+
+After fresh approval, this command ran once on deployed revision `92816cf`
+(executable source `781cfa3`):
+
+```bash
+tailscale ssh andre@yam-lenovo 'cd /home/andre/rohan-new && source scripts/env.sh && yamkit teleop --rig configs/rig.yaml --pair left_follower --pair right_follower --duration 90 --no-home --bilateral-kp 0 --print-state'
+```
+
+All four arms connected. The left pair engaged through button 0 at Lenovo log time 23:51:00
+and disengaged through the button at 23:51:18, ahead of normal timed cleanup at 23:51:36–37.
+There were 178 status samples: 108 initially idle, 34 left-engaged and 36 finally idle.
+After disengagement, the left leader's joints 4, 5 and 6 spanned 0.204, 0.312 and 0.409 rad,
+respectively, while the left follower's printed joints remained unchanged at 0.001 rad
+precision. This verifies that moving the disengaged left leader does not move its follower.
+The operator confirmed the behavior was correct. During engagement, sampled joint discrepancy
+had a median of 0.0415 rad, a maximum of 0.227 rad and settled near 0.009–0.011 rad.
+
+The right pair remained idle throughout. This run does not establish right-pair tracking or
+simultaneous tracking of both pairs.
+
+The loop completed 8,638 ticks at **96.0 Hz with 2,082 overruns**, compared with 100.0 Hz and
+zero overruns in the preceding single-pair tests. The reduced rate was already present while
+both pairs were idle. These overruns count late application-loop deadlines; they do not by
+themselves establish missed motor firmware deadlines or quantify maximum latency. The two-pair
+timing requirement remains unresolved despite successful left-pair operation.
+
+Source inspection found that SDK observation reads can wait on a state lock held across motor
+updates, which can in turn wait for synchronous CAN request/reply work. This is a candidate
+source of delay, not a measured cause. No lock, state-validation, speed-clamp or firmware-timeout
+change was made. Follow-up profiling must measure the delays before changing control behavior.
+
+`scripts/profile_teleop.py` forwards arguments after `--` to the existing native teleop CLI.
+It measures control-thread SDK observation/handle reads, each control step and the status
+callback, and captures the SDK's existing periodic timing reports without verbose console
+logging. Sample buffers are bounded; counts, means and maxima cover the whole run, while
+percentiles cover the most recent 8,192 calls per measurement. The harness adds measurement
+overhead, so its results must be interpreted accordingly. It writes a new, repository-local
+JSON report only after the normal CLI cleanup confirms every tracked arm closed. Help and
+argument rejection do not connect hardware. Diagnostic failures retain the normal movement
+error and cleanup behavior. A powered invocation still requires separate approval.
+
+The command exited successfully and all four arms logged closure. Postflight found no teleop
+process, an idle dashboard, no CAN traffic during three seconds, zero RX/TX errors and the
+unchanged rig checksum. The local log is `.context/validation/bimanual-teleop-01.txt`; matching
+preflight/postflight JSON is in the Lenovo validation directory.
+
 ## Remaining physical acceptance
 
 Both pairs now have successful connection, state acquisition and orderly cleanup evidence.
 The left pair additionally has confirmed button engagement/disengagement, synchronization,
-manual tracking, partial gripper operation and timed release. Remaining checks include moving
-the leader while disengaged, re-engagement, full gripper travel, right-pair and bimanual teleop,
-recording, homing and physical policy execution.
+manual tracking, partial gripper operation, timed release and follower hold while its disengaged
+leader moves. Remaining checks include re-engagement, full gripper travel, right-pair tracking,
+simultaneous tracking, two-pair timing, recording, homing and physical policy execution.
 Printed samples do not measure sensor freshness or the firmware timeout.
 
 Each additional powered test requires approval of its exact command and effects first. The
-next proposed test allows 90 seconds with both pairs, initially disengaged, to check independent
-button control, left-leader movement after disengagement and right-pair tracking/gripper operation.
+next test should prioritize right-pair tracking and gripper operation while measuring the
+two-pair timing delays, with both followers initially disengaged.
 During future teleop, keep the top button released through startup: a held button at the first
 tick counts as engagement. Existing live-LLM freshness and remote policy qualification
 restrictions remain in effect; see [the acceptance checklist](acceptance-test.md).
