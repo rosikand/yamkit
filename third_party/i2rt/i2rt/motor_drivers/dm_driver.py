@@ -3,6 +3,7 @@ import os
 import struct
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Literal, Optional, Protocol, Sequence, Tuple
 
@@ -624,12 +625,18 @@ class DMChainCanInterface(MotorChain):
                         max_step_time = 0.0
                         report_start_time = curr_time
 
-                    # Update state
-                    with self.command_lock:
+                    # Producers replace the complete command list; _set_commands only reads
+                    # its captured list. Do not block them behind every CAN request/reply.
+                    # Keep the original full-lock behavior for opt-in motor recovery, whose
+                    # retries must not change targets while motors are being re-enabled.
+                    auto_recovery = self.enable_auto_recovery
+                    with self.command_lock if auto_recovery else nullcontext():
+                        with self.command_lock:
+                            commands = self.commands
                         try:
-                            motor_feedback = self._set_commands(self.commands)
+                            motor_feedback = self._set_commands(commands)
                         except RuntimeError as e:
-                            if self.enable_auto_recovery and "Motor error detected" in str(e):
+                            if auto_recovery and "Motor error detected" in str(e):
                                 logging.warning(f"Motor error in control loop, attempting recovery: {e}")
                                 if self._try_recover_motors():
                                     logging.warning("Motor recovery successful, continuing control loop")
@@ -640,7 +647,7 @@ class DMChainCanInterface(MotorChain):
 
                         errors = np.array([motor_feedback[i].error_code != "0x1" for i in range(len(motor_feedback))])
                         if np.any(errors):
-                            if self.enable_auto_recovery:
+                            if auto_recovery:
                                 logging.warning(f"Motor errors detected in feedback: {errors}, attempting recovery")
                                 if self._try_recover_motors(motor_feedback):
                                     logging.warning("Motor recovery successful, continuing control loop")
@@ -773,6 +780,12 @@ class DMChainCanInterface(MotorChain):
         kd: Optional[np.ndarray] = None,
         get_state: bool = True,
     ) -> List[MotorInfo]:
+        """Replace pending targets and optionally read the latest completed CAN scan.
+
+        The worker captures one whole list per scan. Returned feedback may precede
+        the in-flight scan; it is not an acknowledgment of these submitted targets.
+        Published lists and their MotorCmd entries are never modified in place.
+        """
         command = []
         for idx in range(len(self.motor_list)):
             command.append(

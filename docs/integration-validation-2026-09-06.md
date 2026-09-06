@@ -24,19 +24,26 @@ host is `yam-lenovo`, accessed as `andre`, with checkout `/home/andre/rohan-new`
 - Direct camera previews release disconnected viewers even when acquisition stalls. A synthetic
   stalled-camera HTTP regression closes 45 successive viewers while preserving another viewer
   and confirming that the camera and session APIs remain responsive.
+- The SDK's default fail-fast CAN loop captures one complete pending command under its lock,
+  then releases the lock while waiting for CAN replies. Opt-in automatic recovery retains the
+  original full-lock behavior. This targets observation-read delays measured on the two-pair rig;
+  physical verification of the timing change is pending.
 
 No target-speed clamp, joint limit, firmware timeout, model mapping or qualification gate was
-relaxed. No vendored SDK code changed.
+relaxed. The CAN command-lock patch is recorded in `third_party/i2rt.VERSION`.
 
 ## Software checks
 
-The complete hardware-free suite passed **1,157 tests** in 151.31 seconds, with four existing
+The complete hardware-free suite after the CAN command-lock patch passed **1,176 tests**
+in 157.63 seconds, with four existing
 Starlette/fork deprecation warnings. `make lint`, Ruff on all three diagnostic scripts,
 the offline lockfile check and `git diff --check` passed.
 
-The subsequent standalone teleop profiler passed 14 dedicated hardware-free tests; those
-tests plus the existing teleop suite passed **66 tests** in 41.14 seconds. `make lint` and
-explicit Ruff checking of the script passed. The production control code was unchanged.
+The standalone teleop profiler passed 14 dedicated hardware-free tests; those
+tests plus the existing teleop suite passed **66 tests** in 41.14 seconds before the CAN patch.
+The CAN patch then passed **35 vendor tests**, including five new concurrency, fault and
+recovery cases. `make lint`, explicit Ruff checking of the profiler and compilation of the
+modified SDK module passed. No hardware tests were run by the automated suite.
 
 Actual Chrome passed **31 checks**, with zero JavaScript exceptions or attempted real
 hardware/service calls. The browser harness additionally plays a three-camera episode from
@@ -301,18 +308,90 @@ process, an idle dashboard, no CAN traffic during three seconds, zero RX/TX erro
 unchanged rig checksum. The local log is `.context/validation/bimanual-teleop-01.txt`; matching
 preflight/postflight JSON is in the Lenovo validation directory.
 
+## Approved profiled two-pair run: right control and simultaneous tracking
+
+After approval, the following command ran once on deployed revision `494ddc1` (production
+control source remained `781cfa3`):
+
+```bash
+tailscale ssh andre@yam-lenovo 'cd /home/andre/rohan-new && source scripts/env.sh && python scripts/profile_teleop.py --output .context/validation-20260906/bimanual-profile-01.json -- --rig configs/rig.yaml --pair left_follower --pair right_follower --duration 90 --no-home --bilateral-kp 0 --print-state'
+```
+
+The right pair engaged at Lenovo log time 00:10:15, disengaged through button 0 at 00:10:28,
+and re-engaged at 00:10:55. The left pair engaged at 00:10:57; both stayed engaged until normal
+timed shutdown at 00:11:06. The 179 status snapshots comprised 79 both-idle, 26 right-only,
+52 both-idle, four right-only and 18 both-engaged samples.
+
+During the 52-sample disengaged interval, the right leader's joints 3 and 4 spanned 0.193 and
+0.067 rad while follower joints varied at most 0.001 rad. The left follower remained stationary
+during right-only operation. Right gripper values reached 0.02/0.03 leader/follower in two
+samples and reopened near 0.99, demonstrating nearly full normalized travel, without proving
+mechanical endpoints or loaded grasp performance.
+
+Both pairs tracked beyond synchronization. One simultaneous sample showed left joint 2 at
+0.740/0.728 rad leader/follower and right joint 2 at 0.703/0.701 rad. Maximum sampled discrepancies,
+including synchronization, were 0.401 rad left and 0.287 rad right. The operator confirmed the
+run seemed to work correctly. These approximately 2 Hz snapshots do not measure continuous
+peak error or response latency.
+
+The run completed 8,684 ticks at **96.5 Hz with 1,825 overruns**. The profiler reported no
+diagnostic or CLI error and confirmed every arm closed before writing its JSON.
+
+| Profiled operation | Mean | Recent p95 | Recent p99 | Whole-run maximum |
+|---|---:|---:|---:|---:|
+| Control step | 5.566 ms | 11.936 ms | 13.213 ms | 17.413 ms |
+| Status callback | 0.043 ms | 0.002 ms | 1.989 ms | 3.679 ms |
+| Left-leader observation read | 0.577 ms | 2.057 ms | 2.493 ms | 4.548 ms |
+| Left-follower observation read | 0.697 ms | 2.424 ms | 2.780 ms | 6.399 ms |
+| Right-leader observation read | 0.517 ms | 1.916 ms | 2.214 ms | 4.657 ms |
+| Right-follower observation read | 0.513 ms | 2.201 ms | 2.706 ms | 5.894 ms |
+
+Percentiles use the most recent 8,192 calls per measurement; means and maxima cover all calls.
+Summing observation and handle-read totals gives 4.940 ms per control step, about 88.8% of
+the measured step mean. These nested measurements are not additional time on top of the step.
+The handle getters alone contribute about 0.014 ms per step. Status printing therefore does
+not explain most of the measured delay.
+
+SDK reports show leader CAN loops near 195–200 Hz, follower CAN loops near 250–254 Hz, and
+gravity loops above 249 Hz. The largest CAN period in the reported 30-second windows was
+9.739 ms. These reports do not establish a whole-run worst-case motor deadline or validate
+the firmware timeout. The application still misses its requested 100 Hz timing.
+
+Postflight again found no arm process, an idle dashboard, zero CAN traffic during three seconds,
+zero RX/TX errors and the unchanged rig checksum. The command log, timing JSON and postflight
+JSON are saved locally under `.context/validation/bimanual-profile-01*`; original JSON files
+remain under `.context/validation-20260906/` on the Lenovo.
+
+## Timing correction prepared after profiling
+
+The CAN worker previously held `command_lock` across each synchronous scan. A gravity-update
+thread posting its next command could therefore wait for the scan while holding the robot's
+state lock, which also blocked application observation reads. The patch limits the command lock
+to capturing a complete command list in the default fail-fast path. Producers already replace
+the entire list with new entries, so a scan uses one consistent list and the next scan picks up
+the latest pending list. Opt-in automatic recovery retains its previous lock scope throughout
+the scan and retries, including exclusion of new targets while motors are being re-enabled.
+
+Feedback returned by `set_commands` remains the latest completed CAN scan. It may now return
+the preceding completed scan while another is in flight; it is not an acknowledgment of the
+just-posted target. Motor error checks, state publication, the robot state lock, command
+validation and all speed/timeout limits are unchanged. This removes a measured source of lock
+coupling but does not yet establish the resulting hardware rate. A fresh approved powered
+profile is needed before calling the timing issue resolved.
+
 ## Remaining physical acceptance
 
 Both pairs now have successful connection, state acquisition and orderly cleanup evidence.
 The left pair additionally has confirmed button engagement/disengagement, synchronization,
 manual tracking, partial gripper operation, timed release and follower hold while its disengaged
-leader moves. Remaining checks include re-engagement, full gripper travel, right-pair tracking,
-simultaneous tracking, two-pair timing, recording, homing and physical policy execution.
+leader moves. The right pair now has the same button/tracking/hold evidence plus re-engagement
+and nearly full normalized gripper travel. Simultaneous tracking of both pairs is verified.
+Remaining checks include full left-gripper travel, two-pair timing, recording, homing and
+physical policy execution.
 Printed samples do not measure sensor freshness or the firmware timeout.
 
 Each additional powered test requires approval of its exact command and effects first. The
-next test should prioritize right-pair tracking and gripper operation while measuring the
-two-pair timing delays, with both followers initially disengaged.
+next teleop test should validate the timing correction, with both followers initially disengaged.
 During future teleop, keep the top button released through startup: a held button at the first
 tick counts as engagement. Existing live-LLM freshness and remote policy qualification
 restrictions remain in effect; see [the acceptance checklist](acceptance-test.md).

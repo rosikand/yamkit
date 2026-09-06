@@ -299,3 +299,183 @@ def test_robot_cleanup_attempts_recorder_after_chain_failure():
     robot.close()
     robot.close()
     assert calls == ["chain", "recorder", "chain retry", "recorder"]
+
+
+def _feedback(motor_id, position=0.0, error="0x1"):
+    from i2rt.motor_drivers.utils import FeedbackFrameInfo
+
+    return FeedbackFrameInfo(motor_id, error, "fixture", position, 0.0, 0.0, 20.0, 20.0)
+
+
+def _timing_chain(monkeypatch, *, auto_recovery=False):
+    """Real SDK loop with fake_chain_socket; never open or activate hardware."""
+    from i2rt.motor_drivers.dm_driver import DMChainCanInterface
+
+    def enable(self):
+        self.state = [_feedback(1), _feedback(2)]
+        self._update_absolute_positions(self.state)
+        self.running = True
+
+    monkeypatch.setattr(DMChainCanInterface, "_motor_on", enable)
+    return DMChainCanInterface(
+        [(1, "DM4310"), (2, "DM4310")], [0.0, 0.0], [1.0, 1.0],
+        channel="can-fake", start_thread=False, enable_auto_recovery=auto_recovery,
+    )
+
+
+def _worker(chain, errors):
+    try:
+        chain._set_torques_and_update_state()
+    except BaseException as error:  # noqa: BLE001 - assert worker failures on the test thread
+        errors.append(error)
+
+
+def test_can_scan_uses_one_snapshot_and_next_scan_uses_latest_pending(monkeypatch, fake_chain_socket):
+    chain = _timing_chain(monkeypatch)
+    in_flight = threading.Event()
+    release_scan = threading.Event()
+    published = threading.Event()
+    sent, returned, errors, ticks = [], [], [], []
+
+    def control(**command):
+        sent.append((command["motor_id"], command["pos"]))
+        if len(sent) == 1:
+            in_flight.set()
+            assert release_scan.wait(2)
+        return _feedback(command["motor_id"], command["pos"])
+
+    def track():
+        ticks.append(True)
+        if len(ticks) == 2:
+            chain.running = False
+
+    def publish():
+        try:
+            chain.set_commands(np.zeros(2), pos=np.array([0.3, 0.4]), get_state=False)
+            returned.extend(chain.set_commands(np.zeros(2), pos=np.array([0.5, 0.6])))
+        except BaseException as error:  # noqa: BLE001 - assert producer failures on the test thread
+            errors.append(error)
+        finally:
+            published.set()
+
+    chain.motor_interface.set_control = control
+    chain._rate_recorder.track = track
+    positions = np.array([0.1, 0.2])
+    chain.set_commands(np.zeros(2), pos=positions, get_state=False)
+    positions[:] = 99  # the caller's input array does not alias published scalar fields
+    worker = threading.Thread(target=_worker, args=(chain, errors))
+    producer = threading.Thread(target=publish)
+    try:
+        worker.start()
+        assert in_flight.wait(1)
+        producer.start()
+        assert published.wait(1), "command publication blocked behind the in-flight CAN scan"
+        assert [state.pos for state in returned] == [0.0, 0.0]  # completed feedback, not target acknowledgment
+        release_scan.set()
+        worker.join(2)
+        producer.join(2)
+        assert not worker.is_alive() and not producer.is_alive()
+        assert errors == []
+        assert sent == [(1, 0.1), (2, 0.2), (1, 0.5), (2, 0.6)]
+        assert [state.pos for state in chain.read_states()] == pytest.approx([0.5, 0.6])
+    finally:
+        release_scan.set()
+        chain.running = False
+        if worker.ident is not None:
+            worker.join(2)
+        if producer.ident is not None:
+            producer.join(2)
+        chain.close()
+
+
+@pytest.mark.parametrize("fault", ["exception", "feedback"])
+def test_fail_fast_can_errors_stop_without_publishing_bad_feedback(monkeypatch, fake_chain_socket, fault):
+    chain = _timing_chain(monkeypatch)
+    previous = chain.state
+    failure = RuntimeError("Motor error detected: fixture")
+
+    def exchange(commands):
+        if fault == "exception":
+            raise failure
+        return [_feedback(1, error="0x8"), _feedback(2)]
+
+    chain._set_commands = exchange
+    chain._try_recover_motors = lambda *args: pytest.fail("fail-fast mode attempted recovery")
+    try:
+        with pytest.raises(Exception) as error:
+            chain._set_torques_and_update_state()
+        if fault == "exception":
+            assert error.value is failure
+        else:
+            assert "motor errors detected" in str(error.value)
+        assert not chain.running
+        assert chain.state is previous
+    finally:
+        chain.close()
+
+
+@pytest.mark.parametrize("fault", ["exception", "feedback"])
+def test_auto_recovery_keeps_original_target_locked_through_retries(monkeypatch, fake_chain_socket, fault):
+    chain = _timing_chain(monkeypatch, auto_recovery=True)
+    recovering = threading.Event()
+    release_recovery = threading.Event()
+    published = threading.Event()
+    attempts, errors = [], []
+    chain.set_commands(np.zeros(2), pos=np.array([0.1, 0.2]), get_state=False)
+
+    def exchange(commands):
+        attempts.append([command.pos for command in commands])
+        if len(attempts) == 1:
+            if fault == "exception":
+                raise RuntimeError("Motor error detected: fixture")
+            return [_feedback(1, error="0x8"), _feedback(2)]
+        return [_feedback(1, 0.1), _feedback(2, 0.2)]
+
+    def clean_error(motor_id):
+        recovering.set()
+        assert release_recovery.wait(2)
+
+    original_recover = chain._try_recover_motors
+
+    def recover(*args):
+        result = original_recover(*args)
+        assert not published.is_set(), "pending targets changed during motor recovery"
+        chain.running = False  # fixture ends after real recovery completes
+        return result
+
+    def publish():
+        try:
+            chain.set_commands(np.zeros(2), pos=np.array([0.5, 0.6]), get_state=False)
+        except BaseException as error:  # noqa: BLE001 - assert producer failures on the test thread
+            errors.append(error)
+        finally:
+            published.set()
+
+    chain._set_commands = exchange
+    chain._try_recover_motors = recover
+    chain.motor_interface.clean_error = clean_error
+    chain.motor_interface.try_receive_message = lambda **kwargs: None
+    chain.motor_interface.motor_on = lambda *args: None
+    worker = threading.Thread(target=_worker, args=(chain, errors))
+    producer = threading.Thread(target=publish)
+    try:
+        worker.start()
+        assert recovering.wait(1)
+        producer.start()
+        assert not published.wait(0.05)
+        release_recovery.set()
+        worker.join(2)
+        producer.join(2)
+        assert not worker.is_alive() and not producer.is_alive()
+        assert published.is_set() and errors == []
+        assert attempts == [[0.1, 0.2], [0.1, 0.2]]
+        assert [command.pos for command in chain.commands] == [0.5, 0.6]
+        assert all(state.error_code == "0x1" for state in chain.state)
+    finally:
+        release_recovery.set()
+        chain.running = False
+        if worker.ident is not None:
+            worker.join(2)
+        if producer.ident is not None:
+            producer.join(2)
+        chain.close()
