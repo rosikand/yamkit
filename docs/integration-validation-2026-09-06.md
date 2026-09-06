@@ -89,12 +89,34 @@ Offline, camera-free and robot-free policy checks on the Lenovo used four CPU th
 These checks do not authorize or qualify physical policy execution. Detailed policy logs are
 `.context/validation-20260906/policy-check-act.txt` and `policy-check-smolvla.txt` on the Lenovo.
 
-## Physical acceptance still requires approval
+## Approved left-pair state read
 
-No command that enables an arm motor has been run for this development task. Camera and
-software results do not establish physical teleop, recording, homing or policy acceptance.
-Each powered test requires the operator's approval of its exact command and effects first.
+After the operator approved this exact command, it ran once on deployed source `29787b1`:
 
-The next stage is a short gravity-compensation state read, followed by separately approved
-operator and recording tests. Existing live-LLM freshness and remote-policy qualification
-restrictions remain in effect; see [the acceptance checklist](acceptance-test.md).
+```bash
+tailscale ssh andre@yam-lenovo 'cd /home/andre/rohan-new && source scripts/env.sh && yamkit read left_leader left_follower --rig configs/rig.yaml --duration 5 --hz 5'
+```
+
+The dashboard had no active session, and a three-second passive sample showed all four CAN
+buses idle before connection. The command exited successfully after printing 25 finite state
+samples per arm. The leader connected on `can2` and follower on `can3`; saved follower gripper
+limits were reused with automatic calibration explicitly disabled. Leader joint values were
+constant at the printed precision; the follower's largest printed change was 0.018 rad (about
+1.03 degrees) at joint 4 between its first and second sample. Gripper values were 0.96–0.97
+for the leader and 0.95 for the follower. Both leader buttons remained unpressed (`00`).
+
+Both arms logged successful closure. No read process remained, all four CAN buses were idle
+again during a three-second postflight sample, and reported RX/TX errors remained zero.
+The saved rig file's SHA-256 was unchanged. The local log is
+`.context/validation/left-pair-read.txt`; passive postflight evidence is on the Lenovo at
+`.context/validation-20260906/left-pair-read-postflight.json`.
+
+This establishes left-pair connection, state acquisition and orderly cleanup. Operator
+confirmation of physical identity/behavior, button transitions, gripper travel, right-pair
+operation, teleop, recording, homing and physical policy execution remain unverified. Printed
+samples do not measure sensor freshness or the firmware timeout.
+
+Each additional powered test requires approval of its exact command and effects first. The
+next proposed test is the same bounded state read for the right pair, followed by separately
+approved operator and recording tests. Existing live-LLM freshness and remote-policy
+qualification restrictions remain in effect; see [the acceptance checklist](acceptance-test.md).
