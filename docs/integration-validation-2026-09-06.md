@@ -111,12 +111,39 @@ The saved rig file's SHA-256 was unchanged. The local log is
 `.context/validation/left-pair-read.txt`; passive postflight evidence is on the Lenovo at
 `.context/validation-20260906/left-pair-read-postflight.json`.
 
-This establishes left-pair connection, state acquisition and orderly cleanup. Operator
-confirmation of physical identity/behavior, button transitions, gripper travel, right-pair
-operation, teleop, recording, homing and physical policy execution remain unverified. Printed
+## Approved right-pair state read
+
+After separate operator approval, this exact command ran once on deployed revision `b9a8c55`
+(executable source unchanged from `29787b1`):
+
+```bash
+tailscale ssh andre@yam-lenovo 'cd /home/andre/rohan-new && source scripts/env.sh && yamkit read right_leader right_follower --rig configs/rig.yaml --duration 5 --hz 5'
+```
+
+The dashboard and all four CAN buses were idle beforehand. The command exited successfully,
+printing 25 finite samples per arm. The leader connected on `can1`, follower on `can0`, and
+saved follower gripper calibration was reused without recalibration. The largest printed
+follower joint change was 0.013 rad (about 0.74 degrees) at joint 4 between the first and second
+sample; subsequent follower joint values were unchanged at printed precision. Leader joint
+variation was at most 0.001 rad. Leader gripper values were 0.98–0.99, follower gripper remained
+0.99, and both handle buttons remained unpressed (`00`).
+
+Both arms logged successful closure. No read process remained, all CAN traffic was idle during
+the three-second postflight sample, RX/TX errors stayed zero, and the rig checksum was unchanged.
+The local command log is `.context/validation/right-pair-read.txt`; preflight and postflight
+reports are on the Lenovo under `.context/validation-20260906/right-pair-read-*.json`.
+
+## Remaining physical acceptance
+
+Both pairs now have successful connection, state acquisition and orderly cleanup evidence.
+Operator confirmation of physical identity/behavior, button transitions, gripper travel,
+teleop tracking, recording, homing and physical policy execution remain unverified. Printed
 samples do not measure sensor freshness or the firmware timeout.
 
 Each additional powered test requires approval of its exact command and effects first. The
-next proposed test is the same bounded state read for the right pair, followed by separately
-approved operator and recording tests. Existing live-LLM freshness and remote-policy
-qualification restrictions remain in effect; see [the acceptance checklist](acceptance-test.md).
+next proposed test is a bounded left-pair native teleop session with homing and bilateral force
+feedback disabled, initially disengaged. The follower actively holds its arm and gripper pose
+while disengaged; the top button must be released through startup, since a held button at the
+first tick counts as engagement. Subsequent engagement synchronizes toward the leader over
+the configured three seconds before tracking at 100 Hz. Existing live-LLM freshness and remote
+policy qualification restrictions remain in effect; see [the acceptance checklist](acceptance-test.md).
