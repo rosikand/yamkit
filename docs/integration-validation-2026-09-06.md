@@ -214,16 +214,54 @@ traffic and provides no additional evidence about the active loop.
 Gripper values remained near open (leader 0.96–0.97, follower 0.95–0.97). Deliberate trigger
 travel and button-controlled disengagement/re-engagement still need a longer supervised window.
 
+## Approved 60-second left-pair teleop: gripper and button disengagement
+
+After separate approval, the following command ran once on deployed revision `14f831c`
+(executable source `781cfa3`):
+
+```bash
+tailscale ssh andre@yam-lenovo 'cd /home/andre/rohan-new && source scripts/env.sh && yamkit teleop --rig configs/rig.yaml --pair left_follower --duration 60 --no-home --bilateral-kp 0 --print-state'
+```
+
+The command completed 6,001 ticks at 100.0 Hz with zero overruns. The 119 paired status samples
+comprised 29 initial idle, 83 engaged and seven final idle samples. Button 0 engaged at Lenovo
+log time 23:42:09 and explicitly disengaged at 23:42:51, before the normal timed shutdown at
+23:42:55. Both transitions were recorded directly, including the disengagement press that fell
+between the twice-per-second button-state samples.
+
+Synchronization reduced the maximum sampled joint discrepancy from 0.226 to 0.016 rad within
+seven engaged samples, later settling near 0.012 rad. Manual motion exercised multiple joints;
+the engaged median discrepancy was 0.058 rad and maximum 0.371 rad during wrist movement.
+These are sampled position differences, not continuous peak-error or latency measurements.
+
+The gripper partially closed and reopened with the trigger. Printed leader gripper values
+ranged 0.64–0.97 and follower values 0.54–0.97; corresponding samples included 0.66/0.66,
+0.78/0.77, 0.64/0.65, then 0.97/0.96 after reopening. These samples establish partial gripper
+operation, not full travel. One transient 0.96/0.54 pair also limits timing inference from
+the sparse printed snapshots. The operator reported that operation seemed correct.
+
+After the second button press, the follower's joints varied at most 0.001 rad across the seven
+idle samples. The leader also moved at most 0.001 rad, and the operator confirmed forgetting
+to move it deliberately after disengagement. Stationary hold is verified; independence while
+the disengaged leader moves remains an open check. No re-engagement was attempted.
+
+Both arms closed successfully. Postflight found no arm process, no CAN traffic during three
+seconds, zero RX/TX errors, unchanged counters on the unused right pair and the unchanged rig
+checksum. The local log is `.context/validation/left-teleop-03.txt`; matching preflight/postflight
+JSON is in the Lenovo validation directory.
+
 ## Remaining physical acceptance
 
 Both pairs now have successful connection, state acquisition and orderly cleanup evidence.
-The left pair additionally has confirmed button engagement, synchronization, manual tracking
-and timed release. Remaining checks include button-controlled disengagement/re-engagement,
-gripper travel, right-pair and bimanual teleop, recording, homing and physical policy execution.
+The left pair additionally has confirmed button engagement/disengagement, synchronization,
+manual tracking, partial gripper operation and timed release. Remaining checks include moving
+the leader while disengaged, re-engagement, full gripper travel, right-pair and bimanual teleop,
+recording, homing and physical policy execution.
 Printed samples do not measure sensor freshness or the firmware timeout.
 
 Each additional powered test requires approval of its exact command and effects first. The
-next proposed test allows 60 seconds of left-pair teleop for trigger and button testing.
+next proposed test allows 90 seconds with both pairs, initially disengaged, to check independent
+button control, left-leader movement after disengagement and right-pair tracking/gripper operation.
 During future teleop, keep the top button released through startup: a held button at the first
 tick counts as engagement. Existing live-LLM freshness and remote policy qualification
 restrictions remain in effect; see [the acceptance checklist](acceptance-test.md).
