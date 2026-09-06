@@ -135,7 +135,7 @@ the three-second postflight sample, RX/TX errors stayed zero, and the rig checks
 The local command log is `.context/validation/right-pair-read.txt`; preflight and postflight
 reports are on the Lenovo under `.context/validation-20260906/right-pair-read-*.json`.
 
-## Approved left-pair teleop: input issue unresolved
+## Approved left-pair teleop: engagement not yet verified
 
 After operator approval, the following command ran once on deployed revision `f0c1753`
 (executable source `29787b1`):
@@ -166,19 +166,39 @@ with payload `ff02`. It did not construct a robot or write encoder configuration
 returned 3,067 raw reports without a missed request; all digital-input bytes were zero and
 trigger counts varied only from 14–25 on the left and 4087–4098 on the right. The raw log is
 `.context/validation-20260906/handle-inputs-01.jsonl` on the Lenovo, with summary
-`.context/validation/handle-inputs-01.txt` locally. A coordinated held-button sample is still
-needed to establish which handle/button is being pressed and whether its raw input changes.
+`.context/validation/handle-inputs-01.txt` locally. A subsequent coordinated held-button sample
+established which configured handle receives the operator's yellow-button input.
+
+## Motor-free yellow-button confirmation
+
+After the operator reported holding the same top yellow button, sensor-only requests read both
+handle encoder reports and raw GPIO on deployed source `781cfa3`. All 12 left-leader samples
+on `can2` reported input byte `1`, confirmed independently by raw GPIO `1`. All 12 right-leader
+samples on `can1` remained `0`. After the operator was told to release the button, all six
+follow-up samples per handle reported `0` in both the encoder report and raw GPIO.
+
+The SDK decodes input byte `1` as button 0 pressed and button 1 released, matching the saved
+`control.engage_button: 0`. This confirms that the tested button's press and release reach the
+configured left leader. No arm-name or button-index change is warranted. It does not establish
+why the earlier powered run stayed idle or validate engagement under powered SDK polling.
+
+These requests used only teaching-encoder report reads (`0x50E`, payload `0002`) and raw
+ADC/GPIO reads (`0x50E`, payload `000600`); no robot was constructed and no motor or encoder
+configuration was changed. The dashboard remained idle and the saved rig checksum unchanged.
+Local logs are `.context/validation/handle-held-snapshot.txt` and
+`handle-released-snapshot.txt`; matching JSON evidence is in the Lenovo validation directory.
 
 ## Remaining physical acceptance
 
 Both pairs now have successful connection, state acquisition and orderly cleanup evidence.
-Operator confirmation of physical identity/behavior, button transitions, gripper travel,
+The tested left-handle button's raw press/release signal is confirmed. Remaining checks include
+physical arm identity/behavior, powered engagement/disengagement, gripper travel,
 teleop tracking, recording, homing and physical policy execution remain unverified. The approved
 left teleop session exercised idle hold only. Printed
 samples do not measure sensor freshness or the firmware timeout.
 
-Each additional powered test requires approval of its exact command and effects first. Resolve
-the handle input first using a motor-free sensor read before requesting another powered run.
+Each additional powered test requires approval of its exact command and effects first. The
+next proposed test repeats bounded left-pair teleop now that the button input is confirmed.
 During future teleop, keep the top button released through startup: a held button at the first
 tick counts as engagement. Existing live-LLM freshness and remote policy qualification
 restrictions remain in effect; see [the acceptance checklist](acceptance-test.md).
