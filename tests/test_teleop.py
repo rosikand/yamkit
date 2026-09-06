@@ -4,6 +4,40 @@ import pytest
 from yamkit.teleop import TeleopSession
 
 
+@pytest.mark.parametrize("button_held", [False, True])
+def test_auto_start_reports_ready_only_after_both_pairs_sync(rig, fake_connect, monkeypatch, caplog, button_held):
+    import time
+
+    caplog.set_level("INFO", logger="yamkit.teleop")
+    clock = [100.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay))
+    observed = []
+
+    def tick(session):
+        observed.append((session._operator_phase, [p._gate.syncing for p in session.pairs]))
+        if session._operator_phase == "ready":
+            assert all(p.engaged and not p._gate.syncing for p in session.pairs)
+            assert all(fake_connect[p.follower.name].commands for p in session.pairs)
+
+    session = TeleopSession.from_rig(rig, hz=100, sync_seconds=0.03, home_speed=0, auto_engage=True, on_tick=tick)
+    fake_connect["left_leader"].pos[0] = 0.1
+    fake_connect["right_leader"].pos[0] = 0.6
+    for name in ("left_follower", "right_follower"):
+        fake_connect[name].pos[6] = 1.0  # match handles so joint deltas determine sync duration
+    for name in ("left_leader", "right_leader"):
+        fake_connect[name].encoder[0].io_inputs = [int(button_held), 0]
+    session.run(duration=0.6)
+
+    assert observed[0][0] == "synchronizing"
+    assert any(syncing[0] != syncing[1] and phase == "synchronizing" for phase, syncing in observed)
+    assert observed[-1][0] == "ready"
+    assert not any(phase == "holding" for phase, _ in observed)
+    phases = [r.message for r in caplog.records if "[yamkit-operator]" in r.message]
+    assert phases == [f"[yamkit-operator] {p}" for p in ("starting", "synchronizing", "ready", "stopping", "closing")]
+    assert all(robot.closed for robot in fake_connect.values())
+
+
 def test_teleop_engage_and_track(rig, fake_connect):
     session = TeleopSession.from_rig(rig, ["left_follower"], hz=200.0, sync_seconds=0.02, auto_engage=True, home_speed=0.0)
     leader = fake_connect["left_leader"]

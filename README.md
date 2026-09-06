@@ -114,6 +114,15 @@ frame. Policy targets must already use the matching follower frame.
 
 ## 3. Teleop
 
+In the dashboard, click **Start Teleop** and wait for **Teleop ready**.
+Start connects the arms, runs configured startup homing and automatically synchronizes
+both followers to their leaders. **Stop** returns the arms home and releases them;
+the page returns to idle after cleanup. There is no separate Park Arms control.
+Handle buttons remain available to pause/resume an individual follower, but no button
+press is required to start following. **Start Recording** uses the same automatic engagement.
+The command-line defaults below still wait for the handle button; add `--auto-engage`
+to `yamkit teleop`, `yamkit record` or `yamkit teleoperate` to select automatic engagement.
+
 ```bash
 yamkit teleop                       # all pairs; press the handle's top button to engage / release
 yamkit teleop --pair left_follower --auto-engage --duration 20
@@ -181,9 +190,15 @@ keeps the normal cancellation behavior. Failed recordings are never uploaded or 
 inspect the retained local data before retrying an upload. Use `--name`, `--repo-id` and `--to`
 for storage and Hub settings; nested flags that override those settings are rejected.
 
-The dashboard reports the recorder's actual saving and finishing phases. During saving,
-the followers hold their last command; **Stop (interrupt save)** may discard that episode.
-Finishing includes finalization and any configured return-home movement before release.
+The dashboard reports startup, synchronization, readiness, saving and finishing from
+the running process. Its first **Stop** finishes the current episode save, then returns
+the arms home and releases them. A further Stop interrupts that work and may discard
+an unfinished episode. During saving, followers hold their last command. Command-line
+Ctrl-C during saving still interrupts the save. Stop during incomplete startup cancels
+startup and releases connected arms without initiating an additional home move.
+
+After updating this branch, restart an idle `yamkit ui` process and refresh the page.
+An already running dashboard keeps its old Python backend until restarted.
 
 Recording defaults to LeRobot's `--dataset.encoder_threads=1` to leave CPU headroom for
 arm control while multiple camera videos encode. Saving can take longer than automatic

@@ -45,7 +45,7 @@ class ReadBody(BaseModel):
 
 class TeleopBody(BaseModel):
     pairs: list[str] | None = None
-    auto_engage: bool = False
+    auto_engage: bool = True
     bilateral_kp: float | None = None
     duration: float | None = None
 
@@ -328,6 +328,7 @@ def create_app(
         args = [
             "record",
             "--rig", str(rig_path),
+            "--auto-engage",
             "--name", body.name,
             "--task", body.task,
             "--episodes", str(body.episodes),

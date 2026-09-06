@@ -156,7 +156,8 @@ def test_operator_logs_button_edges_only_after_sent_acknowledgment(rig, fake_con
     expected = []
 
     def messages():
-        return [record.message for record in caplog.records if record.name == "yamkit.lerobot_teleop"]
+        return [record.message for record in caplog.records
+                if record.name == "yamkit.lerobot_teleop" and "via button" in record.message]
 
     def action():
         return processor((leader.get_action(), robot.get_observation()))

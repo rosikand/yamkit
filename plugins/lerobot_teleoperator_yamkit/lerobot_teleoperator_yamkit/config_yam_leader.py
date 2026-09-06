@@ -12,6 +12,7 @@ class YamLeaderConfig(TeleoperatorConfig):
     id: str | None = "yam_leader"
     rig: str = "configs/rig.yaml"
     arm: str = "right_leader"  # arm name in the rig
+    auto_engage: bool = False  # yamkit wrapper: synchronize after startup without a button press
 
 
 @TeleoperatorConfig.register_subclass("bi_yam_leader")
@@ -21,3 +22,4 @@ class BiYamLeaderConfig(TeleoperatorConfig):
     rig: str = "configs/rig.yaml"
     left: str = "left_leader"
     right: str = "right_leader"
+    auto_engage: bool = False

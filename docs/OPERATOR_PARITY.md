@@ -5,6 +5,12 @@ one small per-pair operator state (`PairGate`) for teaching-handle button edges,
 engagement, synchronization, and disengaged hold. `yamkit teleoperate` supplies the
 same processor to LeRobot's existing teleoperation entry point.
 
+The dashboard automatically engages both teleop and recording sessions after startup
+homing. CLI sessions keep their manual default; `--auto-engage` selects the same
+automatic behavior. Initial button state is latched so a button held during startup
+does not immediately disengage a follower. Automatic engagement happens only once;
+reset/saving/next episode never silently resumes a deliberately paused pair.
+
 - A rising edge on `control.engage_button` toggles engagement. Holding the button
   does not repeatedly toggle it. Each bimanual side has its own button state.
 - A disengaged follower holds a captured measured pose, including before first
@@ -33,6 +39,19 @@ lets finalization and configured homing complete before any requested upload. Th
 signal handler is restored immediately after that first signal and whenever the loop exits;
 startup, saving, finalization and homing keep their existing interruption behavior. An
 unsuccessful recorder exit never triggers upload or local-data deletion.
+
+The dashboard uses a separate cooperative first Stop once the recorder enters its
+first acquisition loop. The recorder registers its session-bound PID after installing
+a SIGUSR1 handler; the manager verifies that PID, process group and process start time.
+The signal only sets upstream recording stop events, which remain available during
+episode saving. Encoders receive no signal, so saving completes before normal home and
+release. A further dashboard Stop uses SIGINT to interrupt. Before registration,
+startup cancellation retains SIGINT behavior. No alternate acquisition loop is added.
+
+Operator readiness is separate from episode progress: an engaged pair can still be
+synchronizing. The UI reports ready only after every pair's synchronization completes
+and the follower accepts the command. Homing/closing keep Start disabled until the
+entire child process group and camera ownership finish cleanup.
 
 ## Recorded action labels
 

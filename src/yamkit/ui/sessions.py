@@ -2,8 +2,8 @@
 
 The UI never drives the arms itself — Start Teleop / Start Recording / rollout spawn the same
 CLI a user would run in a terminal (`yamkit teleop`, `yamkit record`, ...) and parse its output
-for display. One session at a time; stopping sends SIGINT (the CLIs already shut down cleanly on
-Ctrl-C) and escalates to SIGTERM/SIGKILL only if the child hangs.
+for display. One session at a time; recording has a cooperative save/home Stop, while other
+sessions use SIGINT. A further Stop interrupts; hung processes eventually receive SIGTERM/SIGKILL.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ _READ_RE = re.compile(r"^\s*(\S+) q=\[([^\]]*)\] grip=(\S+)(?: btn=([01]+))?")
 # `yamkit teleop`: `[ 99.8Hz] left_leader->left_follower: ENGAGED err=0.012rad grip=0.98 | ...`
 _TELEOP_HZ_RE = re.compile(r"\[\s*([\d.]+)Hz\]")
 _TELEOP_PAIR_RE = re.compile(r"(\S+->\S+): (ENGAGED|idle)\s*err=\s*([-+.\dnaif]+)rad grip=(\S+)")
+_OPERATOR_PHASE_RE = re.compile(r"\[yamkit-operator\] (starting|homing|synchronizing|ready|holding|stopping|closing)\s*$")
 # lerobot-record progress (message wording varies between versions; match loosely)
 _EPISODE_RE = re.compile(r"[Rr]ecord(?:ing)?\s+episode\s+(\d+)")
 _SAVING_RE = re.compile(r"Saving episode\s+(\d+):")
@@ -46,6 +47,7 @@ _FIRST_CALL_RE = re.compile(r"first call.*?([\d.]+)\s*ms")
 _NEXT_CALLS_RE = re.compile(r"next calls.*?│([^│]*)")
 _OWNERSHIP_PREFIX = "@yamkit-cameras/1 "
 _PREVIEW_PREFIX = "@yamkit-preview/1 "
+_RECORD_STOP_PREFIX = "@yamkit-record-stop/1 "
 _MAX_CONTROL_LINE = 8192
 PREVIEW_START_TIMEOUT_S = 10.0
 _CREDENTIAL_NAMES = ("YAMKIT_OPENAI_API_KEY", "OPENAI_API_KEY", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET",
@@ -126,6 +128,12 @@ def _group_alive(pid: int) -> bool:
 def parse_line(line: str, parsed: dict[str, Any]) -> None:
     """Update the shared parsed-state dict from one line of child output (in place)."""
     line = _ANSI_RE.sub("", line)
+    m = _OPERATOR_PHASE_RE.search(line)
+    if m:
+        parsed["operator_phase"] = m.group(1)
+        if m.group(1) == "stopping":
+            parsed["operator_stopping"] = True
+        return
     if line.startswith("[yamkit-result] ") and len(line) <= 65536:
         result = json.loads(line[len("[yamkit-result] "):])
         if isinstance(result, dict):
@@ -235,6 +243,7 @@ class SessionManager:
         self._seen_owners: set[str] = set()
         self._preview: PreviewRegistration | None = None
         self._preview_registered = False
+        self._record_stop_target: tuple[int, str] | None = None
         self.preview_generation = 0
         self.log: deque[str] = deque(maxlen=log_lines)
         self.parsed: dict[str, Any] = {}
@@ -292,7 +301,7 @@ class SessionManager:
             if self.on_start:
                 self.on_start(mode)
             self.log.clear()
-            self.parsed = {}
+            self.parsed = {"operator_phase": "starting"} if mode in ("teleop", "teleoperate", "record") else {}
             self.mode = mode
             self.meta = meta or {}
             self.started_at = time.time()
@@ -301,6 +310,7 @@ class SessionManager:
             self._session, self._token = session, token
             self._preview = None
             self._preview_registered = False
+            self._record_stop_target = None
             self._seen_owners.clear()
             self.preview_generation += 1
             self.log.append(self._redact("$ " + " ".join(argv)))
@@ -379,6 +389,7 @@ class SessionManager:
             self.ended_at = time.time()
             self.returncode = proc.returncode
             self._token = ""
+            self._record_stop_target = None
             self._redactions = ()
             if proc.stdin:
                 proc.stdin.close()
@@ -396,7 +407,25 @@ class SessionManager:
         return value.replace(self._token, "[redacted]") if self._token else value
 
     def _control_line(self, line: str, proc: subprocess.Popen) -> bool:
-        """Consume the two explicit control protocols; never place protocol data in logs."""
+        """Consume explicit child protocols; never place protocol data in logs."""
+        if line.startswith("@yamkit-record-stop/"):
+            if not line.startswith(_RECORD_STOP_PREFIX) or len(line) > _MAX_CONTROL_LINE:
+                return True
+            try:
+                msg = json.loads(line[len(_RECORD_STOP_PREFIX):])
+                pid = msg.get("pid") if isinstance(msg, dict) else None
+                valid = (isinstance(msg, dict) and msg.get("v") == 1
+                         and msg.get("session") == self._session)
+                if (valid and msg.get("event") == "release" and self._record_stop_target is not None
+                        and pid == self._record_stop_target[0]):
+                    self._record_stop_target = None
+                elif (self.mode == "record" and not self.stopping and self._record_stop_target is None
+                        and valid and msg.get("event") == "ready"
+                        and type(pid) is int and pid > 1 and os.getpgid(pid) == proc.pid):
+                    self._record_stop_target = (pid, self._process_start(pid))
+            except (ValueError, OSError, IndexError, RecursionError):
+                pass
+            return True
         if not line.startswith(("@yamkit-preview/", "@yamkit-cameras/")):
             return False
         prefix = next((p for p in (_OWNERSHIP_PREFIX, _PREVIEW_PREFIX) if line.startswith(p)), None)
@@ -469,20 +498,44 @@ class SessionManager:
         self.preview_generation += 1
 
     def stop(self, grace_s: float | None = None) -> dict[str, Any]:
-        """SIGINT the child's process group (= Ctrl-C), escalate in the background if it hangs.
+        """Request recording save/home, or native Ctrl-C; a further Stop interrupts.
 
-        The grace period covers the arms' slow return to home (30 s), or a recording's upload to the
-        Hub afterwards (10 min); calling stop() again sends a second SIGINT, which makes the CLIs
-        release the arms immediately."""
-        proc = self._proc
-        if proc is None or not self.active:
-            return self.status()
-        if grace_s is None:
-            grace_s = 600.0 if self.mode in ("record", "push", "pull") else 30.0
-        self.stopping = True
-        self._signal(proc, signal.SIGINT)
-        threading.Thread(target=self._escalate, args=(proc, grace_s), daemon=True).start()
+        A registered recorder handles the first request itself. Encoder subprocesses
+        never receive that signal, so an in-progress episode save can finish.
+        Startup before registration retains immediate SIGINT cancellation.
+        """
+        with self._lock:
+            proc = self._proc
+            if proc is None or not self.active:
+                return self.status()
+            if grace_s is None:
+                grace_s = 600.0 if self.mode in ("record", "push", "pull") else 30.0
+            cooperative = not self.stopping and self._record_stop_current()
+            self.stopping = True
+            if cooperative:
+                try:
+                    os.kill(self._record_stop_target[0], signal.SIGUSR1)
+                except ProcessLookupError:
+                    pass  # Recorder exited: do not interrupt a subsequent Hub upload.
+            else:
+                self._signal(proc, signal.SIGINT)
+            threading.Thread(target=self._escalate, args=(proc, grace_s), daemon=True).start()
         return self.status()
+
+    @staticmethod
+    def _process_start(pid: int) -> str:
+        # PID + process group alone could identify a recycled encoder process.
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+
+    def _record_stop_current(self) -> bool:
+        target, proc = self._record_stop_target, self._proc
+        if target is None or proc is None or self.mode != "record" or not self.active:
+            return False
+        pid, started = target
+        try:
+            return os.getpgid(pid) == proc.pid and self._process_start(pid) == started
+        except (OSError, ValueError, IndexError):
+            return False
 
     def _escalate(self, proc: subprocess.Popen, grace_s: float) -> None:
         for sig, wait in ((signal.SIGTERM, grace_s), (signal.SIGKILL, 4.0)):
@@ -536,6 +589,7 @@ class SessionManager:
             "returncode": self.returncode,
             "stopping": self.stopping and active,
             "stop_requested": self.stopping,
+            "record_stop_ready": self._record_stop_current(),
             "cameras_owned": self.cameras_owned,
             "preview_generation": self.preview_generation,
             "meta": self.meta,

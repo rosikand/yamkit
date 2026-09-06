@@ -53,6 +53,7 @@ class _LeaderHandle:
             raise RuntimeError(f"{self.spec.name}: already open")
         self.arm = YamArm.connect(self.spec, resolve_channel(self.spec), max_joint_speed=self.max_joint_speed, max_gripper_speed=self.max_gripper_speed)
         if home and self.home_job:
+            logger.info("[yamkit-operator] homing")
             self.arm.go_home(self.home_speed, compliant=True, release=True)
 
     def action(self) -> dict[str, float]:
@@ -81,6 +82,7 @@ def _home_together(handles) -> None:
     """Park several leaders at the same time (bimanual teleoperator)."""
     jobs = [h.home_job for h in handles if h.home_job]
     if jobs:
+        logger.info("[yamkit-operator] homing")
         go_home_all(jobs)
 
 
@@ -92,6 +94,8 @@ def _disconnect(handles, *, home: bool) -> None:
             _home_together(handles)
         except BaseException as e:  # noqa: BLE001 — re-raised after every arm is closed
             errors.append(e)
+    if any(h.arm is not None for h in handles):
+        logger.info("[yamkit-operator] closing")
     for h in handles:
         try:
             h.disconnect(home=False)

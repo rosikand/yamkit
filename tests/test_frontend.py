@@ -104,6 +104,9 @@ def episode_js():
       var series={timestamp:[0,1],names:['joint'],action:[[0],[1]],'observation.state':[[0],[1]]};
       function api(){return deferEpisode?new Promise(resolve=>{resolveEpisode=resolve;}):Promise.resolve(series);}
     """)
+    # Routing closes MJPEG requests before removing a page. The episode document
+    # has no camera tiles, but exercise the actual shared cleanup helper.
+    ctx.eval(src[src.index("function releaseCameraStreams"):src.index("function syncCams")])
     ctx.eval(src[src.index("async function renderEpisodeViewer"):src.index("// tiny canvas line chart")])
     ctx.eval(src[src.index("let current = null;"):src.index('window.addEventListener("hashchange"')])
     return ctx

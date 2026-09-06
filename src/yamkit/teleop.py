@@ -105,6 +105,12 @@ class TeleopSession:
         self._home_aborted = False
         self._shutdown_started = False
         self._shutdown_logged = False
+        self._operator_phase: str | None = None
+
+    def _report_phase(self, phase: str) -> None:
+        if phase != self._operator_phase:
+            self._operator_phase = phase
+            log.info("[yamkit-operator] %s", phase)
 
     # ----- construction helpers ---------------------------------------------------------------
     @classmethod
@@ -125,6 +131,7 @@ class TeleopSession:
         kw.setdefault("home_speed", ctrl.home_speed)
         kw.setdefault("leader_home_speed", ctrl.leader_home_speed)
         session = cls([], **kw)  # validate every override before any arm is enabled
+        session._report_phase("starting")
         specs = [(rig.arm(p.leader), rig.arm(p.follower)) for p in wanted]
         channels = [(resolve_channel(l), resolve_channel(f)) for l, f in specs]
         opened: list[YamArm] = []
@@ -151,6 +158,7 @@ class TeleopSession:
         """Move every arm to its home pose, all at the same time (no-op if home_speed <= 0)."""
         if self.home_speed <= 0:
             return
+        self._report_phase("homing")
         log.info("%s: all arms moving home (followers %.2f rad/s, leaders %.2f rad/s) — let go of the handles (Ctrl-C / Stop again releases immediately)", why, self.home_speed, self.leader_home_speed)
         jobs: list[tuple[YamArm, dict]] = []
         for pair in self.pairs:
@@ -250,6 +258,12 @@ class TeleopSession:
                     pair.leader.scale_gains(self.bilateral_kp, 0.0)
                     pair._feedback = True
                 pair.leader.command(foll.q, None, limit_speed=False)
+        # Engagement starts synchronization. Readiness follows successful commands
+        # for every pair, after all their synchronization moves have completed.
+        if not self.stop_event.is_set():
+            phase = ("holding" if any(not pair.engaged for pair in self.pairs) else
+                     "synchronizing" if any(pair._gate.syncing for pair in self.pairs) else "ready")
+            self._report_phase(phase)
 
     def run(self, duration: float | None = None) -> TeleopStats:
         failed = False
@@ -307,6 +321,7 @@ class TeleopSession:
         self.stop_event.set()
         if first_shutdown:
             self.stats.t_stop = time.monotonic()  # exclude homing/close time from the loop rate
+            self._report_phase("stopping")
         arms = [arm for pair in self.pairs for arm in (pair.leader, pair.follower)]
         try:
             if first_shutdown and home:
@@ -320,6 +335,7 @@ class TeleopSession:
         finally:
             for pair in self.pairs:
                 pair.engaged = False
+            self._report_phase("closing")
             close_all(arms)
         # Keep attempting failed resources on later shutdown calls; only the message is once-only.
         if not self._shutdown_logged and all(arm._closed for arm in arms):

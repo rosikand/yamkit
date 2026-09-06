@@ -59,7 +59,12 @@ def child(mode: str, control: Path) -> None:
         while True:
             phase = control.read_text().strip()
             if phase != prior:
-                if phase == "record":
+                if phase in ("starting", "homing", "synchronizing", "ready", "holding"):
+                    print(f"[yamkit-operator] {phase}", flush=True)
+                    if phase == "ready":
+                        print("[100.0Hz] left_leader->left_follower: ENGAGED err=0.001rad grip=0.98 | right_leader->right_follower: ENGAGED err=0.001rad grip=0.98", flush=True)
+                elif phase == "record":
+                    print("[yamkit-operator] ready", flush=True)
                     print("Recording episode 0", flush=True)
                 elif phase == "reset":
                     print("Reset the environment", flush=True)
@@ -74,14 +79,19 @@ def child(mode: str, control: Path) -> None:
                     lease.release()
                     print("[yamkit] recording finished — uploading browser fixture", flush=True)
                 prior = phase
-            if phase in ("record", "reset"):
+            if phase in ("starting", "homing", "synchronizing", "ready", "holding", "record", "reset"):
                 seq += 1
                 for index, name in enumerate(CAMERAS):
                     frame = np.full((120, 160, 3), (seq + index * 70) % 255, dtype=np.uint8)
                     preview.offer(name, frame, source_time=time.perf_counter())
             time.sleep(1 / 30)
     except KeyboardInterrupt:
-        pass
+        if mode == "teleop":
+            print("[yamkit-operator] homing", flush=True)
+            deadline = time.monotonic() + 10
+            while control.read_text().strip() != "closed" and time.monotonic() < deadline:
+                time.sleep(0.05)
+            print("[yamkit-operator] closing", flush=True)
     finally:
         preview.close()
         lease.release()
@@ -297,6 +307,10 @@ def run(work: Path) -> dict:
         def cameras(source, state="live"):
             browser.wait(f"overview?.cameras?.length === 3 && overview.cameras.every(c => c.preview_source === '{source}' && c.preview_state === '{state}')")
             browser.wait("[...document.querySelectorAll('.cam img')].length === 3 && [...document.querySelectorAll('.cam img')].every(img => img.naturalWidth === 160)")
+            if source == "direct":
+                wait_for(lambda: all(camera["clients"] == 1 for camera in
+                                     json.load(urllib.request.urlopen(base + "/api/cameras", timeout=3))),
+                         description="one direct MJPEG client per camera")
 
         def finish_operation(button, command):
             browser.wait(f"!document.querySelector({json.dumps(button)}).disabled")
@@ -313,6 +327,9 @@ def run(work: Path) -> dict:
         def episode_playback(name, *, episode=0, videos=0, from_timestamp=0):
             browser.evaluate(f"location.hash = '#/datasets/{name}/{episode}'")
             browser.wait("document.querySelector('#ep-play') && document.querySelectorAll('#ep-charts canvas').length === 14")
+            wait_for(lambda: all(camera["clients"] == 0 for camera in
+                                 json.load(urllib.request.urlopen(base + "/api/cameras", timeout=3))),
+                     description="navigation releases every camera preview")
             browser.wait(f"document.querySelectorAll('#ep-body video').length === {videos}")
             if videos:
                 browser.wait("[...document.querySelectorAll('#ep-body video')].every(video => video.readyState >= 2 && video.videoWidth === 640)")
@@ -409,15 +426,75 @@ def run(work: Path) -> dict:
             browser.evaluate("location.hash = '#/record'")
             browser.wait("document.querySelector('#btn-record')")
             cameras("direct")
+            check("Record page removes Park and auto-engage controls",
+                  browser.evaluate("!document.querySelector('#btn-park-rec') && !document.querySelector('#auto-engage')"))
+            check("Overlapping polls apply completed updates without restoring stale state", browser.evaluate("""(async () => {
+                const original = window.fetch, pending = [], idle = {...session, active:false};
+                window.fetch = (url, opts) => String(url) === '/api/session'
+                    ? new Promise(resolve => pending.push(resolve)) : original(url, opts);
+                try {
+                    const older = refreshSession(), newer = refreshSession();
+                    pending[1](new Response(JSON.stringify(idle))); await newer;
+                    pending[0](new Response(JSON.stringify({...idle, active:true, mode:'teleop', parsed:{operator_phase:'ready'}}))); await older;
+                    const staleIgnored = !session.active && !document.querySelector('#btn-teleop').disabled;
+                    const completed = refreshSession(), inFlight = refreshSession();
+                    pending[2](new Response(JSON.stringify({...idle, poll_fixture:'completed'}))); await completed;
+                    const completedApplied = session.poll_fixture === 'completed';
+                    pending[3](new Response(JSON.stringify(idle))); await inFlight;
+                    return staleIgnored && completedApplied;
+                } finally { window.fetch = original; }
+            })()"""))
+            browser.evaluate("""window.smokeStartFetch = window.fetch;
+                window.fetch = (url, opts) => String(url) === '/api/session/teleop'
+                    ? new Promise((resolve, reject) => { window.smokeRejectStart = reject; }) : smokeStartFetch(url, opts);""")
+            before = len(seen)
             browser.click("#btn-teleop")
+            check("Pending Start disables both actions before the server responds",
+                  browser.evaluate("document.querySelector('#btn-teleop').disabled && document.querySelector('#btn-record').disabled && document.querySelector('#btn-teleop').textContent === 'Starting Teleop…'"))
+            browser.click("#btn-record")
+            browser.evaluate("window.fetch = smokeStartFetch; smokeRejectStart(new Error('fixture launch rejected'))")
+            browser.wait("!document.querySelector('#btn-teleop').disabled")
+            check("Rejected Start restores idle controls without launching another action", len(seen) == before)
+            control.write_text("starting")
+            browser.click("#btn-teleop")
+            browser.wait("session.active && document.querySelector('#btn-teleop').textContent === 'Starting Teleop…'")
+            check("Start Teleop waits for real readiness and disables both starts",
+                  browser.evaluate("document.querySelector('#btn-teleop').disabled && document.querySelector('#btn-record').disabled && document.querySelector('#rec-name').disabled && !document.querySelector('#btn-stop-top').hidden && !document.querySelector('#teleop-ready').textContent.includes('Teleop ready')"))
+            check("Dashboard teleop enables automatic engagement", "--auto-engage" in seen[-1])
             cameras("session")
             check("Dynamic camera ownership works for camera-owning teleop")
-            stop()
+            control.write_text("homing")
+            browser.wait("document.querySelector('#teleop-ready').textContent.includes('Starting — arms moving home')")
+            control.write_text("synchronizing")
+            browser.wait("document.querySelector('#teleop-ready').textContent.includes('followers synchronizing')")
+            check("Synchronization does not prematurely advertise Teleop ready",
+                  browser.evaluate("document.querySelector('#btn-teleop').textContent === 'Starting Teleop…'"))
+            control.write_text("ready")
+            browser.wait("document.querySelector('#teleop-ready').textContent.includes('Teleop ready') && document.querySelector('#btn-teleop').textContent === 'Teleop running'")
+            check("Ready is shown only after the operator readiness event")
+            control.write_text("holding")
+            browser.wait("document.querySelector('#teleop-ready').textContent.includes('Following paused')")
+            control.write_text("ready")
+            browser.wait("document.querySelector('#teleop-ready').textContent.includes('Teleop ready')")
+            browser.click("#btn-stop-top")
+            browser.wait("session.stopping && document.querySelector('#teleop-ready').textContent.includes('Returning home')")
+            check("Stop replaces tracking with returning home until the child exits",
+                  browser.evaluate("document.querySelector('#btn-teleop').textContent === 'Returning home…' && document.querySelector('#btn-teleop').disabled && document.querySelector('#btn-stop-top').textContent === 'Release now' && !document.querySelector('#teleop-status').textContent && !document.querySelector('#rec-progress').textContent.includes('Hz')"))
+            control.write_text("closed")
+            wait_for(lambda: not manager.active, description="teleop fixture homing completes")
+            browser.wait("!session.active && document.querySelector('#btn-teleop').textContent === 'Start Teleop'")
+            check("Session exit resets controls and progress while keeping Output",
+                  browser.evaluate("!document.querySelector('#btn-teleop').disabled && !document.querySelector('#btn-record').disabled && !document.querySelector('#rec-name').disabled && document.querySelector('#rec-hub').disabled && document.querySelector('#btn-stop-top').hidden && document.querySelector('#rec-progress').textContent === 'idle' && document.querySelector('#log').textContent.includes('[yamkit-operator] ready')"))
             cameras("direct")
+            control.write_text("record")
             browser.value("#rec-name", "browser_fixture")
             browser.value("#rec-task", "synthetic recording")
+            browser.value("#rec-reset-s", "0")
             browser.click("#btn-record")
             cameras("session")
+            browser.wait("document.querySelector('#btn-record').textContent === 'Recording running'")
+            check("Dashboard recording enables automatic engagement", "--auto-engage" in seen[-1])
+            check("Zero reset duration is preserved", seen[-1][seen[-1].index("--reset-s") + 1] == "0.0")
             check("Recording displays recorder-owned JPEGs through browser /stream")
             browser.evaluate("window.smokeImages = [...document.querySelectorAll('.cam img')]; window.smokeURLs = smokeImages.map(i => i.src)")
             time.sleep(3.2)
@@ -434,6 +511,14 @@ def run(work: Path) -> dict:
             browser.wait("session.parsed?.phase === 'saving' && document.querySelector('#btn-stop-top').textContent === 'Stop (interrupt save)'")
             check("Actual saving phase explains the held command and interrupting Stop",
                   browser.evaluate("document.querySelector('#teleop-ready').textContent.includes('followers hold their last command') && document.querySelector('#teleop-ready').textContent.includes('may discard this episode')"))
+            check("Saving with cooperative Stop advertises completion before homing", browser.evaluate("""(() => {
+                session.record_stop_ready = true; pages.record.update();
+                const ok = document.querySelector('#btn-stop-top').textContent === 'Stop'
+                    && document.querySelector('#teleop-ready').textContent.includes('Stop finishes saving, then returns home.')
+                    && !document.querySelector('#teleop-ready').textContent.includes('may discard');
+                session.record_stop_ready = false; pages.record.update();
+                return ok;
+            })()"""))
             browser.wait("overview.cameras.every(c => c.preview_state === 'stale')")
             age = browser.evaluate("overview.cameras[0].frame_age_s")
             time.sleep(1.4)
@@ -455,10 +540,11 @@ def run(work: Path) -> dict:
             control.write_text("upload")
             browser.wait("session.active && session.parsed?.phase === 'upload'")
             cameras("direct")
-            check("Released recorder returns to direct preview during simulated upload", not manager.cameras_owned and manager.active)
+            check("Released recorder returns to one direct preview per camera during simulated upload", not manager.cameras_owned and manager.active)
             stop()
             cameras("direct")
-            check("Stop leaves idle previews working and no session child")
+            check("Stop leaves idle previews working and no session child",
+                  browser.evaluate("document.querySelector('#btn-record').textContent === 'Start Recording' && !document.querySelector('#btn-record').disabled && document.querySelector('#rec-progress').textContent === 'idle' && !document.querySelector('#teleop-status').textContent"))
             episode_playback("pick_red_cube_2demo_dummy", episode=1, videos=3, from_timestamp=24.9)
             episode_playback("smoke")
             # Control completion order directly: real Settings requests can finish

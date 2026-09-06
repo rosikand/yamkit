@@ -124,6 +124,7 @@ def _home_together(handles, stop=None) -> None:
     """Park several arms at the same time (used by the bimanual robot/teleoperator)."""
     jobs = [h.home_job for h in handles if h.home_job]
     if jobs:
+        logger.info("[yamkit-operator] homing")
         go_home_all(jobs, stop=stop)
 
 
@@ -139,6 +140,8 @@ def _disconnect(handles, disconnect_cameras, *, home: bool) -> None:
             _home_together(handles)
         except BaseException as e:  # noqa: BLE001 — re-raised after every resource is attempted
             errors.append(e)
+    if any(h.arm is not None for h in handles):
+        logger.info("[yamkit-operator] closing")
     for h in handles:
         try:
             h.disconnect(home=False)
@@ -294,6 +297,7 @@ class YamFollower(_CameraPreview, Robot):
             self._h.connect(home=False)
             _check_session_stop(self.config)
             if self._h.home_job:
+                logger.info("[yamkit-operator] homing")
                 self._h.arm.go_home(self._h.home_speed, stop=getattr(self.config, "_session_shutdown_event", None))
             _check_session_stop(self.config)
             self._connect_cameras()

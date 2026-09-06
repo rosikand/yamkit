@@ -6,6 +6,19 @@ from typer.testing import CliRunner
 from yamkit import cli, hub
 
 
+@pytest.mark.parametrize("command", ["record", "teleoperate"])
+@pytest.mark.parametrize("auto_engage", [False, True])
+def test_auto_engagement_reaches_lerobot_without_changing_manual_cli_default(rig, command, auto_engage):
+    args = [command, "--rig", str(rig.path), "--dry-run"]
+    if command == "record":
+        args += ["--name", "auto-demo", "--task", "move block", "--to", "local"]
+    if auto_engage:
+        args.append("--auto-engage")
+    result = CliRunner().invoke(cli.app, args)
+    assert result.exit_code == 0, result.output
+    assert ("--teleop.auto_engage=true" in result.output) is auto_engage
+
+
 @pytest.fixture
 def recording(rig, tmp_path, monkeypatch):
     datasets = tmp_path / "datasets"

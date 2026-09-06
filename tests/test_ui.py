@@ -45,6 +45,19 @@ def test_parse_teleop_line():
     assert parsed["pairs"]["right_leader->right_follower"]["engaged"] is False
 
 
+def test_operator_readiness_does_not_reset_recording_progress():
+    parsed = {}
+    parse_line("INFO Recording episode 2", parsed)
+    started = parsed["phase_since"]
+    for phase in ("synchronizing", "ready", "holding", "homing", "closing"):
+        parse_line(f"INFO module.py:1 [yamkit-operator] {phase}", parsed)
+        assert parsed["operator_phase"] == phase
+        assert parsed["episode"] == 2 and parsed["phase"] == "record"
+        assert parsed["phase_since"] == started
+    parse_line("[ 99.8Hz] a->b: ENGAGED err=0.012rad grip=0.98", parsed)
+    assert parsed["operator_phase"] == "closing"  # cached state cannot imply readiness
+
+
 def test_parse_record_and_policy_lines():
     parsed = {}
     parse_line("INFO 2026-01-01 Recording episode 3", parsed)
@@ -97,6 +110,78 @@ def test_session_lifecycle_and_exclusivity():
         mgr.stop()
     assert mgr.wait(timeout=5) is not None
     assert not mgr.active
+
+
+def test_record_stop_targets_registered_recorder_without_interrupting_encoder():
+    # A launcher, recorder child and encoder grandchild mimic --to both. The
+    # default SIGUSR1 would kill the encoder if sent to the process group.
+    recorder = '''
+import json, os, signal, subprocess, sys, time
+encoder = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+requested = False
+def stop(signum, frame):
+    global requested
+    requested = True
+signal.signal(signal.SIGUSR1, stop)
+print('@yamkit-record-stop/1 ' + json.dumps(dict(v=1, session=os.environ['YAMKIT_PREVIEW_SESSION'], event='ready', pid=os.getpid())), flush=True)
+print('Saving episode 0: encoding videos', flush=True)
+try:
+    while not requested:
+        time.sleep(0.01)
+    time.sleep(0.1)
+    assert encoder.poll() is None, 'encoder interrupted by Stop'
+    print('save completed; homing', flush=True)
+finally:
+    encoder.terminate()
+    encoder.wait(timeout=5)
+'''
+    launcher = f"import subprocess, sys; raise SystemExit(subprocess.call([sys.executable, '-u', '-c', {recorder!r}]))"
+    mgr = SessionManager()
+    mgr.start("record", [sys.executable, "-u", "-c", launcher])
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not mgr.status()["record_stop_ready"]:
+            time.sleep(0.01)
+        assert mgr.status()["record_stop_ready"]
+        assert mgr._record_stop_target[0] != mgr._proc.pid
+        stopped = mgr.stop()
+        assert stopped["stop_requested"]
+        assert mgr.wait(timeout=5) == 0
+        assert "save completed; homing" in mgr.log
+        assert not mgr.status()["record_stop_ready"]
+        assert not any(line.startswith("@yamkit-record-stop/") for line in mgr.log)
+    finally:
+        if mgr.active:
+            mgr.stop(grace_s=0.1)
+            mgr.wait(timeout=5)
+
+
+@pytest.mark.parametrize("invalid", ["session", "pid", "mode"])
+def test_record_stop_rejects_registration_outside_current_session(invalid):
+    # This parent's PID belongs to another process group and must never be used
+    # as a signal target supplied by child output.
+    import os
+
+    child = f'''
+import json, os, time
+msg = dict(v=1, session=os.environ['YAMKIT_PREVIEW_SESSION'], event='ready', pid=os.getpid())
+if {invalid!r} == 'session': msg['session'] = 'obsolete'
+if {invalid!r} == 'pid': msg['pid'] = {os.getpid()}
+print('@yamkit-record-stop/1 ' + json.dumps(msg), flush=True)
+print('registration attempted', flush=True)
+time.sleep(30)
+'''
+    mgr = SessionManager()
+    mgr.start("teleop" if invalid == "mode" else "record", [sys.executable, "-u", "-c", child])
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and "registration attempted" not in mgr.log:
+            time.sleep(0.01)
+        assert "registration attempted" in mgr.log
+        assert not mgr.status()["record_stop_ready"]
+    finally:
+        mgr.stop(grace_s=0.1)
+        mgr.wait(timeout=5)
 
 
 def test_session_exit_callback_and_deployment_log(tmp_path):
@@ -264,9 +349,25 @@ def test_teleop_session_requests_state_lines(client, monkeypatch):
     monkeypatch.setattr(SessionManager, "yamkit_argv", argv)
     assert client.post("/api/session/teleop", json={}).status_code == 200
     assert "--print-state" in seen["args"]
+    assert "--auto-engage" in seen["args"]
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and client.get("/api/session").json()["active"]:
         time.sleep(0.05)
+
+
+def test_record_dashboard_starts_both_pairs_with_auto_engagement(client, monkeypatch):
+    seen = {}
+
+    def argv(self, *args):
+        seen["args"] = args
+        return [sys.executable, "-c", "pass"]
+
+    monkeypatch.setattr(SessionManager, "yamkit_argv", argv)
+    response = client.post("/api/session/record", json={"name": "new-demo", "task": "move block", "to": "local"})
+    assert response.status_code == 200
+    assert seen["args"][0] == "record" and "--auto-engage" in seen["args"]
+    assert "--arms" not in seen["args"]  # all configured pairs, not just one side
+    assert response.json()["parsed"]["operator_phase"] == "starting"
 
 
 def test_config_get_and_structured_save(client, rig):

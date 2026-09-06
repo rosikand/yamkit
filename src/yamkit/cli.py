@@ -579,10 +579,12 @@ def _teleop_args(rig: Path, pairs, teleop_id: str) -> list[str]:
 
 
 @app.command(context_settings=PASSTHROUGH)
-def teleoperate(ctx: typer.Context, rig: RigOpt = DEFAULT_RIG, arms: Annotated[list[str] | None, typer.Option("--arms")] = None, fps: int = 60, display: bool = False, dry_run: bool = False) -> None:
+def teleoperate(ctx: typer.Context, rig: RigOpt = DEFAULT_RIG, arms: Annotated[list[str] | None, typer.Option("--arms")] = None, fps: int = 60, display: bool = False, dry_run: bool = False, auto_engage: bool = False) -> None:
     """Teleop through LeRobot's `lerobot-teleoperate` (same plugins used for recording)."""
     _, pairs = _rig_arms(rig, arms)
     args = [*_robot_args(rig, pairs, "yam"), *_teleop_args(rig, pairs, "yam_leader"), f"--fps={fps}", f"--display_data={str(display).lower()}", *ctx.args]
+    if auto_engage:
+        args.append("--teleop.auto_engage=true")
     _exec_lerobot("lerobot_teleoperate", args, dry_run)
 
 
@@ -638,6 +640,7 @@ def record(
     resume: bool = False,
     display: bool = False,
     dry_run: bool = False,
+    auto_engage: Annotated[bool, typer.Option(help="start following after startup homing and synchronization")] = False,
 ) -> None:
     """Record teleop episodes into a LeRobot dataset (`lerobot-record`), then upload it if asked.
 
@@ -676,6 +679,8 @@ def record(
     # while saving. Keep lower parallelism by default; preserve explicit tuning.
     if not any(arg.split("=", 1)[0] == "--dataset.encoder_threads" for arg in ctx.args):
         args.append("--dataset.encoder_threads=1")
+    if auto_engage:
+        args.append("--teleop.auto_engage=true")
     if dest == "local":
         _exec_lerobot("lerobot_record", args, dry_run)
         return

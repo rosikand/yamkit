@@ -59,8 +59,16 @@ async function refreshOverview() {
   document.dispatchEvent(new CustomEvent("overview"));
 }
 let lastSessionKey = "";
+let sessionRequest = 0;
+let sessionApplied = 0;
 async function refreshSession() {
-  try { session = await api("/session"); } catch { /* server gone */ }
+  const request = ++sessionRequest;
+  try {
+    const next = await api("/session");
+    if (request < sessionApplied) return; // an older poll cannot restore a previous run/phase
+    sessionApplied = request;
+    session = next;
+  } catch { /* server gone */ }
   updateSidebar();
   document.dispatchEvent(new CustomEvent("session"));
   // a session starting, ending or handing the cameras back changes what the tiles should show: refresh now
@@ -72,7 +80,7 @@ function updateSidebar() {
   dot.className = "dot " + (session.active ? "run" : "");
   $("#side-mode").textContent = (session.active ? session.mode : "idle") + (session.stopping && session.active ? " (stopping…)" : "");
   const hz = session.parsed && session.parsed.rate_hz;
-  $("#side-hz").textContent = session.active && hz ? hz.toFixed(0) + " Hz" : "";
+  $("#side-hz").textContent = session.active && !session.stopping && (!session.parsed?.operator_phase || session.parsed.operator_phase === "ready") && hz ? hz.toFixed(0) + " Hz" : "";
 }
 
 // -------------------------------------------------------------------------- shared views ----
@@ -129,10 +137,22 @@ function cameraStateText(c) {
   if (state === "waiting" || state === "idle") return "waiting for frames";
   return c.preview_source === "session" ? "live · session camera" : "live";
 }
+function releaseCameraStreams(root = document) {
+  // Removing an <img> from the DOM does not cancel its MJPEG request in Chrome.
+  // Close it explicitly so abandoned previews cannot occupy every HTTP connection
+  // and prevent a queued Stop request from reaching the server.
+  root.querySelectorAll(".cam img").forEach((img) => {
+    img.onerror = null;
+    img.removeAttribute("src");
+  });
+}
 function syncCams() {
   const slot = $("#cams-slot");
   if (!slot) return;
-  if (cameraKey() !== camsRendered) slot.innerHTML = camsHTML();
+  if (cameraKey() !== camsRendered) {
+    releaseCameraStreams(slot);
+    slot.innerHTML = camsHTML();
+  }
   slot.querySelectorAll(".cam").forEach((tile) => {
     const c = (overview?.cameras || []).find((item) => item.name === tile.dataset.cam);
     if (!c) return;
@@ -242,19 +262,16 @@ pages.live = {
     el.innerHTML = `
       ${pageHead("Live", "read-only — opening this page never energises a motor", `
         <button id="btn-read" class="primary">Start state stream</button>
-        <button id="btn-park">Park arms</button>
         <button id="btn-stop" class="danger">Stop</button>
         <button id="btn-refresh">Refresh</button>`)}
       <div class="hint">The state stream runs <code>yamkit read</code>: arms connect in gravity-compensation
-        mode (motors energised but compliant — nothing moves). Park runs <code>yamkit rest</code>: every arm
-        moves slowly to its home pose and is released there.</div>
+        mode (motors energised but compliant — nothing moves).</div>
       <div class="sect"><div class="sect-head">Cameras</div><div id="cams-slot">${camsHTML()}</div></div>
       <div class="sect"><div class="sect-head">Arm state</div><div class="cols cols-2" id="arm-panels"></div></div>
       <div class="sect"><div class="sect-head">Status</div><div class="st-list" id="status-list"></div>
         <div class="hint" id="bringup"></div></div>
       <div class="sect"><div class="sect-head">Session output</div>${logPaneHTML()}</div>`;
     $("#btn-read").onclick = (e) => doPost("/session/read", { hz: 5 }, e.target);
-    $("#btn-park").onclick = (e) => doPost("/session/rest", {}, e.target);
     $("#btn-stop").onclick = (e) => doPost("/session/stop", {}, e.target);
     $("#btn-refresh").onclick = () => { refreshOverview(); refreshSession(); };
     this.update();
@@ -262,7 +279,7 @@ pages.live = {
   update() {
     const panels = $("#arm-panels");
     if (!panels) return;
-    syncRunButtons(["#btn-read", "#btn-park"], "#btn-stop");
+    syncRunButtons(["#btn-read"], "#btn-stop");
     syncCams();
     const rigArms = Object.entries(overview?.rig?.arms || {});
     const byRole = (role) => rigArms.filter(([, a]) => a.role === role).map(([n, a]) => [n, a.role]);
@@ -302,7 +319,7 @@ pages.record = {
     const hubPrivate = hubCfg.private !== false;
     const hubDefault = hubReady ? (hubCfg.datasets || "local") : "local";  // uploading is opt-in
     el.innerHTML = `
-      ${pageHead("Record", "teleoperation and dataset recording", `<button id="btn-park-rec">Park arms</button><button id="btn-stop-top" class="danger">Stop</button>`)}
+      ${pageHead("Record", "teleoperation and dataset recording", `<button id="btn-stop-top" class="danger">Stop</button>`)}
       <div class="sect"><div class="sect-head">Cameras</div><div id="cams-slot">${camsHTML()}</div></div>
       <div class="cols cols-2">
         <div class="sect"><div class="sect-head">Teleop</div><div class="panel pad">
@@ -311,10 +328,9 @@ pages.record = {
           <div class="toolbar" style="margin-top:12px">
             <button id="btn-teleop" class="primary">Start Teleop</button>
           </div>
-          <label class="check"><input type="checkbox" id="auto-engage" /> auto-engage (follower moves to leader pose immediately)</label>
-          <div class="hint">Runs <code>yamkit teleop</code>. On Start every arm first moves slowly to its home pose.
-            Without auto-engage, press the teaching-handle button to engage — the follower then moves to the leader pose.
-            On Stop the arms return home before being released (let go of the handles; press Stop again to release immediately).</div>
+          <div class="hint">Start connects the arms, moves them home and synchronizes the followers.
+            Wait for “Teleop ready”, then move the leaders. No handle-button press is needed.
+            Stop returns the arms home and releases them. Let go of the handles during homing.</div>
         </div></div>
         <div class="sect"><div class="sect-head">Recording</div><div class="panel pad">
           <label class="field">dataset name<input type="text" id="rec-name" placeholder="pick_cube" /></label>
@@ -322,12 +338,12 @@ pages.record = {
           <div class="form-grid">
             <label class="field">episodes<input type="number" id="rec-episodes" value="10" min="1" /></label>
             <label class="field">episode duration (s)<input type="number" id="rec-episode-s" value="30" /></label>
-            <label class="field">reset duration (s)<input type="number" id="rec-reset-s" value="10" /></label>
+            <label class="field">reset duration (s)<input type="number" id="rec-reset-s" value="10" min="0" /></label>
           </div>
           <div class="field" style="margin-top:12px">save to
             <div class="checks">
               <label class="check"><input type="checkbox" id="rec-local" ${hubDefault !== "hub" ? "checked" : ""} /> this computer (data/datasets)</label>
-              <label class="check"><input type="checkbox" id="rec-hub" ${hubDefault !== "local" ? "checked" : ""} ${hubReady ? "" : "disabled"} />
+              <label class="check"><input type="checkbox" id="rec-hub" data-unavailable="${!hubReady}" ${hubDefault !== "local" ? "checked" : ""} ${hubReady ? "" : "disabled"} />
                 also upload to Hugging Face Hub${hubReady ? ` (as ${esc(hubUser)}/…, ${hubPrivate ? "private" : "public"})` : " — sign in on the Settings page first"}</label>
             </div>
             <div class="hint">Recording is identical either way; the upload only starts after the session has ended and the arms are parked.</div>
@@ -341,74 +357,147 @@ pages.record = {
           <div class="toolbar" style="margin-top:12px">
             <button id="btn-record" class="primary">Start Recording</button>
           </div>
-          <div class="hint">Runs <code>yamkit record</code> (LeRobot <code>lerobot-record</code>) →
-            <code>data/datasets/&lt;name&gt;</code>. Arms engage and move with the leaders.</div>
+          <div class="hint">Start Recording prepares the arms and cameras, then followers track the leaders automatically.
+            Stop ends acquisition, finishes saving and returns the arms home.</div>
         </div></div>
       </div>
       <div class="sect"><div class="sect-head">Progress</div><div class="st-list" id="rec-progress"></div></div>
       <div class="sect"><div class="sect-head">Output</div>${logPaneHTML()}</div>`;
-    $("#btn-teleop").onclick = (e) => doPost("/session/teleop", { auto_engage: $("#auto-engage").checked }, e.target);
-    $("#btn-record").onclick = (e) => {
+    $("#btn-teleop").onclick = () => this.start("teleop", {});
+    $("#btn-record").onclick = () => {
       const name = $("#rec-name").value.trim(), task = $("#rec-task").value.trim();
       if (!name || !task) return alert("dataset name and task instruction are required");
       const toLocal = $("#rec-local").checked, toHub = $("#rec-hub").checked && !$("#rec-hub").disabled;
       if (!toLocal && !toHub) return alert("pick at least one place to save the recording");
-      doPost("/session/record", {
+      this.start("record", {
         name, task, to: toLocal && toHub ? "both" : toHub ? "hub" : "local",
         episodes: +$("#rec-episodes").value || 10,
         episode_s: +$("#rec-episode-s").value || 30,
-        reset_s: +$("#rec-reset-s").value || 10,
+        reset_s: $("#rec-reset-s").value === "" ? 10 : +$("#rec-reset-s").value,
         fps: Math.min(Math.max(+$("#rec-fps").value || DEFAULT_FPS, 1), maxFps),
-      }, e.target);
+      });
     };
-    $("#btn-stop-top").onclick = (e) => doPost("/session/stop", {}, e.target);
-    $("#btn-park-rec").onclick = (e) => doPost("/session/rest", {}, e.target);
+    $("#btn-stop-top").onclick = () => this.stop();
     this.update();
+  },
+  async start(mode, body) {
+    if (this._starting || session.active) return;
+    this._starting = mode;
+    this.update();
+    try { await post(`/session/${mode}`, body); }
+    catch (error) { alert(error.message); }
+    finally {
+      await refreshSession();
+      this._starting = null;
+      this.update();
+    }
+  },
+  async stop() {
+    if (this._stopPending || !session.active) return;
+    this._stopPending = true;
+    this.update();
+    try { await post("/session/stop", {}); }
+    catch (error) { alert(error.message); }
+    finally {
+      await refreshSession();
+      this._stopPending = false;
+      this.update();
+    }
   },
   update() {
     const ts = $("#teleop-status");
     if (!ts) return;
-    syncRunButtons(["#btn-teleop", "#btn-record", "#btn-park-rec"], "#btn-stop-top");
+    const p = session.active ? (session.parsed || {}) : {};
+    const meta = session.active ? (session.meta || {}) : {};
+    const busy = session.active || !!this._starting;
+    const mode = this._starting || (session.active ? session.mode : null);
+    const stopping = session.active && (session.stopping || p.operator_stopping || p.operator_phase === "stopping" || this._stopPending);
+    const operator = p.operator_phase || "starting";
+    const settingUp = ["starting", "homing", "synchronizing"].includes(operator);
+    const gracefulRecordStop = !!session.record_stop_ready && !stopping;
+    const returningHome = operator === "homing" && (stopping || p.phase === "finishing");
+    for (const name of ["teleop", "record"]) {
+      const button = $(`#btn-${name}`);
+      button.hidden = false;
+      button.disabled = busy;
+      const label = name === "teleop" ? "Teleop" : "Recording";
+      button.textContent = mode !== name ? `Start ${label}`
+        : returningHome ? "Returning home…"
+        : stopping ? "Stopping…"
+        : p.phase === "saving" ? "Saving recording…"
+        : p.phase === "upload" ? "Uploading…"
+        : p.phase === "finishing" || operator === "closing" ? "Finishing…"
+        : settingUp ? `Starting ${label}…`
+        : name === "teleop" ? "Teleop running" : "Recording running";
+    }
+    document.querySelectorAll('[id^="rec-"] input, input[id^="rec-"]').forEach((input) => {
+      input.disabled = busy || input.dataset.unavailable === "true";
+    });
+    const stop = $("#btn-stop-top");
+    stop.hidden = !session.active;
+    stop.disabled = !!this._stopPending;
+    stop.textContent = this._stopPending ? "Stopping…"
+      : stopping && operator === "homing" ? "Release now"
+      : mode === "record" && p.phase === "saving" && !gracefulRecordStop ? "Stop (interrupt save)"
+      : stopping ? "Stop again (interrupt)" : "Stop";
+    stop.title = stopping ? "Interrupt cleanup and release the arms; an unfinished episode may be lost." : "End this session and return the arms home.";
     syncCams();
-    // pair status is only meaningful while a teleop session is actually running
-    const pairs = session.active && session.mode === "teleop" ? (session.parsed?.pairs || {}) : {};
-    // readiness banner: arm connection takes a few seconds after Start — show when the
-    // teleop loop is actually running (status lines flowing) and when a pair is engaged
+    const pairs = session.active && !stopping && ["ready", "holding", "synchronizing"].includes(operator) && ["teleop", "record"].includes(mode) ? (p.pairs || {}) : {};
     const ready = $("#teleop-ready");
     if (ready) {
-      const p = session.parsed || {};
-      let html = "";
-      if (session.active && session.mode === "teleop") {
-        const engaged = Object.values(pairs).some((x) => x.engaged);
-        if (!p.rate_hz) html = `<div class="ready-banner setup"><span class="dot"></span>Setting up — connecting arms…</div>`;
-        else if (engaged) html = `<div class="ready-banner engaged"><span class="dot"></span>Engaged — follower tracking leader</div>`;
-        else html = `<div class="ready-banner ready">✓ Ready — press the teaching-handle button to engage</div>`;
-      } else if (session.active && session.mode === "record") {
-        if (p.episode == null && !p.phase) html = `<div class="ready-banner setup"><span class="dot"></span>Setting up recorder — loading LeRobot…</div>`;
-        else if (p.phase === "reset") html = `<div class="ready-banner ready">✓ Reset — put the leaders back to home and reset the scene${phaseClock(session.meta?.reset_s)}</div>`;
-        else if (p.phase === "saving") html = `<div class="ready-banner setup"><span class="dot"></span>Saving episode ${(p.episode ?? 0) + 1} — encoding videos; followers hold their last command. Stop interrupts saving and may discard this episode.${phaseClock()}</div>`;
-        else if (p.phase === "finishing") html = `<div class="ready-banner setup"><span class="dot"></span>Finishing recording — finalizing data and disconnecting arms; configured homing may run.${phaseClock()}</div>`;
-        else if (p.phase === "upload") html = `<div class="ready-banner ready">✓ Recording finished — uploading to the Hub (arms are parked; feeds are back)${phaseClock()}</div>`;
-        else html = `<div class="ready-banner engaged"><span class="dot"></span>Recording — episode ${(p.episode ?? 0) + 1}${session.meta?.episodes ? " of " + session.meta.episodes : ""}${phaseClock(session.meta?.episode_s)}</div>`;
+      let message = "Ready to start", style = "ready";
+      if (returningHome) {
+        style = "setup";
+        message = "Returning home — let go of the handles. Wait until the arms are released.";
+      } else if (stopping) {
+        style = "setup";
+        message = mode === "record" && p.phase === "saving" ? "Stopping recording — saving the episode. Stop again interrupts saving and may discard it."
+          : "Stopping — finishing the session and releasing the arms. Please wait.";
+      } else if (mode === "record" && p.phase === "upload") {
+        message = `Recording finished — uploading to the Hub. The arms are released.${phaseClock()}`;
+      } else if (operator === "closing" || mode === "record" && p.phase === "finishing") {
+        style = "setup";
+        message = "Finishing — finalizing data and disconnecting arms; configured homing may run.";
+      } else if (mode === "record" && p.phase === "saving") {
+        style = "setup";
+        message = `Saving episode ${(p.episode ?? 0) + 1} — encoding videos; followers hold their last command. ${gracefulRecordStop ? "Stop finishes saving, then returns home." : "Stop interrupts saving and may discard this episode."}${phaseClock()}`;
+      } else if (busy && ["teleop", "record"].includes(mode)) {
+        if (settingUp) {
+          style = "setup";
+          message = operator === "homing" ? "Starting — arms moving home. Let go of the handles and wait."
+            : operator === "synchronizing" ? "Starting — followers synchronizing with the leaders. Please wait."
+            : `Starting ${mode === "teleop" ? "teleop" : "recording"} — connecting arms${mode === "record" ? " and cameras" : ""}. Please wait.`;
+        } else if (operator === "holding") {
+          message = "Following paused by a handle button — press that button again to resume, or Stop to return home.";
+        } else if (mode === "record" && p.phase === "reset") {
+          message = `Reset — reset the scene using the leaders; followers continue tracking.${phaseClock(meta.reset_s)}`;
+        } else if (mode === "record") {
+          style = "engaged";
+          message = `Recording — move the leaders. Episode ${(p.episode ?? 0) + 1}${meta.episodes ? " of " + meta.episodes : ""}${phaseClock(meta.episode_s)}`;
+        } else {
+          style = "engaged";
+          message = "Teleop ready — move the leaders; followers are tracking.";
+        }
+      } else if (session.active) {
+        message = `Another session is active (${session.mode}). Stop it before starting teleop or recording.`;
+      } else if (session.returncode != null && session.returncode !== 0 && !session.stop_requested) {
+        ready.innerHTML = errBanner(`The last session failed (exit ${session.returncode}). Check Output for details.`);
+        message = null;
       }
-      ready.innerHTML = html;
+      if (message !== null) ready.innerHTML = `<div class="ready-banner ${style}" role="status"><span class="dot"></span>${esc(message)}</div>`;
     }
-    ts.innerHTML = Object.keys(pairs).length
-      ? Object.entries(pairs).map(([n, p]) => `<div class="st-list" style="margin:4px 0">
-          ${st(p.engaged, `${n}: ${p.engaged ? "ENGAGED" : "idle"}`, !p.engaged)}
-          <span class="mono" style="color:var(--muted)">err ${p.error_rad != null ? p.error_rad.toFixed(3) + " rad" : "–"} · grip ${p.gripper != null ? p.gripper.toFixed(2) : "–"}</span>
-        </div>`).join("")
-      : `<div class="hint">${session.active && session.mode === "teleop" ? "starting…" : "no teleop session"}</div>`;
-    const prog = $("#rec-progress");
-    const p = session.parsed || {}, meta = session.meta || {};
-    const bits = [session.active ? stN(`${session.mode} running`, true) : stN("idle")];
-    if (session.active || session.mode) bits.push(stN(`elapsed ${fmtDur(session.elapsed_s)}`));
-    if (p.episode != null) bits.push(stN(`episode ${p.episode + 1}${meta.episodes ? " of " + meta.episodes : ""}`));
-    if (p.phase) bits.push(stN(p.phase + (session.active && session.phase_elapsed_s != null ? ` ${fmtDur(session.phase_elapsed_s)}` : "")));
-    if (p.rate_hz) bits.push(stN(`${p.rate_hz.toFixed(0)} Hz`));
-    if (!session.active && session.returncode != null)
-      bits.push(st(session.returncode === 0, `last run: exit ${session.returncode}`, session.returncode !== 0));
-    prog.innerHTML = bits.join("");
+    ts.innerHTML = Object.entries(pairs).map(([name, pair]) => `<div class="st-list" style="margin:4px 0">
+        ${st(pair.engaged, `${name}: ${pair.engaged ? "following" : "holding"}`, !pair.engaged)}
+        <span class="mono" style="color:var(--muted)">err ${pair.error_rad != null ? pair.error_rad.toFixed(3) + " rad" : "–"} · grip ${pair.gripper != null ? pair.gripper.toFixed(2) : "–"}</span>
+      </div>`).join("");
+    const bits = [busy ? stN(stopping ? "stopping" : settingUp ? "starting" : `${mode} running`, true) : stN("idle")];
+    if (session.active) {
+      bits.push(stN(`elapsed ${fmtDur(session.elapsed_s)}`));
+      if (p.episode != null) bits.push(stN(`episode ${p.episode + 1}${meta.episodes ? " of " + meta.episodes : ""}`));
+      if (p.phase) bits.push(stN(p.phase + (session.phase_elapsed_s != null ? ` ${fmtDur(session.phase_elapsed_s)}` : "")));
+      if (!stopping && operator === "ready" && p.rate_hz) bits.push(stN(`${p.rate_hz.toFixed(0)} Hz`));
+    }
+    $("#rec-progress").innerHTML = bits.join("");
     fillLog();
   },
 };
@@ -695,7 +784,7 @@ pages.inference = {
     $("#btn-inf-cameras").onclick = () => {
       this._previews = !this._previews;
       const slot = $("#inf-cams-content");
-      slot.querySelectorAll("img").forEach((img) => img.removeAttribute("src"));
+      releaseCameraStreams(slot);
       slot.innerHTML = this._previews ? `<div id="cams-slot">${camsHTML()}</div>` : "";
       $("#btn-inf-cameras").textContent = this._previews ? "Hide camera previews" : "Show camera previews";
     };
@@ -1023,6 +1112,7 @@ pages.settings = {
 let current = null;
 let pageCleanup = null;
 function cleanupPage() {
+  releaseCameraStreams();
   if (pageCleanup) pageCleanup();
   pageCleanup = null;
 }

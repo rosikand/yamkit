@@ -4,7 +4,9 @@
 yamkit's thin CLI wrappers. There is no alternate recorder or acquisition loop.
 """
 
+import json
 import logging
+import os
 import signal
 import sys
 import threading
@@ -56,7 +58,11 @@ class OperatorStep(ProcessorStep):
         self.gripper_speed = ctrl.max_gripper_speed if robot_config.max_gripper_speed is None else robot_config.max_gripper_speed
         finite_scalar(self.joint_speed, "joint speed", positive=True)
         finite_scalar(self.gripper_speed, "gripper speed", positive=True)
+        if not isinstance(teleop_config.auto_engage, bool):
+            raise TypeError("auto_engage must be a boolean")
+        self.auto_engage = teleop_config.auto_engage
         self.gates = {prefix: PairGate() for prefix in self.sides}
+        self._reported_phase = None
 
     def __call__(self, transition):
         raw, obs = transition[TransitionKey.ACTION], transition[TransitionKey.OBSERVATION]
@@ -71,10 +77,16 @@ class OperatorStep(ProcessorStep):
             index = self.rig.control.engage_button
             pressed = bool(buttons[index]) if buttons and len(buttons) > index else False
             leader = action_vector(raw, prefix, gripper=gripper)
+            # The upstream recorder only reaches this processor after both plugins
+            # have connected and completed their configured startup home moves.
+            # Engage once per session, never again at an episode/reset boundary or
+            # after the operator deliberately pauses with the handle button.
+            automatic = self.auto_engage and self.gates[prefix].previous_t is None
             gate, command, capture = self.gates[prefix].advance(
                 leader, action_vector(obs, prefix, gripper=gripper),
                 pressed=pressed, now=now, period=self.period, sync_seconds=self.rig.control.sync_seconds,
                 joint_speed=self.joint_speed, gripper_speed=self.gripper_speed,
+                engage=True if automatic else None,
             )
             if gate.engaged:
                 # Validate the full requested pose before interpolation can conceal
@@ -83,7 +95,7 @@ class OperatorStep(ProcessorStep):
                                    vendor_joint_limits(spec.arm_type, spec.gripper), "operator target")
             pending[prefix] = gate
             if gate.engaged != self.gates[prefix].engaged:
-                transitions.append(prefix)
+                transitions.append((prefix, automatic))
             output.update({prefix + key: value for key, value in vector_action(command).items()})
             if capture:
                 captures.append(prefix)
@@ -95,15 +107,25 @@ class OperatorStep(ProcessorStep):
                     hold, joint_speed=self.joint_speed, gripper_speed=self.gripper_speed)
             # A processed action is only an intent until the follower acknowledges
             # the sent command. Keep operator cues after that same boundary.
-            for prefix in transitions:
+            for prefix, automatic in transitions:
                 gate = self.gates[prefix]
                 if gate.engaged:
-                    log.info("[%s] engaged via button %d: follower synchronizing for at least %.2f s",
-                             self.pair_names[prefix], self.rig.control.engage_button, gate.duration)
+                    source = "automatically" if automatic else f"via button {self.rig.control.engage_button}"
+                    log.info("[%s] engaged %s: follower synchronizing for at least %.2f s",
+                             self.pair_names[prefix], source, gate.duration)
                 else:
                     log.info("[%s] disengaged via button %d: follower holding measured pose",
                              self.pair_names[prefix], self.rig.control.engage_button)
             transitions.clear()  # repeated acknowledgment cannot repeat a button edge
+            if not all(gate.engaged for gate in self.gates.values()):
+                phase = "holding"
+            elif any(gate.syncing for gate in self.gates.values()):
+                phase = "synchronizing"
+            else:
+                phase = "ready"
+            if phase != self._reported_phase:
+                log.info("[yamkit-operator] %s", phase)
+                self._reported_phase = phase
 
         return {**transition, TransitionKey.ACTION: GatedAction(output, capture_hold=captures,
                                                                on_sent=latch_sent_holds)}
@@ -142,34 +164,66 @@ def release_after_upstream(cfg):
 
 @contextmanager
 def record_stop_events():
-    """Let one Ctrl-C end the existing acquisition loop and save its partial episode.
+    """Keep CLI interrupts and add a targeted, cooperative first dashboard Stop.
 
-    Only the pinned upstream loop receives this handler. Startup, episode saving,
-    finalization and homing retain their existing interrupt behavior. A second
-    interrupt immediately uses the previous handler, including before the loop exits.
+    The dashboard learns this process's PID only after acquisition is available.
+    SIGUSR1 then updates LeRobot's own events, including between loops while an
+    episode saves. It never interrupts an encoder or replaces the upstream loop.
+    CLI Ctrl-C retains its existing behavior; another dashboard Stop uses SIGINT.
     """
     original = lerobot_record.record_loop
     original_save = lerobot_record.LeRobotDataset.save_episode
+    owns_control = not getattr(original, "_yamkit_record_stop", False)
+    session = os.environ.get("YAMKIT_PREVIEW_SESSION", "")
+    ui_enabled = bool(session and os.environ.get("YAMKIT_PREVIEW_TOKEN") and hasattr(signal, "SIGUSR1"))
+    registered = requested = False
+    current_events = None
+    previous_ui_signal = None
+
+    def announce(event):
+        print("@yamkit-record-stop/1 " + json.dumps(
+            {"v": 1, "session": session, "event": event, "pid": os.getpid()}, separators=(",", ":")),
+            flush=True)
+
+    def ui_stop(signum, frame):
+        nonlocal requested
+        requested = True
+        if current_events is not None:
+            current_events["exit_early"] = current_events["stop_recording"] = True
 
     def saving_episode(dataset, *args, **kwargs):
-        log.info("Saving episode %d: encoding videos; followers hold their last command. Stop interrupts saving.",
+        log.info("Saving episode %d: encoding videos; followers hold their last command. "
+                 "Dashboard Stop waits for saving; Ctrl-C interrupts saving.",
                  dataset.num_episodes)
         return original_save(dataset, *args, **kwargs)
 
     saving_episode._yamkit_saving_phase = True
 
     def stoppable_loop(*args, **kwargs):
-        if threading.current_thread() is not threading.main_thread():
+        nonlocal registered, current_events, previous_ui_signal
+        if not owns_control or threading.current_thread() is not threading.main_thread():
             return original(*args, **kwargs)
         events = kwargs["events"] if "events" in kwargs else args[1]
+        current_events = events  # retain through reset, encoding and finalization
         previous = signal.getsignal(signal.SIGINT)
 
         def stop(signum, frame):
             signal.signal(signal.SIGINT, previous)
             events["exit_early"] = events["stop_recording"] = True
 
-        signal.signal(signal.SIGINT, stop)
+        if requested:
+            events["exit_early"] = events["stop_recording"] = True
+        elif not ui_enabled:
+            signal.signal(signal.SIGINT, stop)
         try:
+            if ui_enabled and not registered:
+                previous_ui_signal = signal.getsignal(signal.SIGUSR1)
+                signal.signal(signal.SIGUSR1, ui_stop)
+                registered = True
+                # UI SIGINT is always immediate cancellation. If SIGINT and
+                # SIGUSR1 arrive together, Python may deliver SIGINT first;
+                # never consume that second Stop as a graceful CLI interrupt.
+                announce("ready")  # handler and upstream events exist before the PID is published
             result = original(*args, **kwargs)
         finally:
             signal.signal(signal.SIGINT, previous)
@@ -180,6 +234,7 @@ def record_stop_events():
             raise KeyboardInterrupt("Recording stopped before any frames were captured for this episode")
         return result
 
+    stoppable_loop._yamkit_record_stop = True
     lerobot_record.record_loop = stoppable_loop
     if not getattr(original_save, "_yamkit_saving_phase", False):
         lerobot_record.LeRobotDataset.save_episode = saving_episode
@@ -188,6 +243,16 @@ def record_stop_events():
     finally:
         lerobot_record.record_loop = original
         lerobot_record.LeRobotDataset.save_episode = original_save
+        if registered:
+            # Parent stdout delivery is asynchronous. Ignore a late first Stop
+            # after teardown instead of restoring SIGUSR1's terminating default.
+            # This only applies to the dashboard's one-shot recorder; nested or
+            # explicitly installed handlers are restored normally.
+            signal.signal(signal.SIGUSR1, signal.SIG_IGN if previous_ui_signal == signal.SIG_DFL else previous_ui_signal)
+            try:
+                announce("release")
+            except (OSError, ValueError):
+                pass  # the manager also forgets registration when this process exits
 
 
 @parser.wrap()
