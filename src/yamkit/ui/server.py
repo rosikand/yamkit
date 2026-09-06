@@ -26,7 +26,7 @@ from ..config import RigConfig
 from ..paths import DATASETS_DIR, DEFAULT_RIG, OUTPUT_DIR, ROOT
 from ..preview import MJPEG_MEDIA_TYPE, STALE_S
 from . import catalog
-from .camstream import CameraHub
+from .camstream import CameraHub, CameraStreamingResponse
 from .preview_proxy import PreviewStreamingResponse, PreviewUnavailable, fetch_status, open_stream
 from .sessions import DeploymentLog, SessionManager
 
@@ -273,8 +273,6 @@ def create_app(
         cam = cameras.get(name)
         if cam is None:
             raise HTTPException(404, f"no camera {name!r} in the rig")
-        from starlette.background import BackgroundTask
-
         if cameras.suspended_by:
             reg = sessions.preview_registration(name)
             if reg is None:
@@ -284,13 +282,7 @@ def create_app(
             except PreviewUnavailable:
                 raise HTTPException(503, "session camera preview unavailable") from None
             return PreviewStreamingResponse(stream)
-        stop = threading.Event()
-        return StreamingResponse(
-            cam.frames(stop),
-            media_type=MJPEG_MEDIA_TYPE,
-            headers={"Cache-Control": "no-store"},
-            background=BackgroundTask(stop.set),
-        )
+        return CameraStreamingResponse(cam, media_type=MJPEG_MEDIA_TYPE)
 
     # ---------------------------------------------------------------------------- sessions --
     @app.get("/api/session")

@@ -19,13 +19,16 @@ host is `yam-lenovo`, accessed as `andre`, with checkout `/home/andre/rohan-new`
   explicit Hub targets stay consistent; upload retries support `push-dataset --repo-id`.
 - UI history retains Stop intent after the process exits. Dataset navigation releases videos,
   playback timers and chart observers, and ignores responses for departed pages.
+- Direct camera previews release disconnected viewers even when acquisition stalls. A synthetic
+  stalled-camera HTTP regression closes 45 successive viewers while preserving another viewer
+  and confirming that the camera and session APIs remain responsive.
 
 No target-speed clamp, joint limit, firmware timeout, model mapping or qualification gate was
 relaxed. No vendored SDK code changed.
 
 ## Software checks
 
-The complete hardware-free suite passed **1,149 tests** in 148.12 seconds, with four existing
+The complete hardware-free suite passed **1,154 tests** in 149.53 seconds, with four existing
 Starlette/fork deprecation warnings. `make lint`, Ruff on all three diagnostic scripts,
 the offline lockfile check and `git diff --check` passed.
 
@@ -61,6 +64,30 @@ The initial measurements used the exact requested base revision before deploymen
 Camera reports and samples remain on the Lenovo under `.context/validation-20260906/`.
 No rig configuration was rewritten. The separate `ctrl_pi` service was running; the passive
 traffic sample establishes only that the buses were idle during that observation window.
+
+## Deployed dashboard and local policies
+
+The development branch was pushed and deployed to the Lenovo checkout. The dashboard runs as
+an `andre` process at `http://100.98.214.86:8400`, bound to the Lenovo's Tailscale address. The
+saved rig file's SHA-256 before and after deployment was unchanged:
+`5eb387fedbfc60a59c27859016409fe2d27e5614b376857246457492f778eae8`.
+
+Actual Chrome in Conductor verified all three physical camera previews at 640×480, existing
+three-camera dataset episode playback, Settings navigation, and release of every camera when
+viewers close. The catalog listed 14 datasets and eight model entries. There were no JavaScript
+exceptions, non-GET requests, or operator sessions. Independent Tailscale connections were used
+for HTTP: a shared SSH forwarding connection delayed requests under concurrent MJPEG traffic,
+while the Lenovo-local API remained responsive in 1.5–2.8 ms with fresh camera frames.
+
+Offline, camera-free and robot-free policy checks on the Lenovo used four CPU threads:
+
+| Policy | Observed result | Qualification limit |
+|---|---|---|
+| Existing ACT two-demo dummy checkpoint | Finite 14-dimensional rig state/action contract, three image keys; fresh calls 438–488 ms | Dummy data establishes software execution, not task performance |
+| Reviewed SmolVLA base | Three fresh finite 50×6 chunks; 2.835–2.938 s per call | Native fixture has no verified YAM mapping; inference exceeds its 1.667 s chunk horizon |
+
+These checks do not authorize or qualify physical policy execution. Detailed policy logs are
+`.context/validation-20260906/policy-check-act.txt` and `policy-check-smolvla.txt` on the Lenovo.
 
 ## Physical acceptance still requires approval
 

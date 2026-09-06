@@ -13,6 +13,9 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
+import anyio
+from starlette.responses import StreamingResponse
+
 log = logging.getLogger(__name__)
 
 BOUNDARY = b"--yamkitframe"
@@ -157,6 +160,47 @@ class _Camera:
             "error": self.error,
             "frame_age_s": round(time.time() - self.frame_t, 1) if self.frame_t else None,
         }
+
+
+class CameraStreamingResponse(StreamingResponse):
+    """Wake a disconnected viewer's worker even when camera acquisition has stalled."""
+
+    def __init__(self, camera: _Camera, media_type: str) -> None:
+        self._camera = camera
+        self._viewer_stop = threading.Event()
+        self._frames = camera.frames(self._viewer_stop)
+        super().__init__(self._frames, media_type=media_type, headers={"Cache-Control": "no-store"})
+
+    def _release_viewer(self) -> None:
+        self._viewer_stop.set()
+        with self._camera.cond:
+            self._camera.cond.notify_all()
+
+    async def __call__(self, scope, receive, send) -> None:
+        # A sync iterator's next() is shielded in Starlette's shared worker pool.
+        # Signal it from the disconnect listener before waiting for cancellation;
+        # a background task runs too late. Listen even with ASGI >= 2.4, since a
+        # stalled source will never send another body to detect a closed socket.
+        try:
+            async with anyio.create_task_group() as tasks:
+                async def stream():
+                    try:
+                        await self.stream_response(send)
+                    except OSError:
+                        pass  # the downstream connection closed during a send
+                    finally:
+                        self._release_viewer()
+                        tasks.cancel_scope.cancel()
+
+                tasks.start_soon(stream)
+                try:
+                    await self.listen_for_disconnect(receive)
+                finally:
+                    self._release_viewer()
+                    tasks.cancel_scope.cancel()
+        finally:
+            self._release_viewer()
+            self._frames.close()  # the worker has exited; run its client-count cleanup now
 
 
 class CameraHub:
