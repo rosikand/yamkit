@@ -8,6 +8,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+.context/
 
 # machine-specific (created by `yamkit discover --write` / setup.sh; see configs/rig.example.yaml)
 configs/rig.yaml
