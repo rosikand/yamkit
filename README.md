@@ -292,6 +292,10 @@ checkpoint ─► lerobot-rollout ─► policy.select_action() ─► YamFollow
 
 ## Troubleshooting
 
+For automatic direct access from new Conductor Cloud workspaces to the Lenovo,
+see [Conductor Cloud setup](docs/CONDUCTOR_CLOUD.md). A one-time cloud credential
+and setup hook enroll each workspace; the command wrapper reconnects after sleep.
+
 | Symptom | Fix |
 |---|---|
 | `CAN interface … is DOWN` | `scripts/install_system.sh` once (adapters then come up by themselves), or `scripts/can_up.sh` now |

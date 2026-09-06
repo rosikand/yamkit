@@ -27,3 +27,17 @@ Read `README.md` first. Hard rules for this repository:
 
 Commands: `./setup.sh` (bootstrap), `source scripts/env.sh`, `make test`, `make lint`, `yamkit doctor`.
 Hardware-free tests use the fake robot in `tests/conftest.py`.
+
+## Conductor Cloud access to the Lenovo
+
+In cloud workspaces (`CONDUCTOR_IS_LOCAL=0`), use `scripts/tailscale status` and
+`scripts/tailscale ssh andre@yam-lenovo` for direct Lenovo access. The wrapper
+automatically enrolls/reconnects this workspace, including after sleep. The
+one-time credential and cloud setup are documented in `docs/CONDUCTOR_CLOUD.md`.
+Do not use Mac tools or a Mac relay. Do not copy another workspace's Tailscale
+identity. Keep the OAuth secret out of logs, chat, tracked files, and rig.yaml.
+
+The Lenovo project is `/home/andre/rohan-new`; read its README/instructions and
+check its working tree before edits. Multiple workspaces share the Lenovo and
+physical rig. Connecting the network must never start a motor command or a
+hardware session automatically; the hardware safety rules above still apply.
