@@ -534,6 +534,44 @@ had no concurrent robot/camera acquisition workload, so powered-load improvement
 unverified. Script, report and local validation evidence are under `.context/validation/`;
 remote inputs/outputs remain in `.context/validation-20260906/encoder-threads-benchmark/`.
 
+## Approved dashboard recording: previews, saving and cleanup
+
+The approved Start and one planned Stop used `/api/session/record` and
+`/api/session/stop` on the temporary dashboard at port 8401, running the no-home rig
+at revision `4611dda`. Recorder PID 529227 started episode 0 at Lenovo log time
+01:38:58, reset at 01:39:58 and episode 1 at 01:40:47. The Stop response reported
+32.8 seconds into episode 1; all cameras disconnected and all four arms closed by
+01:41:44, with exit 0 and retained `stop_requested=true`. No homing occurred.
+
+The operator subsequently reported being away and performing none of the requested
+button, trigger or leader movements. This run therefore validates recording and
+camera behavior with connected arms holding, not engagement or manual tracking.
+No button-transition messages were observed, consistent with that report.
+
+Dataset `integration_record_ui_02` contains 2,771 frames: 1,792 in the first episode
+and 979 in the stopped second episode, nominally 59.73 and 32.63 seconds at 30 FPS.
+Offline validation passed matching metadata, contiguous indices, timestamps, finite
+14-dimensional state/actions, normalized grippers, complete decoding of all three
+2,771-frame videos and LeRobot/PyAV sample reads across both episodes. The left
+gripper stayed at approximately 0.955; full travel remains untested.
+
+Actual Chrome displayed fresh 640×480 recorder-owned images from all three cameras
+during both episodes and the active reset interval, with advancing source/preview
+sequences and zero direct camera clients while the recorder owned the devices.
+Previews became stale while acquisition paused for saving, then recovered. After
+Stop, direct previews resumed; navigation and browser closure released all camera
+clients. There were zero JavaScript exceptions and all observer requests were GETs.
+The observer recorded the actual `encoder_threads=1` configuration before older
+session log entries rolled out of the bounded log. The original dashboard on port
+8400 had no camera clients at preflight and the later sampled check.
+
+Reports and screenshots are under `.context/validation/record-ui-observer-65x81kl5/`;
+Start/Stop responses and dataset validation are saved as `record-ui-02-*` locally.
+The dataset and matching validation report remain in the Lenovo checkout. A fresh
+three-second sample after closure found zero CAN traffic/errors; both rig checksums
+were unchanged. A retry named `integration_record_ui_03` is prepared with the same
+settings, pending approval of its exact Start and Stop commands.
+
 ## Remaining physical acceptance
 
 Both pairs now have successful connection, state acquisition and orderly cleanup evidence.
@@ -543,16 +581,17 @@ leader moves. The right pair now has the same button/tracking/hold evidence plus
 and nearly full normalized gripper travel. Simultaneous tracking of both pairs is verified.
 Both pairs have now re-engaged successfully, and the 100 Hz application target passed the
 90-second test. Recording, partial-episode Stop, saved videos and cleanup passed. Remaining
-checks include full left-gripper travel, powered recording with reduced encoder parallelism,
-recorder-owned dashboard previews, homing and physical policy execution.
+checks include full left-gripper travel, engaged recording with reduced encoder parallelism,
+homing and physical policy execution. Recorder-owned dashboard previews and powered
+recording/encoding while followers hold have passed.
 Printed samples do not measure sensor freshness or the firmware timeout.
 
 Each additional powered test requires approval of its exact command and effects first. The
 next proposed test uses a temporary dashboard on port 8401 to record both pairs with all
 three configured cameras, two 60-second episodes and a 10-second reset, saving locally to
-`integration_record_ui_02`. A planned first Stop during the second episode checks partial
-saving and dashboard camera ownership. This Start and Stop are prepared but not approved
-or executed. The dashboard uses a separate rig copy with both home speeds set to zero;
+`integration_record_ui_03`. A planned first Stop during the second episode checks partial
+saving alongside supervised button and trigger use. This retry Start and Stop are prepared
+but not yet approved or executed. The dashboard uses a separate rig copy with both home speeds set to zero;
 the original rig remains unchanged. Its idle startup and the exact recording dry run passed,
 including the default `--dataset.encoder_threads=1`. The existing dashboard on 8400 remains.
 The first approved recording used the copied rig described above. First Stop saves and encodes
