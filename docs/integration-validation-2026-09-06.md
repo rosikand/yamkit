@@ -39,8 +39,9 @@ host is `yam-lenovo`, accessed as `andre`, with checkout `/home/andre/rohan-new`
   original full-lock behavior. This targets observation-read delays measured on the two-pair rig;
   the approved follow-up run reached 100 Hz with zero application-loop overruns.
 - Recording defaults to LeRobot's `encoder_threads=1`, preserving explicit overrides. The
-  measured AV1 parallelism setting trades longer warm-cache saves for lower CPU use; its
-  effect under powered recording still needs a follow-up test.
+  measured AV1 parallelism setting trades longer warm-cache saves for lower CPU use.
+  Subsequent powered recording showed less average control-thread slowdown while encoding;
+  long CAN intervals still occurred, so this does not establish worst-case latency.
 
 No target-speed clamp, joint limit, firmware timeout, model mapping or qualification gate was
 relaxed. The CAN command-lock patch is recorded in `third_party/i2rt.VERSION`.
@@ -535,9 +536,13 @@ Automatic's first trial was slower than its repeat; comparisons must retain that
 variation. Setting 1 used approximately four busy CPU cores during encoding, versus eight
 for warm automatic/2, but took about 1.5 seconds longer for this ten-second video sample.
 The wrapper now defaults to 1 to leave control headroom and preserves user overrides.
-SVT interprets this as its parallelism level, not a strict OS-thread cap. The benchmark
-had no concurrent robot/camera acquisition workload, so powered-load improvement remains
-unverified. Script, report and local validation evidence are under `.context/validation/`;
+SVT interprets this as its parallelism level, not a strict OS-thread cap. This benchmark
+had no concurrent robot/camera acquisition workload. Later UI02 powered measurements
+showed encoding-overlap CAN rates of 150–157 Hz on leaders and approximately 193 Hz on
+followers, versus 116–119 Hz and 137–138 Hz in the earlier automatic-encoder run; the
+largest reported CAN interval still reached 65.4 ms. These overlapping windows indicate
+less average contention, not a controlled comparison or a recording-loop latency bound.
+Script, report and local validation evidence are under `.context/validation/`;
 remote inputs/outputs remain in `.context/validation-20260906/encoder-threads-benchmark/`.
 
 ## Approved dashboard recording: previews, saving and cleanup
@@ -575,8 +580,7 @@ Reports and screenshots are under `.context/validation/record-ui-observer-65x81k
 Start/Stop responses and dataset validation are saved as `record-ui-02-*` locally.
 The dataset and matching validation report remain in the Lenovo checkout. A fresh
 three-second sample after closure found zero CAN traffic/errors; both rig checksums
-were unchanged. A retry named `integration_record_ui_03` is prepared with the same
-settings, pending approval of its exact Start and Stop commands.
+were unchanged. The separately approved `integration_record_ui_03` retry is documented below.
 
 ## Dashboard retry: tracking passed, late Stop interrupted the second save
 
@@ -615,6 +619,30 @@ before finalization/disconnect/homing. During saving the Stop button explains th
 interrupts saving; the banner says that episode may be lost. Finishing no longer claims
 the followers are holding. No signal handler or motor-control behavior changed.
 
+## Approved automatic homing: all four arms returned and released
+
+After approval of the exact command and its conditional PID-specific abort, this command
+ran once at deployed revision `9126157`:
+
+```bash
+tailscale ssh andre@yam-lenovo 'cd /home/andre/rohan-new && source scripts/env.sh && printf "%s\n" "$$" > .context/validation-20260906/home-01.pid && exec yamkit rest --rig configs/rig.yaml'
+```
+
+All four arms connected using the original rig and saved follower gripper calibration.
+Homing began concurrently at Lenovo log time 02:10:06, with zero joint targets and
+0.25 rad/s configured target speeds. The logged largest displacements/minimum durations
+were left leader 2.03 rad/8.1 s, left follower 1.97 rad/7.9 s, right leader 0.64 rad/2.6 s,
+and right follower 0.61 rad/2.4 s. Leaders used compliant gains; follower gripper targets
+retained their measured opening. All four arms closed by 02:10:16 and the command exited 0.
+The conditional abort was not used. There were no logged warnings or errors.
+
+The operator confirmed that the return and release looked correct. No final measured
+joint positions were logged, so this is operator-confirmed physical home arrival rather
+than a measured convergence bound. Postflight verified PID 538351 was gone, the dashboard
+and cameras idle, zero CAN frames/errors during three seconds and the unchanged original
+rig checksum. Local artifacts are `.context/validation/home-01*`; matching preparation
+and postflight JSON remain under `.context/validation-20260906/` on the Lenovo.
+
 ## Remaining physical acceptance
 
 Both pairs now have successful connection, state acquisition and orderly cleanup evidence.
@@ -624,18 +652,18 @@ leader moves. The right pair now has the same button/tracking/hold evidence plus
 and nearly full normalized gripper travel. Simultaneous tracking of both pairs is verified.
 Both pairs have now re-engaged successfully, and the 100 Hz application target passed the
 90-second test. Recording, partial-episode Stop, saved videos and cleanup passed. Remaining
-checks include full left-gripper travel, homing and physical policy execution.
+checks include full left-gripper travel and physical policy execution. The operator
+chose to leave full trigger travel unverified. All-four-arm homing and release passed.
 Engaged recording with reduced encoder parallelism, recorder-owned dashboard previews
 and powered recording/encoding while followers hold have passed. UI03's second
 episode was interrupted during saving and must not be counted as a successful save.
 Printed samples do not measure sensor freshness or the firmware timeout.
 
-Each additional powered test requires approval of its exact command and effects first. The
-next proposed test is native `yamkit rest --rig configs/rig.yaml`, using the original
-rig. Passive configuration inspection confirms all four home targets are six zero
-joint angles, with follower and leader home speeds both 0.25 rad/s and saved follower
-gripper calibration present. This test would move all four arms toward home at once
-and release them; it is prepared but has not been approved or executed.
+Each additional powered test requires approval of its exact command and effects first.
+No further motor command is approved or running. Physical policy execution remains subject
+to the existing mapping and qualification requirements; software inference checks do not
+qualify a manipulation policy. Task camera framing and real Hub transfers also have not
+been end-to-end qualified in this validation.
 The preceding dashboard recordings used a separate rig copy with both home speeds
 set to zero. The original rig remains unchanged.
 The first approved recording used the copied rig described above. First Stop saves and encodes
