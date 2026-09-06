@@ -490,6 +490,12 @@ checks and explicit rejection handling. The initial report and screenshots
 are under `.context/validation/record-stop-playback-j9fvxkzb/`. Saved views mainly show floor
 and clothing; camera placement for task datasets still needs operator confirmation.
 
+After deployment at `e208ad6`, the same actual Chrome test passed both episodes, all
+three videos, 14 charts, play/seek/resume and navigation cleanup with zero JavaScript
+exceptions. All 59 browser requests were GETs; no live camera or operator session was
+started. The final report/screenshots are under
+`.context/validation/record-stop-playback-186s9jgl/`.
+
 Nonfatal startup warnings concerned optional TorchCodec shared libraries (working PyAV
 fallback), unavailable headless keyboard controls (the approved PID-specific SIGINT worked),
 and SVT mapping preset 12 to 10. No system packages were installed. Postflight confirmed the
@@ -542,8 +548,13 @@ recorder-owned dashboard previews, homing and physical policy execution.
 Printed samples do not measure sensor freshness or the firmware timeout.
 
 Each additional powered test requires approval of its exact command and effects first. The
-next proposed test records both pairs with all three configured cameras, saves locally and
-uses a separate rig copy with both home speeds set to zero. The original rig remains unchanged.
+next proposed test uses a temporary dashboard on port 8401 to record both pairs with all
+three configured cameras, two 60-second episodes and a 10-second reset, saving locally to
+`integration_record_ui_02`. A planned first Stop during the second episode checks partial
+saving and dashboard camera ownership. This Start and Stop are prepared but not approved
+or executed. The dashboard uses a separate rig copy with both home speeds set to zero;
+the original rig remains unchanged. Its idle startup and the exact recording dry run passed,
+including the default `--dataset.encoder_threads=1`. The existing dashboard on 8400 remains.
 The first approved recording used the copied rig described above. First Stop saves and encodes
 before disconnecting, so arms may hold their last command during finalization. Preparation
 evidence is `record-stop-01-preparation.json` in the Lenovo validation directory; the temporary rig checksum is
