@@ -27,7 +27,7 @@ host is `yam-lenovo`, accessed as `andre`, with checkout `/home/andre/rohan-new`
 - The SDK's default fail-fast CAN loop captures one complete pending command under its lock,
   then releases the lock while waiting for CAN replies. Opt-in automatic recovery retains the
   original full-lock behavior. This targets observation-read delays measured on the two-pair rig;
-  physical verification of the timing change is pending.
+  the approved follow-up run reached 100 Hz with zero application-loop overruns.
 
 No target-speed clamp, joint limit, firmware timeout, model mapping or qualification gate was
 relaxed. The CAN command-lock patch is recorded in `third_party/i2rt.VERSION`.
@@ -376,8 +376,62 @@ Feedback returned by `set_commands` remains the latest completed CAN scan. It ma
 the preceding completed scan while another is in flight; it is not an acknowledgment of the
 just-posted target. Motor error checks, state publication, the robot state lock, command
 validation and all speed/timeout limits are unchanged. This removes a measured source of lock
-coupling but does not yet establish the resulting hardware rate. A fresh approved powered
-profile is needed before calling the timing issue resolved.
+coupling. The following approved profile measures the resulting hardware behavior.
+
+## Approved timing verification: both pairs at 100 Hz
+
+After fresh approval, this command ran once on deployed revision `0920017`:
+
+```bash
+tailscale ssh andre@yam-lenovo 'cd /home/andre/rohan-new && source scripts/env.sh && python scripts/profile_teleop.py --output .context/validation-20260906/bimanual-profile-02.json -- --rig configs/rig.yaml --pair left_follower --pair right_follower --duration 90 --no-home --bilateral-kp 0 --print-state'
+```
+
+The session completed **9,001 ticks at 100.0 Hz with zero overruns**. Right button engagement
+occurred at Lenovo log time 00:34:45 and left at 00:34:48. Both explicitly disengaged through
+their buttons at 00:35:15, then re-engaged right at 00:35:49 and left at 00:35:51. Both remained
+engaged until normal timed release at 00:36:00; all four arms closed by 00:36:01.
+
+The 179 snapshots comprised 31 both-idle, six right-only, 52 both-engaged, 68 both-idle,
+four right-only and 18 both-engaged samples. During the disengaged interval, right leader
+joint 1 spanned 0.336 rad while follower joint 1 remained unchanged; other follower joints
+varied by at most 0.003 rad. During the earlier right-only phase, left leader joint 5 spanned
+0.226 rad while its disengaged follower varied at most 0.001 rad. Engaged median sampled
+discrepancies were 0.0315 rad left and 0.039 rad right; maxima including synchronization were
+0.223 and 0.467 rad. The operator confirmed correct operation after being asked about tracking,
+disengaged hold, re-engagement and grippers.
+
+Left gripper samples remained 0.96–0.97 on both leader and follower, so full left-gripper travel
+is still not demonstrated by the log. Right values covered 0.80–1.00 leader and 0.81–0.99
+follower in this run; its earlier profile had demonstrated nearly full normalized travel.
+
+| Application measurement | Before command-lock patch | After patch |
+|---|---:|---:|
+| Native loop | 96.47 Hz | 100.01 Hz |
+| Overruns | 1,825 | 0 |
+| Mean control step | 5.566 ms | 0.693 ms |
+| Recent p95 control step | 11.936 ms | 1.338 ms |
+| Recent p99 control step | 13.213 ms | 1.883 ms |
+| Maximum control step | 17.413 ms | 4.414 ms |
+| Aggregate SDK reads per tick, mean | 4.940 ms | 0.155 ms |
+
+Mean step time fell 87.6% and SDK-read time per tick fell 96.9%, despite more engaged follower
+reads in this run. Status callback mean remained near 0.042 ms; its maximum was 7.140 ms.
+Percentiles still cover only the most recent 8,192 calls per measurement, and instrumentation
+adds overhead. These measurements establish application scheduling for this supervised window,
+not sensor freshness or end-to-end physical latency.
+
+There is a background-work tradeoff to monitor under recording load: gravity loops increased
+from approximately 250–404 Hz to 734–791 Hz, while CAN scan rates fell roughly 6–8% (leaders
+approximately 182–189 Hz, followers 229–238 Hz in the full reporting windows). Logged CAN
+intervals over 7 ms increased from 258 to 911; the largest reported interval was 18.296 ms,
+with later 30-second windows peaking at 12.679 ms. No motor faults were reported. These
+statistics do not establish a whole-run worst-case firmware deadline. The evidence supports
+advancing to a bounded camera/recording workload test without another speculative SDK change.
+
+The profiler reported no diagnostic or CLI error. Postflight found no arm process, an idle
+dashboard, zero CAN traffic during three seconds, zero RX/TX errors and the unchanged rig
+checksum. Logs, timing JSON and postflight JSON are saved as `.context/validation/bimanual-profile-02*`
+locally; original JSON evidence remains in the Lenovo validation directory.
 
 ## Remaining physical acceptance
 
@@ -386,12 +440,22 @@ The left pair additionally has confirmed button engagement/disengagement, synchr
 manual tracking, partial gripper operation, timed release and follower hold while its disengaged
 leader moves. The right pair now has the same button/tracking/hold evidence plus re-engagement
 and nearly full normalized gripper travel. Simultaneous tracking of both pairs is verified.
-Remaining checks include full left-gripper travel, two-pair timing, recording, homing and
-physical policy execution.
+Both pairs have now re-engaged successfully, and the 100 Hz application target passed the
+90-second test. Remaining checks include full left-gripper travel, recording under camera and
+encoding load, homing and physical policy execution.
 Printed samples do not measure sensor freshness or the firmware timeout.
 
 Each additional powered test requires approval of its exact command and effects first. The
-next teleop test should validate the timing correction, with both followers initially disengaged.
+next proposed test records both pairs with all three configured cameras, saves locally and
+uses a separate rig copy with both home speeds set to zero. The original rig remains unchanged.
+The wrapper dry-run, upstream `RecordConfig` parsing and shared operator-processor validation
+passed on the Lenovo without constructing runtime devices. The new dataset/PID paths were
+absent and 805 GiB of disk space was available. The proposed sequence includes one SIGINT
+during the second episode to check partial-episode saving. That first Stop saves and encodes
+before disconnecting, so arms may hold their last command during finalization. No recording
+has yet been run. Preparation evidence is `record-stop-01-preparation.json` in the Lenovo
+validation directory; the temporary rig checksum is
+`7482a97ff7517ef4126715d36ed18addcdb69c709633e6a6522cf51e6c40b35a`.
 During future teleop, keep the top button released through startup: a held button at the first
 tick counts as engagement. Existing live-LLM freshness and remote policy qualification
 restrictions remain in effect; see [the acceptance checklist](acceptance-test.md).
