@@ -188,17 +188,42 @@ configuration was changed. The dashboard remained idle and the saved rig checksu
 Local logs are `.context/validation/handle-held-snapshot.txt` and
 `handle-released-snapshot.txt`; matching JSON evidence is in the Lenovo validation directory.
 
+## Approved left-pair teleop retry: engagement and tracking observed
+
+After fresh approval, the same 30-second, left-pair, no-home, zero-bilateral-feedback command
+ran once on deployed revision `c2a24b6` (executable source `781cfa3`). It completed 3,001 ticks
+at 100.0 Hz with zero overruns. Of the 60 printed status samples, 45 were idle and 15 engaged.
+
+The direct event log recorded button-0 engagement at Lenovo log time 23:35:59, with three-second
+synchronization. Two status samples showed `btn=10`; later samples returned to `00` while the
+pair remained engaged, confirming that releasing the button does not disengage tracking.
+The initial maximum joint discrepancy fell from 0.081 to 0.019 rad. Subsequent manual leader
+movement reached joint 4 positions of 0.870 rad on the leader and 0.820 rad on the follower,
+demonstrating tracking beyond the captured synchronization pose. The largest sampled discrepancy
+during movement was 0.253 rad. These twice-per-second samples do not measure continuous peak
+error or latency. The operator confirmed that movement worked.
+
+At 23:36:07 the normal duration limit ended the run, about eight seconds after engagement.
+Shutdown disengaged into measured hold and closed both arms without homing. There was no
+button-driven disengagement event or logged fault. Postflight found no remaining arm process,
+idle CAN traffic for three seconds, zero RX/TX errors and the unchanged rig checksum. The local
+log is `.context/validation/left-teleop-02.txt`; preflight/postflight JSON is in the Lenovo
+validation directory. A separate receive-only encoder listener started too late to capture
+traffic and provides no additional evidence about the active loop.
+
+Gripper values remained near open (leader 0.96–0.97, follower 0.95–0.97). Deliberate trigger
+travel and button-controlled disengagement/re-engagement still need a longer supervised window.
+
 ## Remaining physical acceptance
 
 Both pairs now have successful connection, state acquisition and orderly cleanup evidence.
-The tested left-handle button's raw press/release signal is confirmed. Remaining checks include
-physical arm identity/behavior, powered engagement/disengagement, gripper travel,
-teleop tracking, recording, homing and physical policy execution remain unverified. The approved
-left teleop session exercised idle hold only. Printed
-samples do not measure sensor freshness or the firmware timeout.
+The left pair additionally has confirmed button engagement, synchronization, manual tracking
+and timed release. Remaining checks include button-controlled disengagement/re-engagement,
+gripper travel, right-pair and bimanual teleop, recording, homing and physical policy execution.
+Printed samples do not measure sensor freshness or the firmware timeout.
 
 Each additional powered test requires approval of its exact command and effects first. The
-next proposed test repeats bounded left-pair teleop now that the button input is confirmed.
+next proposed test allows 60 seconds of left-pair teleop for trigger and button testing.
 During future teleop, keep the top button released through startup: a held button at the first
 tick counts as engagement. Existing live-LLM freshness and remote policy qualification
 restrictions remain in effect; see [the acceptance checklist](acceptance-test.md).
