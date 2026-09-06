@@ -865,10 +865,12 @@ async function renderModelDetail(el, path) {
 pages.settings = {
   async render(el) {
     el.innerHTML = `${pageHead("Settings", "", `<button id="cfg-reload">Reload</button>`)}<div id="cfg-body">loading…</div>`;
+    const body = $("#cfg-body", el);
     $("#cfg-reload").onclick = () => this.render(el);
     let c;
     try { c = await api("/config"); }
-    catch (e) { $("#cfg-body").innerHTML = errBanner(e.message); return; }
+    catch (e) { if (body.isConnected) body.innerHTML = errBanner(e.message); return; }
+    if (!body.isConnected) return;
     this.cfg = c;
     const ctl = c.control || {};
     const hubCfg = c.hub || {};
@@ -878,7 +880,7 @@ pages.settings = {
       ["max_joint_speed", "max joint speed (rad/s)"], ["max_gripper_speed", "max gripper speed (1/s)"],
       ["home_speed", "return-to-home speed, followers (rad/s, 0 = off)"], ["leader_home_speed", "return-to-home speed, leaders (rad/s)"],
     ];
-    $("#cfg-body").innerHTML = `
+    body.innerHTML = `
       <div class="kv panel" style="margin-top:16px">
         <div>rig file</div><div class="mono">${esc(c.path)}${c.found ? "" : " (missing)"}</div>
         <div>validation</div><div>${(c.problems || []).length ? st(false, c.problems.join("; ")) : st(true, "ok")}</div>
@@ -947,20 +949,28 @@ pages.settings = {
         <div class="hint">The full rig file (arms, pairs, cameras, control). Saved verbatim after validation —
           comments and ordering are kept. The rig holds hardware identifiers only (no credentials).</div>
       </div>`;
-    const note = (id, ok, msg) => { const n = $(id); n.className = "save-note " + (ok ? "ok" : "err"); n.textContent = msg; };
+    const note = (id, ok, msg) => {
+      if (!body.isConnected) return;
+      const n = $(id, body); n.className = "save-note " + (ok ? "ok" : "err"); n.textContent = msg;
+    };
+    const hubStatus = $("#hub-status", body);
+    let hubRequest = 0;
     const showHub = async () => {
+      const request = ++hubRequest;
       try {
         const h = await api("/hub");
-        $("#hub-status").innerHTML = !h.logged_in ? st(false, "not signed in", true)
+        if (!body.isConnected || request !== hubRequest) return;
+        hubStatus.innerHTML = !h.logged_in ? st(false, "not signed in", true)
           : h.online ? st(true, `signed in as ${esc(h.username)}`) : st(false, `token stored, but the Hub is unreachable: ${esc(h.error || "")}`, true);
-      } catch (e) { $("#hub-status").innerHTML = errBanner(e.message); }
+      } catch (e) { if (body.isConnected && request === hubRequest) hubStatus.innerHTML = errBanner(e.message); }
     };
     showHub();
     $("#hub-login").onclick = async (e) => {
-      const token = $("#hub-token").value.trim();
+      const tokenInput = $("#hub-token", body);
+      const token = tokenInput.value.trim();
       if (!token) return note("#hub-note", false, "paste a token first");
       e.target.disabled = true;
-      try { const r = await post("/hub/login", { token }); $("#hub-token").value = ""; note("#hub-note", true, `signed in as ${r.username}`); await showHub(); await refreshOverview(); }
+      try { const r = await post("/hub/login", { token }); tokenInput.value = ""; note("#hub-note", true, `signed in as ${r.username}`); if (body.isConnected) await showHub(); await refreshOverview(); }
       catch (err) { note("#hub-note", false, err.message); }
       finally { e.target.disabled = false; }
     };

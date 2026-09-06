@@ -181,6 +181,11 @@ keeps the normal cancellation behavior. Failed recordings are never uploaded or 
 inspect the retained local data before retrying an upload. Use `--name`, `--repo-id` and `--to`
 for storage and Hub settings; nested flags that override those settings are rejected.
 
+Recording defaults to LeRobot's `--dataset.encoder_threads=1` to leave CPU headroom for
+arm control while multiple camera videos encode. Saving can take longer than automatic
+parallelism. You can override it explicitly, for example `--dataset.encoder_threads=2`.
+For SVT-AV1 this selects its parallelism level, not a strict operating-system thread limit.
+
 ## 5b. Hugging Face Hub (optional)
 
 Sign in once, then recordings can go to the Hub instead of (or as well as) this computer, and

@@ -672,6 +672,10 @@ def record(
         "--play_sounds=false",
         *ctx.args,
     ]
+    # Three automatic AV1 encoders can compete with the rig's CAN/gravity workers
+    # while saving. Keep lower parallelism by default; preserve explicit tuning.
+    if not any(arg.split("=", 1)[0] == "--dataset.encoder_threads" for arg in ctx.args):
+        args.append("--dataset.encoder_threads=1")
     if dest == "local":
         _exec_lerobot("lerobot_record", args, dry_run)
         return

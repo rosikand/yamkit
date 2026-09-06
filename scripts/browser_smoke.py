@@ -423,6 +423,36 @@ def run(work: Path) -> dict:
             check("Stop leaves idle previews working and no session child")
             episode_playback("pick_red_cube_2demo_dummy", episode=1, videos=3, from_timestamp=24.9)
             episode_playback("smoke")
+            # Control completion order directly: real Settings requests can finish
+            # after navigation or Reload, including rejected Hub status requests.
+            browser.evaluate("(async () => { window.smokeSettingsFetch = window.fetch; window.smokeSettingsConfig = await (await fetch('/api/config')).json(); })()")
+            for path in ("/api/config", "/api/hub"):
+                for rejected in (False, True):
+                    browser.evaluate("window.smokeSettingsPending = []; window.fetch = (url, opts) => String(url) === "
+                                     + json.dumps(path) + " ? new Promise((resolve, reject) => smokeSettingsPending.push({resolve, reject})) : smokeSettingsFetch(url, opts)")
+                    browser.evaluate("location.hash = '#/settings'")
+                    browser.wait("smokeSettingsPending.length === 1 && document.querySelector('#cfg-body')")
+                    browser.evaluate("location.hash = '#/datasets'")
+                    browser.wait("document.querySelector('#ds-list table') && !document.querySelector('#cfg-body')")
+                    completion = "smokeSettingsPending[0].reject(new Error('delayed fixture failure'))" if rejected else (
+                        "smokeSettingsPending[0].resolve(new Response(JSON.stringify(" +
+                        ("smokeSettingsConfig" if path.endswith("config") else "{logged_in: false}") + ")))"
+                    )
+                    browser.evaluate("(async () => { " + completion + "; await new Promise(resolve => setTimeout(resolve, 50)); })()")
+                    check(f"Settings ignores late {path} {'failure' if rejected else 'success'} after navigation",
+                          not browser.exceptions and browser.evaluate("!!document.querySelector('#ds-list table') && !document.querySelector('#cfg-body')"))
+                    browser.evaluate("window.fetch = smokeSettingsFetch")
+            browser.evaluate("window.smokeSettingsPending = []; window.fetch = (url, opts) => String(url) === '/api/hub' ? new Promise((resolve, reject) => smokeSettingsPending.push({resolve, reject})) : smokeSettingsFetch(url, opts)")
+            browser.evaluate("location.hash = '#/settings'")
+            browser.wait("smokeSettingsPending.length === 1 && document.querySelector('#ctl-save')")
+            browser.click("#cfg-reload")
+            browser.wait("smokeSettingsPending.length === 2 && document.querySelector('#ctl-save')")
+            browser.evaluate("(async () => { smokeSettingsPending[1].resolve(new Response(JSON.stringify({logged_in:true,online:true,username:'newer-fixture'}))); await new Promise(resolve => setTimeout(resolve, 50)); })()")
+            browser.wait("document.querySelector('#hub-status').textContent.includes('newer-fixture')")
+            browser.evaluate("(async () => { smokeSettingsPending[0].resolve(new Response(JSON.stringify({logged_in:true,online:true,username:'obsolete-fixture'}))); await new Promise(resolve => setTimeout(resolve, 50)); })()")
+            check("Reloaded Settings ignores obsolete Hub status",
+                  not browser.exceptions and browser.evaluate("document.querySelector('#hub-status').textContent.includes('newer-fixture')"))
+            browser.evaluate("window.fetch = smokeSettingsFetch")
             check("Zero JavaScript exceptions", not browser.exceptions)
             check("Zero real camera, arm, model-load, or paid-service attempts", not forbidden_calls)
             check("Frontend requests stay on fixture loopback origin", all(r["url"].startswith(base) or r["url"] == "about:blank" for r in browser.requests))

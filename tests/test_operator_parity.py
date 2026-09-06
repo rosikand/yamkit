@@ -140,6 +140,92 @@ def test_capture_uses_fresh_measurement_and_latches_acknowledged_hold(rig, fake_
         leader.disconnect(home=False)
 
 
+@pytest.mark.parametrize("bimanual", [False, True])
+@pytest.mark.parametrize("button", [0, 1])
+def test_operator_logs_button_edges_only_after_sent_acknowledgment(rig, fake_connect, caplog, bimanual, button):
+    rig.control.home_speed = 0
+    rig.control.engage_button = button
+    rig.control.sync_seconds = 4.25
+    rig.save()
+    robot, leader = plugins(rig, bimanual)
+    robot.connect()
+    leader.connect()
+    processor = make_teleop_processor(robot.config, leader.config, 30)
+    caplog.set_level("INFO", logger="yamkit.lerobot_teleop")
+    sides = ("left", "right") if bimanual else ("left",)
+    expected = []
+
+    def messages():
+        return [record.message for record in caplog.records if record.name == "yamkit.lerobot_teleop"]
+
+    def action():
+        return processor((leader.get_action(), robot.get_observation()))
+
+    try:
+        robot.send_action(action())  # initial hold is not a button transition
+        assert messages() == []
+        for side in sides:
+            buttons = fake_connect[f"{side}_leader"].encoder[0].io_inputs
+            for engaged in (True, False):
+                buttons[button] = 1
+                pending = action()
+                assert messages() == expected  # processing alone must never report success
+                sent = robot.send_action(pending)
+                pair = f"[{side}_leader->{side}_follower]"
+                expected.append(
+                    f"{pair} engaged via button {button}: follower synchronizing for at least 4.25 s"
+                    if engaged else f"{pair} disengaged via button {button}: follower holding measured pose"
+                )
+                assert messages() == expected
+                pending.acknowledge(sent)  # duplicate acknowledgment is not another edge
+                robot.send_action(action())  # holding the button must not repeat the cue
+                buttons[button] = 0
+                robot.send_action(action())  # releasing the button is not a toggle
+                assert messages() == expected
+    finally:
+        robot.disconnect(home=False)
+        leader.disconnect(home=False)
+
+
+@pytest.mark.parametrize("bimanual", [False, True])
+@pytest.mark.parametrize("initially_engaged", [False, True])
+def test_operator_failed_send_does_not_log_button_success(
+    rig, fake_connect, monkeypatch, caplog, bimanual, initially_engaged,
+):
+    rig.control.home_speed = 0
+    rig.save()
+    robot, leader = plugins(rig, bimanual)
+    robot.connect()
+    leader.connect()
+    processor = make_teleop_processor(robot.config, leader.config, 30)
+    caplog.set_level("INFO", logger="yamkit.lerobot_teleop")
+    sides = ("left", "right") if bimanual else ("left",)
+
+    def action(pressed):
+        for side in sides:
+            fake_connect[f"{side}_leader"].encoder[0].io_inputs = [pressed, 0]
+        return processor((leader.get_action(), robot.get_observation()))
+
+    def fail_send(command):
+        raise RuntimeError("follower rejected command")
+
+    try:
+        robot.send_action(action(False))
+        if initially_engaged:
+            robot.send_action(action(True))
+            robot.send_action(action(False))
+        caplog.clear()
+        pending = action(True)
+        with monkeypatch.context() as patch:
+            patch.setattr(fake_connect[f"{sides[-1]}_follower"], "command_joint_pos", fail_send)
+            with pytest.raises(RuntimeError, match="follower rejected command"):
+                robot.send_action(pending)
+        assert not any(record.name == "yamkit.lerobot_teleop" for record in caplog.records)
+    finally:
+        robot.disconnect(home=False)
+        leader.disconnect(home=False)
+
+
 def test_bimanual_capture_prevalidates_second_arm_before_first_send(rig, fake_connect):
     rig.control.home_speed = 0
     rig.save()

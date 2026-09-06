@@ -50,6 +50,7 @@ class OperatorStep(ProcessorStep):
         for prefix, follower in self.sides.items():
             if not any(pair.follower == follower and pair.leader == leaders[prefix] for pair in self.rig.pairs):
                 raise ValueError("selected leader/follower order does not match rig.pairs")
+        self.pair_names = {prefix: f"{leaders[prefix]}->{follower}" for prefix, follower in self.sides.items()}
         ctrl = self.rig.control
         self.joint_speed = ctrl.max_joint_speed if robot_config.max_joint_speed is None else robot_config.max_joint_speed
         self.gripper_speed = ctrl.max_gripper_speed if robot_config.max_gripper_speed is None else robot_config.max_gripper_speed
@@ -62,7 +63,7 @@ class OperatorStep(ProcessorStep):
         if not isinstance(raw, LeaderAction) or set(raw.buttons) != set(self.sides):
             raise ValueError("YAM operator action is missing teaching-handle button metadata")
         now = time.monotonic()
-        pending, output, captures = {}, {}, []
+        pending, output, captures, transitions = {}, {}, [], []
         for prefix, name in self.sides.items():
             spec = self.rig.arm(name)
             gripper = spec.has_motor_gripper
@@ -81,6 +82,8 @@ class OperatorStep(ProcessorStep):
                 check_joint_bounds(leader[:6] - (spec.joint_offsets or [0.0] * 6),
                                    vendor_joint_limits(spec.arm_type, spec.gripper), "operator target")
             pending[prefix] = gate
+            if gate.engaged != self.gates[prefix].engaged:
+                transitions.append(prefix)
             output.update({prefix + key: value for key, value in vector_action(command).items()})
             if capture:
                 captures.append(prefix)
@@ -90,6 +93,17 @@ class OperatorStep(ProcessorStep):
                 hold = action_vector(sent, prefix, gripper=self.rig.arm(self.sides[prefix]).has_motor_gripper)
                 self.gates[prefix] = self.gates[prefix].acknowledge_hold(
                     hold, joint_speed=self.joint_speed, gripper_speed=self.gripper_speed)
+            # A processed action is only an intent until the follower acknowledges
+            # the sent command. Keep operator cues after that same boundary.
+            for prefix in transitions:
+                gate = self.gates[prefix]
+                if gate.engaged:
+                    log.info("[%s] engaged via button %d: follower synchronizing for at least %.2f s",
+                             self.pair_names[prefix], self.rig.control.engage_button, gate.duration)
+                else:
+                    log.info("[%s] disengaged via button %d: follower holding measured pose",
+                             self.pair_names[prefix], self.rig.control.engage_button)
+            transitions.clear()  # repeated acknowledgment cannot repeat a button edge
 
         return {**transition, TransitionKey.ACTION: GatedAction(output, capture_hold=captures,
                                                                on_sent=latch_sent_holds)}

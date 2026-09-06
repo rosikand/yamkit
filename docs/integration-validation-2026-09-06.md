@@ -14,6 +14,8 @@ host is `yam-lenovo`, accessed as `andre`, with checkout `/home/andre/rohan-new`
 - Native teleop duration and rate statistics begin after startup homing/engagement preparation.
 - Native teleop freezes the final rate before return-home/close time, reports successful button
   transitions immediately, and logs successful session closure once while retaining cleanup retries.
+- Recording and LeRobot teleoperation report the same button transitions after successful
+  sent-action acknowledgment, without repeated messages for held buttons or duplicate acknowledgments.
 - Recording Stop during acquisition/reset uses LeRobot's existing Stop events to save the
   current episode. Subsequent interrupts and interruptions during startup/saving/homing
   retain their normal behavior. Stop before any captured frame cancels without an empty save.
@@ -21,6 +23,8 @@ host is `yam-lenovo`, accessed as `andre`, with checkout `/home/andre/rohan-new`
   explicit Hub targets stay consistent; upload retries support `push-dataset --repo-id`.
 - UI history retains Stop intent after the process exits. Dataset navigation releases videos,
   playback timers and chart observers, and ignores responses for departed pages.
+- Settings ignores late configuration/Hub responses after navigation or Reload, including
+  failed Hub requests, instead of updating removed or replacement elements.
 - Direct camera previews release disconnected viewers even when acquisition stalls. A synthetic
   stalled-camera HTTP regression closes 45 successive viewers while preserving another viewer
   and confirming that the camera and session APIs remain responsive.
@@ -28,14 +32,17 @@ host is `yam-lenovo`, accessed as `andre`, with checkout `/home/andre/rohan-new`
   then releases the lock while waiting for CAN replies. Opt-in automatic recovery retains the
   original full-lock behavior. This targets observation-read delays measured on the two-pair rig;
   the approved follow-up run reached 100 Hz with zero application-loop overruns.
+- Recording defaults to LeRobot's `encoder_threads=1`, preserving explicit overrides. The
+  measured AV1 parallelism setting trades longer warm-cache saves for lower CPU use; its
+  effect under powered recording still needs a follow-up test.
 
 No target-speed clamp, joint limit, firmware timeout, model mapping or qualification gate was
 relaxed. The CAN command-lock patch is recorded in `third_party/i2rt.VERSION`.
 
 ## Software checks
 
-The complete hardware-free suite after the CAN command-lock patch passed **1,176 tests**
-in 157.63 seconds, with four existing
+The complete hardware-free suite after the recording and Settings follow-up fixes passed
+**1,190 tests** in 158.91 seconds, with four existing
 Starlette/fork deprecation warnings. `make lint`, Ruff on all three diagnostic scripts,
 the offline lockfile check and `git diff --check` passed.
 
@@ -45,10 +52,11 @@ The CAN patch then passed **35 vendor tests**, including five new concurrency, f
 recovery cases. `make lint`, explicit Ruff checking of the profiler and compilation of the
 modified SDK module passed. No hardware tests were run by the automated suite.
 
-Actual Chrome passed **31 checks**, with zero JavaScript exceptions or attempted real
+Actual Chrome passed **36 checks**, with zero JavaScript exceptions or attempted real
 hardware/service calls. The browser harness additionally plays a three-camera episode from
 its concatenated-video offset and a chart-only episode, then verifies resource release after
-navigation.
+navigation. Five Settings regressions cover delayed configuration/Hub success and failure
+after navigation, plus obsolete Hub status after Reload.
 
 A real two-step ACT training smoke used the committed `pick_red_cube_2demo_dummy` dataset,
 CPU, batch size 2 and a small transformer configuration. Training and checkpoint saving
@@ -433,6 +441,86 @@ dashboard, zero CAN traffic during three seconds, zero RX/TX errors and the unch
 checksum. Logs, timing JSON and postflight JSON are saved as `.context/validation/bimanual-profile-02*`
 locally; original JSON evidence remains in the Lenovo validation directory.
 
+## Approved recording and Stop: both episodes and all camera videos saved
+
+The following separately approved launch and one planned SIGINT ran once at deployed
+revision `b892ebe` (control source `0920017`):
+
+```bash
+tailscale ssh andre@yam-lenovo 'cd /home/andre/rohan-new && source scripts/env.sh && printf "%s\n" "$$" > .context/validation-20260906/record-stop-01.pid && exec yamkit record --rig .context/validation-20260906/record-no-home.yaml --arms left_follower --arms right_follower --name integration_record_stop_01 --task "supervised bimanual button gripper and Stop acceptance" --episodes 2 --episode-s 45 --reset-s 10 --fps 30 --to local'
+tailscale ssh andre@yam-lenovo 'kill -INT "$(cat /home/andre/rohan-new/.context/validation-20260906/record-stop-01.pid)"'
+```
+
+The copied rig disabled both home speeds and preserved all other settings. Recorder PID
+516989 was checked against its exact module and dataset path before signaling. Episode 0
+started at Lenovo log time 01:00:21; the ten-second reset began at 01:01:06. After encoding,
+episode 1 began at 01:01:43. One SIGINT during that episode triggered partial saving. Encoding
+finished at 01:02:28, all three cameras disconnected, and all four arms closed by 01:02:29.
+The process exited successfully. No exact SIGINT-receipt time appears in the child log, so
+the test does not provide a precise Stop-to-release latency.
+
+Local-only dataset `integration_record_stop_01` contains **2,154 frames across two episodes**:
+1,343 frames in episode 0 and 811 in the stopped second episode, representing 44.77 and 27.03
+seconds at the dataset's 30 FPS. These are frame-count durations, not measured acquisition
+latencies. Metadata and Parquet frame counts match; per-episode indices/timestamps are
+consistent and every state/action vector is finite with 14 dimensions and normalized grippers.
+
+Each of the three AV1 videos decoded completely to 2,154 RGB frames at 640×480, with increasing
+presentation timestamps. Sampling every 30th frame produced 72 distinct frame hashes per
+camera. Offline LeRobot/PyAV access succeeded for the first frame, both sides of the episode
+boundary and the final frame, returning all three image tensors at 3×480×640.
+
+The action/state traces show movement on both sides, and the operator confirmed correct
+tracking, gripper response and disengaged hold. Saved data does not contain raw leader/button
+states, so it cannot independently establish button times or leader motion during hold.
+Gripper travel in this dataset was limited: left actions 0.939–0.965 with states 0.947–0.965,
+right actions 0.888–1.000 with states 0.890–0.995. Full left-gripper travel remains open.
+
+Actual Chrome played and sought both episodes with all three videos and 14 charts, including
+episode 1's 44.7667-second offset within the concatenated videos. Navigation released players,
+timers and observers. The test also exposed a late Settings Hub response causing an uncaught
+DOM error, now fixed with render-specific element ownership. Its initial report and screenshots
+are under `.context/validation/record-stop-playback-j9fvxkzb/`. Saved views mainly show floor
+and clothing; camera placement for task datasets still needs operator confirmation.
+
+Nonfatal startup warnings concerned optional TorchCodec shared libraries (working PyAV
+fallback), unavailable headless keyboard controls (the approved PID-specific SIGINT worked),
+and SVT mapping preset 12 to 10. No system packages were installed. Postflight confirmed the
+recorder was gone, the dashboard was idle, CAN traffic stayed zero for three seconds, error
+counters were zero and the original rig checksum was unchanged. Command, postflight and full
+dataset-validation reports are under `.context/validation/record-stop-01*` locally and the
+Lenovo validation directory.
+
+## Hardware-free encoder parallelism measurements
+
+During acquisition, SDK CAN reports averaged approximately 160–166 Hz for leaders and
+199–205 Hz for followers. Windows overlapping three concurrent AV1 encoders fell to
+116–119 Hz and 137–138 Hz, with reported CAN intervals reaching 65.6–70.4 ms. Gravity
+reports fell from roughly 642–711 Hz to 319–459 Hz. The windows overlap stages, so they
+do not isolate exact per-stage latency or establish a motor fault.
+
+After all arms/cameras closed, a benchmark decoded the same 300 consecutive frames per
+camera (starting at frame 600) into repository-local PNGs, then used the pinned LeRobot
+encoder with all three camera processes concurrently. Six trials compared automatic, 1 and
+2 in forward/reverse order. Codec, CRF, GOP, pixel format and source frames stayed constant;
+every output decoded fully. Imports, source extraction and output validation were excluded
+from encode wall/CPU timing.
+
+| `encoder_threads` | Wall time, two trials | Aggregate CPU seconds | Peak native threads, three processes |
+|---|---:|---:|---:|
+| automatic | 6.218 / 2.692 s | 29.815 / 21.649 | 318 |
+| 1 | 4.175 / 4.134 s | 16.679 / 16.464 | 144 |
+| 2 | 2.666 / 2.627 s | 20.831 / 20.703 | 237 |
+
+Automatic's first trial was slower than its repeat; comparisons must retain that warm-up
+variation. Setting 1 used approximately four busy CPU cores during encoding, versus eight
+for warm automatic/2, but took about 1.5 seconds longer for this ten-second video sample.
+The wrapper now defaults to 1 to leave control headroom and preserves user overrides.
+SVT interprets this as its parallelism level, not a strict OS-thread cap. The benchmark
+had no concurrent robot/camera acquisition workload, so powered-load improvement remains
+unverified. Script, report and local validation evidence are under `.context/validation/`;
+remote inputs/outputs remain in `.context/validation-20260906/encoder-threads-benchmark/`.
+
 ## Remaining physical acceptance
 
 Both pairs now have successful connection, state acquisition and orderly cleanup evidence.
@@ -441,20 +529,17 @@ manual tracking, partial gripper operation, timed release and follower hold whil
 leader moves. The right pair now has the same button/tracking/hold evidence plus re-engagement
 and nearly full normalized gripper travel. Simultaneous tracking of both pairs is verified.
 Both pairs have now re-engaged successfully, and the 100 Hz application target passed the
-90-second test. Remaining checks include full left-gripper travel, recording under camera and
-encoding load, homing and physical policy execution.
+90-second test. Recording, partial-episode Stop, saved videos and cleanup passed. Remaining
+checks include full left-gripper travel, powered recording with reduced encoder parallelism,
+recorder-owned dashboard previews, homing and physical policy execution.
 Printed samples do not measure sensor freshness or the firmware timeout.
 
 Each additional powered test requires approval of its exact command and effects first. The
 next proposed test records both pairs with all three configured cameras, saves locally and
 uses a separate rig copy with both home speeds set to zero. The original rig remains unchanged.
-The wrapper dry-run, upstream `RecordConfig` parsing and shared operator-processor validation
-passed on the Lenovo without constructing runtime devices. The new dataset/PID paths were
-absent and 805 GiB of disk space was available. The proposed sequence includes one SIGINT
-during the second episode to check partial-episode saving. That first Stop saves and encodes
-before disconnecting, so arms may hold their last command during finalization. No recording
-has yet been run. Preparation evidence is `record-stop-01-preparation.json` in the Lenovo
-validation directory; the temporary rig checksum is
+The first approved recording used the copied rig described above. First Stop saves and encodes
+before disconnecting, so arms may hold their last command during finalization. Preparation
+evidence is `record-stop-01-preparation.json` in the Lenovo validation directory; the temporary rig checksum is
 `7482a97ff7517ef4126715d36ed18addcdb69c709633e6a6522cf51e6c40b35a`.
 During future teleop, keep the top button released through startup: a held button at the first
 tick counts as engagement. Existing live-LLM freshness and remote policy qualification

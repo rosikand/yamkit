@@ -144,6 +144,26 @@ def test_record_passes_encoding_options_through(recording):
     assert "--dataset.streaming_encoding=true" in runs[0][1]
 
 
+@pytest.mark.parametrize("extra,expected", [
+    ([], ["--dataset.encoder_threads=1"]),
+    (["--dataset.encoder_threads=2"], ["--dataset.encoder_threads=2"]),
+    (["--dataset.encoder_threads", "4"], ["--dataset.encoder_threads", "4"]),
+])
+@pytest.mark.parametrize("destination", ["local", "both"])
+def test_record_encoder_parallelism_default_and_explicit_override(recording, monkeypatch, extra, expected, destination):
+    _, runs, _, args = recording
+    args[-1] = destination
+    monkeypatch.setattr(cli, "_exec_lerobot", lambda script, options, dry_run: runs.append((script, options)))
+
+    result = CliRunner().invoke(cli.app, [*args, *extra])
+
+    assert result.exit_code == 0, result.output
+    options = runs[0][1]
+    indices = [i for i, value in enumerate(options) if value.split("=", 1)[0] == "--dataset.encoder_threads"]
+    assert len(indices) == 1
+    assert options[indices[0]:indices[0] + len(expected)] == expected
+
+
 def test_manual_upload_retry_preserves_explicit_hub_destination(recording):
     root, runs, uploads, args = recording
     result = CliRunner().invoke(cli.app, ["push-dataset", "cube", "--rig", args[2],
