@@ -312,6 +312,30 @@ def run(work: Path) -> dict:
             browser.wait(f"document.querySelectorAll('#ep-body video').length === {videos}")
             if videos:
                 browser.wait("[...document.querySelectorAll('#ep-body video')].every(video => video.readyState >= 2 && video.videoWidth === 640)")
+                browser.evaluate("""window.pendingPlays = [];
+                    document.querySelectorAll('#ep-body video').forEach(v => {
+                        v.play = () => new Promise((resolve, reject) => pendingPlays.push(reject));
+                    });""")
+                browser.click("#ep-play")
+                browser.value("#ep-scrub", 0.4)
+                browser.evaluate("pendingPlays.splice(0).forEach(reject => reject(new DOMException('seek interrupted playback', 'AbortError')))")
+                check("Seeking handles canceled video Play promises",
+                      browser.evaluate("document.querySelector('#ep-play').textContent === 'Play' && !document.querySelector('#ep-play-error').textContent"))
+                browser.click("#ep-play")
+                browser.evaluate("pendingPlays.splice(0).forEach(reject => reject(new DOMException('unsupported test video', 'NotSupportedError')))")
+                browser.wait("document.querySelector('#ep-play-error').textContent.includes('unsupported test video')")
+                check("Video playback failure stops charts and displays the error",
+                      browser.evaluate("document.querySelector('#ep-play').textContent === 'Play'"))
+                browser.click("#ep-play")
+                browser.evaluate("window.oldPlays = pendingPlays.splice(0)")
+                browser.click("#ep-play")
+                browser.click("#ep-play")
+                browser.evaluate("oldPlays.forEach(reject => reject(new DOMException('old request failed', 'NotSupportedError')))")
+                check("Obsolete video Play rejection cannot stop restarted playback",
+                      browser.evaluate("document.querySelector('#ep-play').textContent === 'Pause' && !document.querySelector('#ep-play-error').textContent"))
+                browser.click("#ep-play")
+                browser.evaluate("pendingPlays.splice(0).forEach(reject => reject(new DOMException('paused', 'AbortError'))); document.querySelectorAll('#ep-body video').forEach(v => { delete v.play; })")
+                browser.value("#ep-scrub", 0)
             browser.evaluate("""
                 window.smokeEpisodeVideos = [...document.querySelectorAll('#ep-body video')];
                 window.smokeEpisodeObservers = smokeResizeObservers.filter(observer => !observer.smokeDisconnected);

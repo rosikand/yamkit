@@ -23,6 +23,9 @@ host is `yam-lenovo`, accessed as `andre`, with checkout `/home/andre/rohan-new`
   explicit Hub targets stay consistent; upload retries support `push-dataset --repo-id`.
 - UI history retains Stop intent after the process exits. Dataset navigation releases videos,
   playback timers and chart observers, and ignores responses for departed pages.
+- Dataset playback handles canceled Play promises during seeking, pausing and navigation;
+  current playback failures stop the chart timer and display the error. Obsolete failures
+  cannot interrupt a newer Play request.
 - Settings ignores late configuration/Hub responses after navigation or Reload, including
   failed Hub requests, instead of updating removed or replacement elements.
 - Direct camera previews release disconnected viewers even when acquisition stalls. A synthetic
@@ -52,11 +55,13 @@ The CAN patch then passed **35 vendor tests**, including five new concurrency, f
 recovery cases. `make lint`, explicit Ruff checking of the profiler and compilation of the
 modified SDK module passed. No hardware tests were run by the automated suite.
 
-Actual Chrome passed **36 checks**, with zero JavaScript exceptions or attempted real
+Actual Chrome passed **39 checks**, with zero JavaScript exceptions or attempted real
 hardware/service calls. The browser harness additionally plays a three-camera episode from
 its concatenated-video offset and a chart-only episode, then verifies resource release after
 navigation. Five Settings regressions cover delayed configuration/Hub success and failure
 after navigation, plus obsolete Hub status after Reload.
+Three playback regressions cover canceled Play requests, visible playback failures and
+obsolete failures after restarting playback.
 
 A real two-step ACT training smoke used the committed `pick_red_cube_2demo_dummy` dataset,
 CPU, batch size 2 and a small transformer configuration. Training and checkpoint saving
@@ -479,7 +484,9 @@ right actions 0.888–1.000 with states 0.890–0.995. Full left-gripper travel 
 Actual Chrome played and sought both episodes with all three videos and 14 charts, including
 episode 1's 44.7667-second offset within the concatenated videos. Navigation released players,
 timers and observers. The test also exposed a late Settings Hub response causing an uncaught
-DOM error, now fixed with render-specific element ownership. Its initial report and screenshots
+DOM error, now fixed with render-specific element ownership. A deployed retest then exposed
+uncaught canceled Play promises during seeking/pausing, also fixed with playback-generation
+checks and explicit rejection handling. The initial report and screenshots
 are under `.context/validation/record-stop-playback-j9fvxkzb/`. Saved views mainly show floor
 and clothing; camera placement for task datasets still needs operator confirmation.
 

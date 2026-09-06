@@ -502,6 +502,7 @@ async function renderEpisodeViewer(el, name, detail, ep) {
       <div class="toolbar"><button id="ep-play" class="primary">Play</button><span class="hint" style="margin:0">videos + charts play in sync</span></div>`
       : `<div class="toolbar"><button id="ep-play" class="primary">Play</button>
          <span class="hint" style="margin:0">no videos in this dataset — playing sweeps the cursor over the state/action charts</span></div>`}
+    <div id="ep-play-error" role="status"></div>
     <input type="range" id="ep-scrub" min="${t0}" max="${t1}" step="0.01" value="${t0}" />
     <div class="legend"><span><span class="k" style="background:${colors.state}"></span>observation.state</span>
       <span><span class="k" style="background:${colors.action}"></span>action</span></div>
@@ -526,7 +527,8 @@ async function renderEpisodeViewer(el, name, detail, ep) {
   const videos = cams.map((c) => ({ el: document.getElementById("vid-" + c), meta: epMeta.videos[c] }));
   const lead = videos[0];
   let playTimer = null;
-  const stopPlay = () => { if (playTimer) { clearInterval(playTimer); playTimer = null; } videos.forEach((v) => v.el.pause()); playButton.textContent = "Play"; };
+  let playGeneration = 0;
+  const stopPlay = () => { playGeneration++; if (playTimer) { clearInterval(playTimer); playTimer = null; } videos.forEach((v) => v.el.pause()); playButton.textContent = "Play"; };
   pageCleanup = () => {
     stopPlay();
     videos.forEach((v) => { v.el.removeAttribute("src"); v.el.load(); });
@@ -540,9 +542,19 @@ async function renderEpisodeViewer(el, name, detail, ep) {
   };
   playButton.onclick = () => {
     if (playTimer || (lead && !lead.el.paused)) return stopPlay();
+    const generation = ++playGeneration;
+    $("#ep-play-error", body).innerHTML = "";
     playButton.textContent = "Pause";
     if (lead) {
-      videos.forEach((v) => { v.el.currentTime = (v.meta.from_timestamp || 0) + (+scrub.value - t0); v.el.play(); });
+      videos.forEach((v) => {
+        v.el.currentTime = (v.meta.from_timestamp || 0) + (+scrub.value - t0);
+        v.el.play().catch((error) => {
+          // Seeking, pausing or leaving can cancel a pending browser play request.
+          if (!body.isConnected || generation !== playGeneration) return;
+          stopPlay();
+          if (error.name !== "AbortError") $("#ep-play-error", body).innerHTML = errBanner(error.message);
+        });
+      });
       playTimer = setInterval(() => {
         const tc = t0 + (lead.el.currentTime - (lead.meta.from_timestamp || 0));
         if (lead.meta.to_timestamp && lead.el.currentTime >= lead.meta.to_timestamp) return stopPlay();
