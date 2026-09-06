@@ -63,6 +63,10 @@ def child(mode: str, control: Path) -> None:
                     print("Recording episode 0", flush=True)
                 elif phase == "reset":
                     print("Reset the environment", flush=True)
+                elif phase == "saving":
+                    print("Saving episode 0: encoding videos; followers hold their last command. Stop interrupts saving.", flush=True)
+                elif phase == "finishing":
+                    print("Stop recording", flush=True)
                 elif phase == "failed":
                     preview.close()  # keep the lease: competing capture must remain blocked
                 elif phase == "upload":
@@ -426,13 +430,23 @@ def run(work: Path) -> dict:
             browser.wait("document.querySelector('#btn-record')")
             cameras("session")
             check("Browser reload reconnects to active recorder preview")
-            control.write_text("pause")
+            control.write_text("saving")
+            browser.wait("session.parsed?.phase === 'saving' && document.querySelector('#btn-stop-top').textContent === 'Stop (interrupt save)'")
+            check("Actual saving phase explains the held command and interrupting Stop",
+                  browser.evaluate("document.querySelector('#teleop-ready').textContent.includes('followers hold their last command') && document.querySelector('#teleop-ready').textContent.includes('may discard this episode')"))
             browser.wait("overview.cameras.every(c => c.preview_state === 'stale')")
             age = browser.evaluate("overview.cameras[0].frame_age_s")
             time.sleep(1.4)
             browser.wait(f"overview.cameras[0].frame_age_s > {age}")
             check("Paused acquisition shows increasing stale image age")
+            control.write_text("finishing")
+            browser.wait("session.parsed?.phase === 'finishing' && document.querySelector('#btn-stop-top').textContent === 'Stop'")
+            check("Finishing phase replaces the saving warning before configured homing",
+                  browser.evaluate("document.querySelector('#teleop-ready').textContent.includes('configured homing may run') && !document.querySelector('#teleop-ready').textContent.includes('hold their last command') && !document.querySelector('#teleop-ready').textContent.includes('discard')"))
             control.write_text("record")
+            browser.wait("session.parsed?.phase === 'record' && document.querySelector('#btn-stop-top').textContent === 'Stop'")
+            check("Recording phase restores normal Stop wording after saving",
+                  browser.evaluate("!document.querySelector('#teleop-ready').textContent.includes('Saving episode')"))
             cameras("session")
             before = len(direct_starts)
             control.write_text("failed")

@@ -181,6 +181,10 @@ keeps the normal cancellation behavior. Failed recordings are never uploaded or 
 inspect the retained local data before retrying an upload. Use `--name`, `--repo-id` and `--to`
 for storage and Hub settings; nested flags that override those settings are rejected.
 
+The dashboard reports the recorder's actual saving and finishing phases. During saving,
+the followers hold their last command; **Stop (interrupt save)** may discard that episode.
+Finishing includes finalization and any configured return-home movement before release.
+
 Recording defaults to LeRobot's `--dataset.encoder_threads=1` to leave CPU headroom for
 arm control while multiple camera videos encode. Saving can take longer than automatic
 parallelism. You can override it explicitly, for example `--dataset.encoder_threads=2`.

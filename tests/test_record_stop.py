@@ -202,12 +202,50 @@ def test_startup_interrupt_has_original_signal_behavior(recording, monkeypatch):
     assert not state.frames and not state.loops and state.saved == 0
 
 
+@pytest.mark.parametrize("failure", [None, RuntimeError, KeyboardInterrupt])
+@pytest.mark.parametrize("nested", [False, True])
+def test_saving_phase_observes_pinned_save_without_changing_interrupts(caplog, failure, nested):
+    caplog.set_level("INFO", logger="yamkit.lerobot_teleop")
+    original = recorder.LeRobotDataset.save_episode
+    previous_signal = signal.getsignal(signal.SIGINT)
+    dataset = object.__new__(recorder.LeRobotDataset)
+    dataset.reader = None
+    dataset.meta = SimpleNamespace(total_episodes=3)
+    episode_data = {"fixture": object()}
+    calls = []
+
+    def save(data, parallel_encoding):
+        calls.append((data, parallel_encoding))
+        messages = [record.message for record in caplog.records if record.name == "yamkit.lerobot_teleop"]
+        assert messages == ["Saving episode 3: encoding videos; followers hold their last command. Stop interrupts saving."]
+        assert signal.getsignal(signal.SIGINT) is previous_signal
+        if failure is KeyboardInterrupt:
+            signal.raise_signal(signal.SIGINT)
+        elif failure:
+            raise failure("save failed")
+
+    dataset.writer = SimpleNamespace(save_episode=save)
+    with (pytest.raises(failure) if failure else nullcontext()), record_stop_events():
+        outer = recorder.LeRobotDataset.save_episode
+        with record_stop_events() if nested else nullcontext():
+            assert recorder.LeRobotDataset.save_episode is outer  # nesting must not duplicate phase logs
+            assert dataset.save_episode(episode_data, parallel_encoding=False) is None
+    assert calls == [(episode_data, False)]
+    assert recorder.LeRobotDataset.save_episode is original
+    assert signal.getsignal(signal.SIGINT) is previous_signal
+
+
 def test_nested_record_adapters_restore_loop_on_cancellation():
     original = recorder.record_loop
+    original_save = recorder.LeRobotDataset.save_episode
     with pytest.raises(SystemExit), record_stop_events():
         outer = recorder.record_loop
+        outer_save = recorder.LeRobotDataset.save_episode
         with record_stop_events():
             assert recorder.record_loop is not outer
+            assert recorder.LeRobotDataset.save_episode is outer_save
         assert recorder.record_loop is outer
+        assert recorder.LeRobotDataset.save_episode is outer_save
         raise SystemExit(130)
     assert recorder.record_loop is original
+    assert recorder.LeRobotDataset.save_episode is original_save

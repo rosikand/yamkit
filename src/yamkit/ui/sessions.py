@@ -37,6 +37,8 @@ _TELEOP_HZ_RE = re.compile(r"\[\s*([\d.]+)Hz\]")
 _TELEOP_PAIR_RE = re.compile(r"(\S+->\S+): (ENGAGED|idle)\s*err=\s*([-+.\dnaif]+)rad grip=(\S+)")
 # lerobot-record progress (message wording varies between versions; match loosely)
 _EPISODE_RE = re.compile(r"[Rr]ecord(?:ing)?\s+episode\s+(\d+)")
+_SAVING_RE = re.compile(r"Saving episode\s+(\d+):")
+_FINISHING_RE = re.compile(r"Stop recording\b")
 _RESET_RE = re.compile(r"[Rr]eset the environment")
 _UPLOAD_RE = re.compile(r"\[yamkit\] recording finished")  # recorder exited; only the upload is left
 # `yamkit policy-check` table rows
@@ -165,6 +167,16 @@ def parse_line(line: str, parsed: dict[str, Any]) -> None:
         return
     if _RESET_RE.search(line):
         parsed["phase"] = "reset"
+        parsed["phase_since"] = time.time()
+        return
+    m = _SAVING_RE.search(line)
+    if m:
+        parsed["episode"] = int(m.group(1))
+        parsed["phase"] = "saving"
+        parsed["phase_since"] = time.time()
+        return
+    if _FINISHING_RE.search(line):
+        parsed["phase"] = "finishing"
         parsed["phase_since"] = time.time()
         return
     if _UPLOAD_RE.search(line):

@@ -57,6 +57,27 @@ def test_parse_record_and_policy_lines():
     assert parsed["first_call_ms"] == 834.0
 
 
+def test_saving_phase_uses_save_log_and_resets_on_next_episode(monkeypatch):
+    parsed = {}
+    clock = [10.0]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    parse_line("INFO Recording episode 3", parsed)
+    clock[0] = 11.0
+    parse_line("INFO Reset the environment", parsed)
+    clock[0] = 12.0
+    parse_line("INFO Saving episode 3: encoding videos; followers hold their last command. Stop interrupts saving.", parsed)
+    assert parsed == {"episode": 3, "phase": "saving", "phase_since": 12.0}
+    clock[0] = 13.0
+    parse_line("INFO encoder worker finished", parsed)
+    assert parsed["phase_since"] == 12.0  # unrelated worker output does not reset the phase clock
+    parse_line("INFO Recording episode 4", parsed)
+    assert parsed == {"episode": 4, "phase": "record", "phase_since": 13.0}
+    parse_line("INFO Saving episode 4: encoding videos", parsed)
+    clock[0] = 14.0
+    parse_line("INFO Stop recording", parsed)
+    assert parsed == {"episode": 4, "phase": "finishing", "phase_since": 14.0}
+
+
 # --------------------------------------------------------------------------------- sessions --
 def test_session_lifecycle_and_exclusivity():
     mgr = SessionManager()

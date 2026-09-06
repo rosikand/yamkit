@@ -16,6 +16,9 @@ host is `yam-lenovo`, accessed as `andre`, with checkout `/home/andre/rohan-new`
   transitions immediately, and logs successful session closure once while retaining cleanup retries.
 - Recording and LeRobot teleoperation report the same button transitions after successful
   sent-action acknowledgment, without repeated messages for held buttons or duplicate acknowledgments.
+- Recording logs entry into upstream episode saving. The dashboard distinguishes acquisition,
+  saving and finishing, labels saving's Stop as an interrupt, and clears the hold description
+  before configured homing. Signal dispatch and interruption semantics are unchanged.
 - Recording Stop during acquisition/reset uses LeRobot's existing Stop events to save the
   current episode. Subsequent interrupts and interruptions during startup/saving/homing
   retain their normal behavior. Stop before any captured frame cancels without an empty save.
@@ -44,8 +47,8 @@ relaxed. The CAN command-lock patch is recorded in `third_party/i2rt.VERSION`.
 
 ## Software checks
 
-The complete hardware-free suite after the recording and Settings follow-up fixes passed
-**1,190 tests** in 158.91 seconds, with four existing
+The complete hardware-free suite after the saving-phase follow-up passed
+**1,197 tests** in 159.03 seconds, with four existing
 Starlette/fork deprecation warnings. `make lint`, Ruff on all three diagnostic scripts,
 the offline lockfile check and `git diff --check` passed.
 
@@ -55,13 +58,16 @@ The CAN patch then passed **35 vendor tests**, including five new concurrency, f
 recovery cases. `make lint`, explicit Ruff checking of the profiler and compilation of the
 modified SDK module passed. No hardware tests were run by the automated suite.
 
-Actual Chrome passed **39 checks**, with zero JavaScript exceptions or attempted real
+The final finishing-phase refinement then passed **49 focused tests** in 17.30 seconds.
+Actual Chrome passed **42 checks**, with zero JavaScript exceptions or attempted real
 hardware/service calls. The browser harness additionally plays a three-camera episode from
 its concatenated-video offset and a chart-only episode, then verifies resource release after
 navigation. Five Settings regressions cover delayed configuration/Hub success and failure
 after navigation, plus obsolete Hub status after Reload.
 Three playback regressions cover canceled Play requests, visible playback failures and
 obsolete failures after restarting playback.
+Three recording-phase checks cover the actual saving banner, the finishing transition
+before configured homing, and restoration of normal Stop wording during acquisition.
 
 A real two-step ACT training smoke used the committed `pick_red_cube_2demo_dummy` dataset,
 CPU, batch size 2 and a small transformer configuration. Training and checkpoint saving
@@ -572,6 +578,43 @@ three-second sample after closure found zero CAN traffic/errors; both rig checks
 were unchanged. A retry named `integration_record_ui_03` is prepared with the same
 settings, pending approval of its exact Start and Stop commands.
 
+## Dashboard retry: tracking passed, late Stop interrupted the second save
+
+After fresh approval, `integration_record_ui_03` ran on revision `4f53e49` with
+the same no-home dashboard settings. Both followers acknowledged engagement during
+episode 0: right at 01:49:31 and left at 01:49:33, each with at least three seconds
+of synchronization. Left disengaged at 01:49:53 and right at 01:50:03. The operator
+confirmed tracking and disengaged hold, but reported skipping the triggers. There
+were no second-episode engagement events, and full gripper travel remains unverified.
+
+The first episode saved successfully with 1,792 frames at 30 FPS. Both sides show
+substantial joint movement in the finite 14-dimensional state/action traces. All
+three videos decoded completely to 1,792 RGB frames at 640×480; metadata/indices
+and offline LeRobot/PyAV access passed. The left gripper stayed near 0.95–0.96 and
+the right near 0.99–1.00. Saved data does not independently show disengaged leader
+motion because it stores follower states and commanded actions.
+
+The second episode began at 01:50:54. The Stop request reached the dashboard at
+61.3 seconds into that phase, after the nominal episode timer had expired. It
+interrupted `save_episode → compute_episode_stats → PIL decoding`, producing exit
+−2 (`SIGINT`). This was a late test command, not a successful partial-episode save.
+Only the first episode is present in finalized dataset metadata; remaining files
+are retained for inspection. UI02 remains the successful dashboard partial-save test.
+
+All cameras and all four arms closed by 01:51:57. Recorder-owned previews were
+fresh during acquisition; direct previews resumed afterward and all viewers/camera
+captures closed. Chrome reported no JavaScript errors. Postflight confirmed the
+recorder was gone, both dashboards idle, zero CAN traffic/errors during three
+seconds and both rig checksums unchanged. Artifacts are `record-ui-03-*` and
+`record-ui-observer-ixzk2nki/` under the local validation directory; the readable
+first-episode validator report is `record-ui-03-preserved-episode-validation.json`.
+
+This late Stop motivated an observation-only UI improvement: explicit saving logs replace
+elapsed-time estimates, and upstream's `Stop recording` transitions to a finishing phase
+before finalization/disconnect/homing. During saving the Stop button explains that it
+interrupts saving; the banner says that episode may be lost. Finishing no longer claims
+the followers are holding. No signal handler or motor-control behavior changed.
+
 ## Remaining physical acceptance
 
 Both pairs now have successful connection, state acquisition and orderly cleanup evidence.
@@ -581,19 +624,20 @@ leader moves. The right pair now has the same button/tracking/hold evidence plus
 and nearly full normalized gripper travel. Simultaneous tracking of both pairs is verified.
 Both pairs have now re-engaged successfully, and the 100 Hz application target passed the
 90-second test. Recording, partial-episode Stop, saved videos and cleanup passed. Remaining
-checks include full left-gripper travel, engaged recording with reduced encoder parallelism,
-homing and physical policy execution. Recorder-owned dashboard previews and powered
-recording/encoding while followers hold have passed.
+checks include full left-gripper travel, homing and physical policy execution.
+Engaged recording with reduced encoder parallelism, recorder-owned dashboard previews
+and powered recording/encoding while followers hold have passed. UI03's second
+episode was interrupted during saving and must not be counted as a successful save.
 Printed samples do not measure sensor freshness or the firmware timeout.
 
 Each additional powered test requires approval of its exact command and effects first. The
-next proposed test uses a temporary dashboard on port 8401 to record both pairs with all
-three configured cameras, two 60-second episodes and a 10-second reset, saving locally to
-`integration_record_ui_03`. A planned first Stop during the second episode checks partial
-saving alongside supervised button and trigger use. This retry Start and Stop are prepared
-but not yet approved or executed. The dashboard uses a separate rig copy with both home speeds set to zero;
-the original rig remains unchanged. Its idle startup and the exact recording dry run passed,
-including the default `--dataset.encoder_threads=1`. The existing dashboard on 8400 remains.
+next proposed test is native `yamkit rest --rig configs/rig.yaml`, using the original
+rig. Passive configuration inspection confirms all four home targets are six zero
+joint angles, with follower and leader home speeds both 0.25 rad/s and saved follower
+gripper calibration present. This test would move all four arms toward home at once
+and release them; it is prepared but has not been approved or executed.
+The preceding dashboard recordings used a separate rig copy with both home speeds
+set to zero. The original rig remains unchanged.
 The first approved recording used the copied rig described above. First Stop saves and encodes
 before disconnecting, so arms may hold their last command during finalization. Preparation
 evidence is `record-stop-01-preparation.json` in the Lenovo validation directory; the temporary rig checksum is

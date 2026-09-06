@@ -193,12 +193,10 @@ function armPanelHTML(armName, stt, role) {
 }
 
 // "· 12 s / 30 s" for the current recording phase (server-timed, so it survives page reloads).
-// LeRobot encodes the episode's videos after the phase ends without printing anything, so past the
-// nominal duration the clock stops at the limit and the banner says "saving".
+// Phase changes come from the recorder's actual logs; elapsed time alone does not imply saving.
 function phaseClock(total) {
   const t = session.phase_elapsed_s;
   if (t == null) return "";
-  if (total && t > total + 1) return ` · ${Math.round(total)} s / ${Math.round(total)} s · saving episode…`;
   return ` · ${Math.min(Math.round(t), total ? Math.round(total) : Infinity)} s${total ? ` / ${Math.round(total)} s` : ""}`;
 }
 
@@ -212,7 +210,11 @@ function syncRunButtons(startIds, stopId) {
   }
   stop.hidden = !session.active;
   stop.disabled = false;  // a second click during the return-home move releases the arms immediately
-  stop.textContent = session.stopping && session.active ? "Stopping… arms returning home — click again to release now" : "Stop";
+  if (session.stopping && session.active) {
+    stop.textContent = session.mode === "record" ? "Stopping recording… click again to interrupt" : "Stopping… arms returning home — click again to release now";
+  } else {
+    stop.textContent = session.active && session.mode === "record" && session.parsed?.phase === "saving" ? "Stop (interrupt save)" : "Stop";
+  }
 }
 
 const logPaneHTML = (id = "log", tall = false) => `<pre class="log${tall ? " tall" : ""}" id="${id}"></pre>`;
@@ -384,6 +386,8 @@ pages.record = {
       } else if (session.active && session.mode === "record") {
         if (p.episode == null && !p.phase) html = `<div class="ready-banner setup"><span class="dot"></span>Setting up recorder — loading LeRobot…</div>`;
         else if (p.phase === "reset") html = `<div class="ready-banner ready">✓ Reset — put the leaders back to home and reset the scene${phaseClock(session.meta?.reset_s)}</div>`;
+        else if (p.phase === "saving") html = `<div class="ready-banner setup"><span class="dot"></span>Saving episode ${(p.episode ?? 0) + 1} — encoding videos; followers hold their last command. Stop interrupts saving and may discard this episode.${phaseClock()}</div>`;
+        else if (p.phase === "finishing") html = `<div class="ready-banner setup"><span class="dot"></span>Finishing recording — finalizing data and disconnecting arms; configured homing may run.${phaseClock()}</div>`;
         else if (p.phase === "upload") html = `<div class="ready-banner ready">✓ Recording finished — uploading to the Hub (arms are parked; feeds are back)${phaseClock()}</div>`;
         else html = `<div class="ready-banner engaged"><span class="dot"></span>Recording — episode ${(p.episode ?? 0) + 1}${session.meta?.episodes ? " of " + session.meta.episodes : ""}${phaseClock(session.meta?.episode_s)}</div>`;
       }

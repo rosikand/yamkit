@@ -149,6 +149,14 @@ def record_stop_events():
     interrupt immediately uses the previous handler, including before the loop exits.
     """
     original = lerobot_record.record_loop
+    original_save = lerobot_record.LeRobotDataset.save_episode
+
+    def saving_episode(dataset, *args, **kwargs):
+        log.info("Saving episode %d: encoding videos; followers hold their last command. Stop interrupts saving.",
+                 dataset.num_episodes)
+        return original_save(dataset, *args, **kwargs)
+
+    saving_episode._yamkit_saving_phase = True
 
     def stoppable_loop(*args, **kwargs):
         if threading.current_thread() is not threading.main_thread():
@@ -173,10 +181,13 @@ def record_stop_events():
         return result
 
     lerobot_record.record_loop = stoppable_loop
+    if not getattr(original_save, "_yamkit_saving_phase", False):
+        lerobot_record.LeRobotDataset.save_episode = saving_episode
     try:
         yield
     finally:
         lerobot_record.record_loop = original
+        lerobot_record.LeRobotDataset.save_episode = original_save
 
 
 @parser.wrap()
