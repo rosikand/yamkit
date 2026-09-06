@@ -26,6 +26,14 @@ Native teleop and LeRobot keep their own loops, rates, processes and dataset han
 The existing follower connection and recorder camera owner are reused. Recording reset
 continues through LeRobot's existing loop and preserves the operator state and live previews.
 
+The native `--duration` timer and rate statistics start after startup homing and engagement
+preparation. Recording temporarily translates the first SIGINT during LeRobot's existing
+acquisition/reset loop into that loop's normal Stop events. This saves the current episode and
+lets finalization and configured homing complete before any requested upload. The original
+signal handler is restored immediately after that first signal and whenever the loop exits;
+startup, saving, finalization and homing keep their existing interruption behavior. An
+unsuccessful recorder exit never triggers upload or local-data deletion.
+
 ## Recorded action labels
 
 Pinned LeRobot 0.6.1 records the output of `teleop_action_processor`, after calling
@@ -52,7 +60,7 @@ using those wrappers, or use native teleop. This change does not create a feedba
 ## Hardware-free verification
 
 ```bash
-.venv/bin/pytest -q tests/test_operator_parity.py tests/test_teleop.py tests/test_plugins.py
+.venv/bin/pytest -q tests/test_operator_parity.py tests/test_teleop.py tests/test_plugins.py tests/test_record_stop.py
 .venv/bin/pytest -q tests/test_preview_plugins.py tests/test_preview_sessions.py
 ```
 

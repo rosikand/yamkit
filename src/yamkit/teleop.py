@@ -248,8 +248,6 @@ class TeleopSession:
             if duration is not None:
                 duration = finite_scalar(duration, "duration", minimum=0)
             period = 1.0 / self.hz
-            t_end = None if duration is None else time.monotonic() + duration
-            self.stats = TeleopStats()
             self.home_all("start")
             if self.auto_engage and not self.stop_event.is_set():
                 for pair in self.pairs:
@@ -262,6 +260,9 @@ class TeleopSession:
                         break
                     self.engage(pair)
             next_t = time.monotonic()
+            # Startup homing/engagement is preparation, not part of the requested loop duration.
+            self.stats = TeleopStats(t_start=next_t)
+            t_end = None if duration is None else next_t + duration
             while not self.stop_event.is_set():
                 self.step()
                 self.stats.ticks += 1

@@ -105,7 +105,7 @@ class ConfigBody(BaseModel):
     """Either a full raw-YAML replacement of the rig file or a structured `control` update."""
 
     yaml_text: str | None = None
-    control: dict[str, float | int] | None = None
+    control: dict[str, Any] | None = None
     hub: dict[str, Any] | None = None
     validate_only: bool = False
 
@@ -564,8 +564,16 @@ def create_app(
             unknown = set(body.control) - known
             if unknown:
                 raise HTTPException(422, f"unknown control field(s): {sorted(unknown)}")
-            for k, v in body.control.items():
-                setattr(rig.control, k, int(v) if k == "engage_button" else float(v))
+            try:
+                # Reconstruct through ControlSpec's validator before saving. Mutating its
+                # fields bypasses validation, and coercion can turn invalid buttons or
+                # booleans into apparently valid safety settings.
+                rig.control = dataclasses.replace(rig.control, **body.control)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise HTTPException(422, f"invalid rig config: {exc}") from None
+            problems = rig.validate()
+            if problems:
+                raise HTTPException(422, "invalid rig config: " + "; ".join(problems))
             rig.save(rig_path)
         elif body.hub is not None:
             rig = require_rig()

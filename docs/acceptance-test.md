@@ -273,6 +273,10 @@ Across recording and the reset interval between these two episodes, verify frame
 arriving from the recorder's single camera owner; no second capture opens and preview
 failure does not stop recording.
 After Stop, inspect the saved episode in Datasets and verify the final dataset is readable.
+The first Stop during acquisition/reset must finish that loop, save the episode and complete
+normal finalization/homing. A second Stop retains immediate interrupt behavior. If recording
+or finalization fails, the wrapper must preserve local data and skip upload/deletion. A manual
+upload retry can retain an explicit target with `yamkit push-dataset NAME --repo-id OWNER/REPO`.
 This stage is position/gripper/operator parity only; recording bilateral feedback is unsupported.
 
 For the upload transition, check both **this computer (data/datasets)** and **also upload

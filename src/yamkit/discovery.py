@@ -12,10 +12,10 @@ import logging
 import math
 import struct
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .can import CanIface, list_can_interfaces
-from .config import ArmSpec, ControlSpec, PairSpec, RigConfig
+from .config import ArmSpec, PairSpec, RigConfig
 
 log = logging.getLogger(__name__)
 
@@ -158,10 +158,14 @@ def suggest_rig(probes: list[ChannelProbe], ifaces: list[CanIface], existing: Ri
     calibration and rest pose (so re-running discovery after a reboot or a cable change never
     flips a verified left/right). New adapters get provisional names (`left_*`, `right_*`, ... in
     discovery order) — the user must verify which physical arm is which. Arms in `existing`
-    whose adapter is not attached right now are kept as they are (the CLI warns about them)."""
+    whose adapter is not attached right now are kept as they are (the CLI warns about them).
+    Adapters without serials retain identity by their explicit interface name; these cannot be
+    matched across interface renumbering. Conflicting probe roles produce a warning and retain
+    known identity/calibration, since a missing handle reply can misclassify a leader."""
     by_name = {i.name: i for i in ifaces}
     old_arms = list(existing.arms.values()) if existing else []
     old_by_serial = {a.can_serial: a for a in old_arms if a.can_serial}
+    old_by_iface = {a.can_iface: a for a in old_arms if a.can_iface and not a.can_serial}
     sides = ["left", "right", "third", "fourth"]
     arms: dict[str, ArmSpec] = {}
     seen_serials: set[str] = set()
@@ -170,13 +174,22 @@ def suggest_rig(probes: list[ChannelProbe], ifaces: list[CanIface], existing: Ri
         pending = []
         for p in plist:
             iface = by_name[p.iface]
-            old = old_by_serial.get(iface.serial or "")
+            old = old_by_serial.get(iface.serial or "") or old_by_iface.get(p.iface)
             if iface.serial:
                 seen_serials.add(iface.serial)
-            if old is not None and old.role == role and old.name not in arms:
+            if old is not None and old.name not in arms:
+                if old.role != role:
+                    # A missed handle reply looks like an arm without a gripper. Even an
+                    # explicit role change cannot identify a replacement arm's calibration.
+                    log.warning(
+                        "%s: probe reports %s on %s; keeping configured %s identity and calibration. "
+                        "Verify the attached arm before changing its rig entry.",
+                        old.name, p.classification, p.iface, old.role,
+                    )
                 arms[old.name] = ArmSpec(
-                    name=old.name, role=role, side=old.side, arm_type=old.arm_type, gripper=old.gripper,
-                    can_serial=iface.serial, gripper_limits=old.gripper_limits, rest_pose=old.rest_pose,
+                    name=old.name, role=old.role, side=old.side, arm_type=old.arm_type, gripper=old.gripper,
+                    can_serial=iface.serial, can_iface=None if iface.serial else p.iface,
+                    gripper_limits=old.gripper_limits, rest_pose=old.rest_pose,
                     joint_offsets=old.joint_offsets, notes=f"adapter seen as {p.iface}",
                 )
             else:
@@ -219,7 +232,8 @@ def suggest_rig(probes: list[ChannelProbe], ifaces: list[CanIface], existing: Ri
         pairs.append(PairSpec(lead.name, mate.name))
     pairs.sort(key=lambda p: order.get(arms[p.leader].side or "", 99))
 
-    rig = RigConfig(arms=arms, pairs=pairs, control=existing.control if existing else ControlSpec())
+    # Rediscovery changes hardware, not the user's Hub preferences or other rig settings.
+    rig = replace(existing, arms=arms, pairs=pairs) if existing else RigConfig(arms=arms, pairs=pairs)
     rig.cameras = cameras if cameras is not None else (existing.cameras if existing else {})
     return rig
 

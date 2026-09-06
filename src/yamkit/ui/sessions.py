@@ -523,6 +523,7 @@ class SessionManager:
             ),
             "returncode": self.returncode,
             "stopping": self.stopping and active,
+            "stop_requested": self.stopping,
             "cameras_owned": self.cameras_owned,
             "preview_generation": self.preview_generation,
             "meta": self.meta,
@@ -558,7 +559,7 @@ class DeploymentLog:
         rc = status.get("returncode")
         if status.get("active", False) or rc is None:
             outcome, termination = "running", None
-        elif status.get("stopping") or rc in (-signal.SIGINT, -signal.SIGTERM, -signal.SIGKILL):
+        elif status.get("stop_requested") or status.get("stopping") or rc in (-signal.SIGINT, -signal.SIGTERM, -signal.SIGKILL):
             outcome, termination = "stopped", "stopped by user"
         elif rc == 0:
             outcome, termination = "success", "completed"

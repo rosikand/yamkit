@@ -48,6 +48,30 @@ def test_session_homes_every_arm_on_start_and_stop(rig, fake_connect):
     assert leader.closed and follower.closed
 
 
+def test_run_duration_and_stats_start_after_slow_startup_home(rig, fake_connect, monkeypatch):
+    import time
+
+    clock = [100.0]
+    ticks = []
+    homes = []
+    session = TeleopSession.from_rig(rig, ["left_follower"], hz=4, on_tick=lambda _: ticks.append(clock[0]))
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+
+    def slow_home(why):
+        homes.append(why)
+        if why == "start":
+            clock[0] += 10.0  # longer than the whole requested teleop interval
+
+    monkeypatch.setattr(session, "home_all", slow_home)
+    stats = session.run(duration=1.0)
+
+    assert homes == ["start", "stop"]
+    assert ticks == [110.0, 110.25, 110.5, 110.75, 111.0]
+    assert stats.t_start == 110.0 and stats.ticks == len(ticks)
+    assert all(robot.closed for robot in fake_connect.values())
+
+
 def test_stop_returns_home_after_teleop(rig, fake_connect, monkeypatch):
     import time
 

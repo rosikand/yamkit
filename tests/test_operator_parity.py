@@ -265,6 +265,9 @@ def test_actual_record_entry_stop_and_fault_lifecycle(rig, fake_connect, monkeyp
         num_episodes = 0
         fps = 30
 
+        def has_pending_frames(self):
+            return bool(frames)
+
         def add_frame(self, frame):
             frames.append(frame)
             events["exit_early"] = events["stop_recording"] = True

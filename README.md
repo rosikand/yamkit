@@ -129,6 +129,7 @@ bounded-speed move.
 
 Native `yamkit teleop` supports bilateral feedback. Recording and LeRobot teleoperation reject
 nonzero `control.bilateral_kp`; use `0` for those paths. See [operator parity](docs/OPERATOR_PARITY.md).
+The native `--duration` interval starts after startup homing and engagement preparation.
 
 ## 4. Cameras
 
@@ -174,6 +175,12 @@ yamkit record --arms left_follower --name pick_cube \
               --task "pick up the red cube" --episodes 20
 ```
 
+During recording or reset, the first Stop / Ctrl-C ends the acquisition loop and saves the
+episode before finalization, configured homing and any requested upload. A further interrupt
+keeps the normal cancellation behavior. Failed recordings are never uploaded or deleted;
+inspect the retained local data before retrying an upload. Use `--name`, `--repo-id` and `--to`
+for storage and Hub settings; nested flags that override those settings are rejected.
+
 ## 5b. Hugging Face Hub (optional)
 
 Sign in once, then recordings can go to the Hub instead of (or as well as) this computer, and
@@ -185,6 +192,7 @@ yamkit hub login                      # paste a "write" token from huggingface.c
 yamkit hub status
 yamkit record --name pick_cube --task "…" --to hub      # local | hub | both (default: hub.datasets in the rig)
 yamkit push-dataset pick_cube          # upload an existing local dataset  (--remove-local to free the disk)
+yamkit push-dataset pick_cube --repo-id andre/pick_cube_v2  # optional explicit Hub destination
 yamkit pull-dataset andre/pick_cube    # download one into data/datasets/
 yamkit train --dataset andre/pick_cube --push          # on any GPU box: pull the dataset, push the checkpoint
 yamkit push-model outputs/train/<job>/checkpoints/last/pretrained_model

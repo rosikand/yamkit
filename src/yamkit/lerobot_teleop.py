@@ -5,7 +5,9 @@ yamkit's thin CLI wrappers. There is no alternate recorder or acquisition loop.
 """
 
 import logging
+import signal
 import sys
+import threading
 import time
 from contextlib import contextmanager
 
@@ -124,10 +126,49 @@ def release_after_upstream(cfg):
             raise errors[0]
 
 
+@contextmanager
+def record_stop_events():
+    """Let one Ctrl-C end the existing acquisition loop and save its partial episode.
+
+    Only the pinned upstream loop receives this handler. Startup, episode saving,
+    finalization and homing retain their existing interrupt behavior. A second
+    interrupt immediately uses the previous handler, including before the loop exits.
+    """
+    original = lerobot_record.record_loop
+
+    def stoppable_loop(*args, **kwargs):
+        if threading.current_thread() is not threading.main_thread():
+            return original(*args, **kwargs)
+        events = kwargs["events"] if "events" in kwargs else args[1]
+        previous = signal.getsignal(signal.SIGINT)
+
+        def stop(signum, frame):
+            signal.signal(signal.SIGINT, previous)
+            events["exit_early"] = events["stop_recording"] = True
+
+        signal.signal(signal.SIGINT, stop)
+        try:
+            result = original(*args, **kwargs)
+        finally:
+            signal.signal(signal.SIGINT, previous)
+        dataset = kwargs.get("dataset", args[6] if len(args) > 6 else None)
+        if events["stop_recording"] and dataset is not None and not dataset.has_pending_frames():
+            # Upstream would save an empty episode. Cancel before that save; its
+            # VideoEncodingManager and finally blocks retain all cleanup.
+            raise KeyboardInterrupt("Recording stopped before any frames were captured for this episode")
+        return result
+
+    lerobot_record.record_loop = stoppable_loop
+    try:
+        yield
+    finally:
+        lerobot_record.record_loop = original
+
+
 @parser.wrap()
 def record(cfg: lerobot_record.RecordConfig):
     processor = make_teleop_processor(cfg.robot, cfg.teleop, cfg.dataset.fps)
-    with release_after_upstream(cfg):
+    with release_after_upstream(cfg), record_stop_events():
         return lerobot_record.record(cfg, teleop_action_processor=processor)
 
 

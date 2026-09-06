@@ -425,6 +425,7 @@ pages.datasets = {
     document.querySelectorAll("[data-live-elapsed]").forEach((b) => { b.textContent = fmtDur(session.elapsed_s); });
   },
   async render(el, args) {
+    cleanupPage();
     this._key = `${!!transferOf(session)}|${session.mode}`;
     if (args.length) return renderDatasetDetail(el, decodeURIComponent(args[0]), args[1]);
     el.innerHTML = `${pageHead("Datasets", "<span class='mono'>data/datasets/</span>")}<div id="ds-list" class="sect">loading…</div>`;
@@ -455,11 +456,13 @@ pages.datasets = {
 
 async function renderDatasetDetail(el, name, epArg) {
   el.innerHTML = `<a class="back" href="#/datasets">← datasets</a>${pageHead(name)}<div id="ds-detail">loading…</div>`;
+  const detailEl = $("#ds-detail", el);
   let d;
   try { d = await api(`/datasets/${encodeURIComponent(name)}`); }
-  catch (e) { $("#ds-detail").innerHTML = errBanner(e.message); return; }
+  catch (e) { if (detailEl.isConnected) detailEl.innerHTML = errBanner(e.message); return; }
+  if (!detailEl.isConnected) return;
   const eps = d.episode_list || [];
-  $("#ds-detail").innerHTML = `
+  detailEl.innerHTML = `
     <div class="sect"><div class="kv panel">
       <div>episodes / frames</div><div>${d.episodes} / ${d.frames}</div>
       <div>fps</div><div>${d.fps}</div>
@@ -477,20 +480,21 @@ async function renderDatasetDetail(el, name, epArg) {
       </table></div></div>
     <div id="ep-viewer"></div>`;
   const ep = epArg != null ? +epArg : (eps.length ? eps[0].episode_index : null);
-  if (ep != null) renderEpisodeViewer($("#ep-viewer"), name, d, ep);
+  if (ep != null) renderEpisodeViewer($("#ep-viewer", detailEl), name, d, ep);
 }
 
 async function renderEpisodeViewer(el, name, detail, ep) {
   el.innerHTML = `<div class="sect"><div class="sect-head">Episode ${ep}</div><div id="ep-body">loading…</div></div>`;
+  const body = $("#ep-body", el);
   let s;
   try { s = await api(`/datasets/${encodeURIComponent(name)}/episodes/${ep}`); }
-  catch (e) { $("#ep-body").innerHTML = errBanner(e.message); return; }
+  catch (e) { if (body.isConnected) body.innerHTML = errBanner(e.message); return; }
+  if (!body.isConnected) return;
   const epMeta = (detail.episode_list || []).find((e) => e.episode_index === ep) || {};
   const cams = Object.keys(epMeta.videos || {});
   const t = s.timestamp || [];
   const t0 = t.length ? t[0] : 0, t1 = t.length ? t[t.length - 1] : 1;
   const colors = seriesColors();
-  const body = $("#ep-body");
   body.innerHTML = `
     ${cams.length ? `<div class="cams" style="margin-bottom:12px">` + cams.map((c) => `
       <div class="cam"><span class="label">${esc(c)}</span>
@@ -505,7 +509,7 @@ async function renderEpisodeViewer(el, name, detail, ep) {
 
   // small multiples: one panel per state dimension, state + action series
   const names = s.names || (s["observation.state"]?.[0] || []).map((_, i) => "dim_" + i);
-  const chartsEl = $("#ep-charts");
+  const chartsEl = $("#ep-charts", body);
   const charts = names.map((dim, i) => {
     const cell = document.createElement("div");
     cell.className = "chart-cell";
@@ -517,20 +521,26 @@ async function renderEpisodeViewer(el, name, detail, ep) {
   });
   const setCursor = (tc) => charts.forEach((c) => c.setCursor(tc));
 
-  const scrub = $("#ep-scrub");
+  const scrub = $("#ep-scrub", body);
+  const playButton = $("#ep-play", body);
   const videos = cams.map((c) => ({ el: document.getElementById("vid-" + c), meta: epMeta.videos[c] }));
   const lead = videos[0];
   let playTimer = null;
-  const stopPlay = () => { if (playTimer) { clearInterval(playTimer); playTimer = null; } videos.forEach((v) => v.el.pause()); $("#ep-play").textContent = "Play"; };
+  const stopPlay = () => { if (playTimer) { clearInterval(playTimer); playTimer = null; } videos.forEach((v) => v.el.pause()); playButton.textContent = "Play"; };
+  pageCleanup = () => {
+    stopPlay();
+    videos.forEach((v) => { v.el.removeAttribute("src"); v.el.load(); });
+    charts.forEach((c) => c.dispose());
+  };
   scrub.oninput = () => {
     stopPlay();
     const tc = +scrub.value;
     setCursor(tc);
     videos.forEach((v) => { v.el.currentTime = (v.meta.from_timestamp || 0) + (tc - t0); });
   };
-  $("#ep-play").onclick = () => {
+  playButton.onclick = () => {
     if (playTimer || (lead && !lead.el.paused)) return stopPlay();
-    $("#ep-play").textContent = "Pause";
+    playButton.textContent = "Pause";
     if (lead) {
       videos.forEach((v) => { v.el.currentTime = (v.meta.from_timestamp || 0) + (+scrub.value - t0); v.el.play(); });
       playTimer = setInterval(() => {
@@ -596,9 +606,10 @@ function makeChart(canvas, label, t, s1, s2) {
       state ${s1[idx] != null ? s1[idx].toFixed(4) : "–"}<br/>action ${s2[idx] != null ? s2[idx].toFixed(4) : "–"}`;
   });
   canvas.addEventListener("mouseleave", () => { tip.style.display = "none"; });
-  new ResizeObserver(draw).observe(canvas);
+  const observer = new ResizeObserver(draw);
+  observer.observe(canvas);
   draw();
-  return { setCursor(tc) { cursorT = tc; draw(); } };
+  return { setCursor(tc) { cursorT = tc; draw(); }, dispose() { observer.disconnect(); tip.style.display = "none"; } };
 }
 
 // ---- inference (policy runs; backend routes remain /api/deployments) ----
@@ -704,7 +715,7 @@ pages.inference = {
     $("#btn-inf-stop").disabled = !session.active;
     const submitted = this._submitted;
     const matches = submitted && submitted.selection === JSON.stringify(selected) && submitted.saved === $("#inf-saved").value && submitted.id === session.meta?.operation_id;
-    $("#inf-status").textContent = matches ? `${session.mode}: ${session.active ? (session.stopping ? "stopping local process…" : "running…") : session.returncode === 0 ? "completed" : "failed or stopped"} · operation ${submitted.id}` : "No completed operation for this selection. Changing options invalidates the displayed readiness result.";
+    $("#inf-status").textContent = matches ? `${session.mode}: ${session.active ? (session.stopping ? "stopping local process…" : "running…") : session.stop_requested ? "stopped by user" : session.returncode === 0 ? "completed" : "failed or stopped"} · operation ${submitted.id}` : "No completed operation for this selection. Changing options invalidates the displayed readiness result.";
     $("#inf-result").textContent = matches ? (session.parsed?.result ? JSON.stringify(session.parsed.result, null, 2) : (session.log || []).join("\n")) : "";
     syncCams();
   },
@@ -984,7 +995,13 @@ pages.settings = {
 
 // -------------------------------------------------------------------------------- router ----
 let current = null;
+let pageCleanup = null;
+function cleanupPage() {
+  if (pageCleanup) pageCleanup();
+  pageCleanup = null;
+}
 function route() {
+  cleanupPage();
   let [page, ...args] = (location.hash.replace(/^#\//, "") || "live").split("/");
   if (page === "deployments") page = "inference"; // old links keep working
   const p = pages[page] || pages.live;

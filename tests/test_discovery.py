@@ -1,3 +1,5 @@
+import pytest
+
 from yamkit.can import CanIface
 from yamkit.discovery import ChannelProbe, MotorProbe, suggest_rig
 
@@ -122,3 +124,91 @@ def test_suggest_rig_cameras_argument():
     assert suggest_rig(list(pr.values()), ifaces, existing).cameras == existing.cameras  # untouched by default
     new = {"left_wrist": {"type": "opencv", "index_or_path": "/dev/video4"}}
     assert suggest_rig(list(pr.values()), ifaces, existing, cameras=new).cameras == new
+
+
+def test_rediscovery_preserves_hub_preferences(tmp_path):
+    from yamkit.config import RigConfig
+
+    pr = _two_pair_probes()
+    ifaces = [_iface(f"can{i}", f"S{i}") for i in range(4)]
+    existing = suggest_rig(list(pr.values()), ifaces)
+    existing.hub.username = "rig-owner"
+    existing.hub.private = False
+    existing.hub.datasets = "both"
+    existing.control.max_joint_speed = 0.4
+    existing.save(tmp_path / "rig.yaml")
+
+    again = suggest_rig(list(pr.values()), ifaces, existing)
+    again.save()
+    saved = RigConfig.load(existing.path)
+    assert saved.hub == existing.hub
+    assert saved.control == existing.control
+
+
+def test_rediscovery_without_serials_keeps_verified_identity():
+    pr = _two_pair_probes()
+    ifaces = [_iface(f"can{i}", None) for i in range(4)]
+    existing = suggest_rig(list(pr.values()), ifaces)
+    # The interface is the only available identity; a verified physical swap must survive.
+    existing.arm("left_follower").can_iface, existing.arm("right_follower").can_iface = "can2", "can0"
+    existing.arm("left_follower").gripper_limits = [6.4, 1.2]
+    existing.arm("left_leader").joint_offsets = [0.1, 0, 0, 0, 0, 0]
+    existing.arm("left_leader").rest_pose = [0.2] * 6
+    expected_pairs = [(p.leader, p.follower) for p in existing.pairs]
+
+    for _ in range(2):
+        existing = suggest_rig(list(reversed(pr.values())), ifaces, existing)
+        assert set(existing.arms) == {"left_leader", "left_follower", "right_leader", "right_follower"}
+        assert existing.arm("left_follower").can_iface == "can2"
+        assert existing.arm("right_follower").can_iface == "can0"
+        assert existing.arm("left_follower").gripper_limits == [6.4, 1.2]
+        assert existing.arm("left_leader").joint_offsets == [0.1, 0, 0, 0, 0, 0]
+        assert existing.arm("left_leader").rest_pose == [0.2] * 6
+        assert [(p.leader, p.follower) for p in existing.pairs] == expected_pairs
+        assert existing.validate() == []
+
+
+def test_rediscovery_can_add_serial_to_interface_only_arm():
+    pr = _two_pair_probes()
+    existing = suggest_rig(list(pr.values()), [_iface(f"can{i}", None) for i in range(4)])
+    existing.arm("left_follower").gripper_limits = [6.4, 1.2]
+
+    again = suggest_rig(list(pr.values()), [_iface(f"can{i}", f"S{i}") for i in range(4)], existing)
+    assert set(again.arms) == set(existing.arms)
+    assert again.arm("left_follower").can_serial == "S0"
+    assert again.arm("left_follower").can_iface is None
+    assert again.arm("left_follower").gripper_limits == [6.4, 1.2]
+    assert again.validate() == []
+
+
+@pytest.mark.parametrize("serials", [True, False])
+@pytest.mark.parametrize("changed_arm,classification", [
+    ("L1", "arm_no_gripper"), ("L1", "follower"), ("F0", "leader"),
+])
+def test_rediscovery_keeps_known_identity_when_probe_role_differs(serials, changed_arm, classification, caplog):
+    pr = _two_pair_probes()
+    ifaces = [_iface(f"can{i}", f"S{i}" if serials else None) for i in range(4)]
+    existing = suggest_rig(list(pr.values()), ifaces)
+    existing.arm("left_leader").joint_offsets = [0.1, 0, 0, 0, 0, 0]
+    existing.arm("left_leader").rest_pose = [0.2] * 6
+    existing.arm("left_follower").gripper_limits = [6.4, 1.2]
+    expected_pairs = [(p.leader, p.follower) for p in existing.pairs]
+    probe = pr[changed_arm]
+    probe.motors = probe.motors[:6] + ([MotorProbe(7, 10.0)] if classification == "follower" else [])
+    probe.encoder_versions = ["dev1:v2.4.0"] if classification == "leader" else []
+    assert probe.classification == classification
+
+    again = suggest_rig(list(pr.values()), ifaces, existing)
+    assert set(again.arms) == set(existing.arms)
+    for name, old in existing.arms.items():
+        current = again.arm(name)
+        assert current.role == old.role
+        assert current.gripper == old.gripper
+        assert current.can_serial == old.can_serial
+        assert current.can_iface == old.can_iface
+        assert current.joint_offsets == old.joint_offsets
+        assert current.rest_pose == old.rest_pose
+        assert current.gripper_limits == old.gripper_limits
+    assert [(p.leader, p.follower) for p in again.pairs] == expected_pairs
+    assert "keeping configured" in caplog.text
+    assert again.validate() == []

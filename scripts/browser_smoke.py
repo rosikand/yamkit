@@ -5,7 +5,8 @@ Run: TMPDIR="$PWD/.context/tmp" .venv/bin/python scripts/browser_smoke.py
 Requires the normal project environment (including websockets) and google-chrome.
 No physical camera/arm, model weights, Hub upload, or paid API is used. The recording
 child simulates phases; installed LeRobot recording/reset coverage lives in
-tests/test_preview_plugins.py. All writable artifacts stay inside this repository.
+tests/test_preview_plugins.py. Dataset playback uses copies of committed fixtures.
+All writable artifacts stay inside this repository.
 """
 
 from __future__ import annotations
@@ -118,6 +119,33 @@ class Browser:
                 window.smokeDialogs = []; window.smokeAccept = false;
                 window.confirm = message => { smokeDialogs.push(message); return smokeAccept; };
                 window.alert = message => { smokeDialogs.push(message); };
+                window.smokeIntervals = [];
+                const startInterval = window.setInterval.bind(window);
+                const cancelInterval = window.clearInterval.bind(window);
+                window.setInterval = (callback, delay, ...args) => {
+                    const record = {calls: 0, cleared: false};
+                    record.id = startInterval((...values) => {
+                        record.calls++;
+                        callback(...values);
+                    }, delay, ...args);
+                    smokeIntervals.push(record);
+                    return record.id;
+                };
+                window.clearInterval = id => {
+                    const record = smokeIntervals.find(record => record.id === id);
+                    if (record) record.cleared = true;
+                    cancelInterval(id);
+                };
+                window.smokeResizeObservers = [];
+                const NativeResizeObserver = window.ResizeObserver;
+                window.ResizeObserver = class extends NativeResizeObserver {
+                    constructor(callback) {
+                        super(callback);
+                        this.smokeDisconnected = false;
+                        smokeResizeObservers.push(this);
+                    }
+                    disconnect() { super.disconnect(); this.smokeDisconnected = true; }
+                };
             """})
         except BaseException:
             self.close()
@@ -181,6 +209,9 @@ def run(work: Path) -> dict:
     checks, forbidden_calls, seen, direct_starts = [], [], [], []
     control = work / "phase.txt"
     control.write_text("record")
+    dataset_fixtures = ("smoke", "pick_red_cube_2demo_dummy")
+    for name in dataset_fixtures:
+        shutil.copytree(ROOT / "data" / "datasets" / name, work / "datasets" / name)
     rig = RigConfig(
         arms={f"{side}_{role}": ArmSpec(
             name=f"{side}_{role}", role=role, side=side, can_serial=f"fake-{side}-{role}",
@@ -275,6 +306,34 @@ def run(work: Path) -> dict:
             operation = json.dumps(manager.meta["operation_id"])
             browser.wait(f"!session.active && session.meta.operation_id === {operation} && document.querySelector('#inf-result').textContent.includes('fixture')")
 
+        def episode_playback(name, *, episode=0, videos=0, from_timestamp=0):
+            browser.evaluate(f"location.hash = '#/datasets/{name}/{episode}'")
+            browser.wait("document.querySelector('#ep-play') && document.querySelectorAll('#ep-charts canvas').length === 14")
+            browser.wait(f"document.querySelectorAll('#ep-body video').length === {videos}")
+            if videos:
+                browser.wait("[...document.querySelectorAll('#ep-body video')].every(video => video.readyState >= 2 && video.videoWidth === 640)")
+            browser.evaluate("""
+                window.smokeEpisodeVideos = [...document.querySelectorAll('#ep-body video')];
+                window.smokeEpisodeObservers = smokeResizeObservers.filter(observer => !observer.smokeDisconnected);
+                window.smokePreviousIntervalCount = smokeIntervals.length;
+            """)
+            browser.click("#ep-play")
+            browser.wait("Number(document.querySelector('#ep-scrub').value) > 0.2")
+            browser.wait(f"smokeEpisodeVideos.every(video => !video.paused && video.currentTime >= {from_timestamp} + 0.2)")
+            browser.evaluate("window.smokeEpisodeIntervals = smokeIntervals.slice(smokePreviousIntervalCount)")
+            check(f"Dataset {name} episode {episode} plays {'videos and charts' if videos else 'charts without videos'}",
+                  browser.evaluate("smokeEpisodeIntervals.length === 1 && smokeEpisodeIntervals[0].calls > 0 && smokeEpisodeObservers.length === 14"))
+
+            browser.evaluate("location.hash = '#/datasets'")
+            browser.wait("document.querySelector('#ds-list table') && !document.querySelector('#ep-play')")
+            browser.wait("smokeEpisodeVideos.every(video => !video.isConnected && video.paused && !video.hasAttribute('src') && video.networkState === HTMLMediaElement.NETWORK_EMPTY)")
+            check(f"Leaving {name} releases playback timers, videos and chart observers",
+                  browser.evaluate("smokeEpisodeIntervals.every(timer => timer.cleared) && smokeEpisodeObservers.every(observer => observer.smokeDisconnected)"))
+            browser.evaluate("window.smokeEpisodeCallsAfterNavigation = smokeEpisodeIntervals.map(timer => timer.calls)")
+            time.sleep(0.3)
+            check(f"Detached {name} viewer receives no stale playback callbacks",
+                  browser.evaluate("smokeEpisodeIntervals.every((timer, index) => timer.calls === smokeEpisodeCallsAfterNavigation[index])"))
+
         try:
             navigation = browser.call("Page.navigate", {"url": base + "/#/inference"})
             assert "errorText" not in navigation, navigation
@@ -362,13 +421,16 @@ def run(work: Path) -> dict:
             stop()
             cameras("direct")
             check("Stop leaves idle previews working and no session child")
+            episode_playback("pick_red_cube_2demo_dummy", episode=1, videos=3, from_timestamp=24.9)
+            episode_playback("smoke")
             check("Zero JavaScript exceptions", not browser.exceptions)
             check("Zero real camera, arm, model-load, or paid-service attempts", not forbidden_calls)
             check("Frontend requests stay on fixture loopback origin", all(r["url"].startswith(base) or r["url"] == "about:blank" for r in browser.requests))
             return {"passed": len(checks), "checks": checks, "javascript_exceptions": browser.exceptions,
                     "forbidden_calls": forbidden_calls, "child_commands": [args[0] for args in seen],
+                    "dataset_fixtures": list(dataset_fixtures),
                     "physical_hardware": False, "real_services": False,
-                    "scope": "Chrome, actual UI/HTTP/session/preview paths; synthetic acquisition and phase simulation"}
+                    "scope": "Chrome, actual UI/HTTP/session/preview/dataset replay paths; synthetic acquisition and phase simulation, committed dataset fixtures"}
         except BaseException:
             print(json.dumps({"body": browser.evaluate("document.body.innerText.slice(-1600)"),
                               "url": browser.evaluate("location.href"),

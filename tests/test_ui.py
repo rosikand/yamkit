@@ -95,6 +95,39 @@ def test_session_exit_callback_and_deployment_log(tmp_path):
     assert catalog.list_deployments(tmp_path / "deployments")[0]["id"] == run_dir.name
 
 
+@pytest.mark.parametrize("exit_code", [0, 130])
+def test_stop_intent_survives_graceful_child_exit_and_is_reset_for_next_run(tmp_path, exit_code):
+    done = {}
+    mgr = SessionManager(on_exit=lambda status: done.update(status))
+    child = (
+        "import signal, sys, time; "
+        f"signal.signal(signal.SIGINT, lambda *args: sys.exit({exit_code})); "
+        "print('ready', flush=True); time.sleep(30)"
+    )
+    mgr.start("rollout", [sys.executable, "-c", child])
+    try:
+        deadline = time.monotonic() + 5
+        while "ready" not in mgr.status()["log"] and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert "ready" in mgr.status()["log"]
+        mgr.stop()
+        assert mgr.wait(timeout=5) == exit_code
+        assert done["stop_requested"] and not done["stopping"] and not done["active"]
+        dlog = DeploymentLog(tmp_path / "deployments")
+        run_dir = dlog.create(done)
+        dlog.finalize(run_dir, done)
+        meta = json.loads((run_dir / "meta.json").read_text())
+        assert meta["status"] == "stopped" and meta["termination"] == "stopped by user"
+
+        mgr.start("policy-check", [sys.executable, "-c", "pass"])
+        assert mgr.wait(timeout=5) == 0
+        assert not mgr.status()["stop_requested"]
+    finally:
+        if mgr.active:
+            mgr.stop(grace_s=0.1)
+            mgr.wait(timeout=5)
+
+
 # ---------------------------------------------------------------------------------- catalog --
 def test_dataset_catalog_reads_committed_smoke_dataset():
     ds = catalog.dataset_summary(SMOKE)

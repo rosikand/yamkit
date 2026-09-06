@@ -586,6 +586,41 @@ def teleoperate(ctx: typer.Context, rig: RigOpt = DEFAULT_RIG, arms: Annotated[l
     _exec_lerobot("lerobot_teleoperate", args, dry_run)
 
 
+def _dataset_root(name: str) -> Path:
+    """Resolve a local dataset name without following a symlink to unrelated data."""
+    if not name.strip() or name in (".", "..") or Path(name).name != name:
+        raise typer.BadParameter("provide a dataset name, not a path")
+    root = DATASETS_DIR / name
+    if root.is_symlink() or not root.resolve().is_relative_to(DATASETS_DIR.resolve()):
+        raise typer.BadParameter("the dataset directory must be inside data/datasets and cannot be a symlink")
+    return root
+
+
+def _record_root(name: str, extra: list[str]) -> Path:
+    """Keep the recorder's output identical to the path uploaded or removed afterward."""
+    owned = {"--dataset", "--dataset.root", "--dataset.repo_id", "--dataset.push_to_hub", "--dataset.no_stamp"}
+    if overrides := sorted({arg.split("=", 1)[0] for arg in extra} & owned):
+        raise typer.BadParameter("record controls " + ", ".join(overrides)
+                                 + "; use --name, --repo-id and --to instead")
+    return _dataset_root(name)
+
+
+def _require_saved_episodes(root: Path) -> None:
+    """Do not upload or remove an empty or unreadable recording."""
+    import json
+
+    try:
+        episodes = json.loads((root / "meta" / "info.json").read_text())["total_episodes"]
+        if type(episodes) is not int or episodes < 0:
+            raise ValueError("invalid episode count")
+    except (OSError, ValueError, KeyError, TypeError):
+        err.print(f"[red]dataset metadata is missing or invalid at {root} — no upload or deletion[/]")
+        raise typer.Exit(1) from None
+    if episodes == 0:
+        err.print(f"[yellow]no episodes were saved at {root} — no upload or deletion[/]")
+        raise typer.Exit(1)
+
+
 @app.command(context_settings=PASSTHROUGH)
 def record(
     ctx: typer.Context,
@@ -608,14 +643,15 @@ def record(
 
     The recording is always written locally first (video encoding); with `--to hub` the local copy is
     removed after a successful upload. Uploading is done by yamkit after the recorder exits, so a
-    session stopped early still uploads what it recorded."""
+    gracefully stopped session still uploads what it recorded. Failed recordings keep their local
+    data and must be checked before a separate upload."""
     from . import hub
 
+    root = _record_root(name, ctx.args)
     cfg, pairs = _rig_arms(rig, arms)
     dest = to or ("both" if push else cfg.hub.datasets)
     if dest not in hub.DESTINATIONS:
         raise typer.BadParameter(f"--to must be one of {hub.DESTINATIONS}")
-    root = DATASETS_DIR / name
     # The recorder is started exactly as before (no Hub lookup, no network); the Hub account is only
     # resolved after the session, at upload time.
     rid = repo_id or f"yamkit/{name}"
@@ -643,22 +679,26 @@ def record(
         _exec_lerobot("lerobot_record", args, True)
         console.print("[dim]then: upload to the Hub" + (" and remove the local copy" if dest == "hub" else "") + "[/]")
         return
-    _run_lerobot("lerobot_record", args)
-    if not (root / "meta" / "info.json").is_file():
-        err.print(f"[red]no dataset was written at {root} — nothing to upload[/]")
-        raise typer.Exit(1)
+    status = _run_lerobot("lerobot_record", args)
+    if status != 0:
+        err.print(f"[red]recorder exited with status {status} — no upload or deletion; any recording is kept at {root}[/]")
+        raise typer.Exit(status if status > 0 else 128 - status)
+    _require_saved_episodes(root)
     console.print(f"[yamkit] recording finished — uploading {name} to the Hub")
     try:
-        url = hub.push_dataset(name, private=cfg.hub.private, rig_username=cfg.hub.username)
+        url = hub.push_dataset(repo_id or name, private=cfg.hub.private, rig_username=cfg.hub.username, root=root)
     except KeyboardInterrupt:
         err.print(f"[yellow][yamkit] upload cancelled — the recording is kept at {root}[/]")
         raise typer.Exit(130) from None
     except Exception as e:  # noqa: BLE001 — offline, not signed in, Hub error: the recording is safe locally
-        err.print(f"[yellow][yamkit] upload failed ({e}) — the recording is kept at {root}; retry with: yamkit push-dataset {name}[/]")
+        retry = ["yamkit", "push-dataset", name, "--rig", str(rig)]
+        if repo_id:
+            retry += ["--repo-id", repo_id]
+        err.print(f"[yellow][yamkit] upload failed ({e}) — the recording is kept at {root}; retry with: {shlex.join(retry)}[/]")
         raise typer.Exit(2) from None
     console.print(f"[yamkit] uploaded: {url}")
     if dest == "hub":
-        hub.remove_local_dataset(name)
+        hub.remove_local_dataset(name, root=root)
         console.print(f"[yamkit] local copy removed ({root})")
 
 
@@ -1112,16 +1152,23 @@ def hub_status(rig: RigOpt = DEFAULT_RIG) -> None:
 
 
 @app.command("push-dataset")
-def push_dataset(name: str, rig: RigOpt = DEFAULT_RIG, remove_local: Annotated[bool, typer.Option("--remove-local", help="delete data/datasets/<name> after a successful upload")] = False) -> None:
+def push_dataset(
+    name: str,
+    rig: RigOpt = DEFAULT_RIG,
+    remove_local: Annotated[bool, typer.Option("--remove-local", help="delete data/datasets/<name> after a successful upload")] = False,
+    repo_id: Annotated[str | None, typer.Option(help="Hub repo id (default <hub.username>/<name>)")] = None,
+) -> None:
     """Upload a local dataset to the Hub as <hub.username>/<name>."""
     from . import hub
     from .config import RigConfig
 
+    root = _dataset_root(name)
+    _require_saved_episodes(root)
     h = RigConfig.load(rig).hub if rig.exists() else None
-    url = hub.push_dataset(name, private=h.private if h else True, rig_username=h.username if h else None)
+    url = hub.push_dataset(repo_id or name, private=h.private if h else True, rig_username=h.username if h else None, root=root)
     console.print(f"[green]uploaded: {url}[/]")
     if remove_local:
-        hub.remove_local_dataset(name)
+        hub.remove_local_dataset(name, root=root)
         console.print("local copy removed")
 
 
