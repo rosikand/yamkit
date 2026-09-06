@@ -17,7 +17,8 @@ def test_teleop_engage_and_track(rig, fake_connect):
     assert leader.closed and follower.closed
 
 
-def test_button_toggles_engage(rig, fake_connect):
+def test_button_toggles_engage(rig, fake_connect, caplog):
+    caplog.set_level("INFO", logger="yamkit.teleop")
     session = TeleopSession.from_rig(rig, ["right_follower"], hz=500.0, sync_seconds=0.01)
     pair = session.pairs[0]
     leader = fake_connect["right_leader"]
@@ -33,7 +34,33 @@ def test_button_toggles_engage(rig, fake_connect):
     leader.encoder[0].io_inputs = [1, 0]  # press again
     session.step()
     assert not pair.engaged
+    transitions = [record.message for record in caplog.records if "via button" in record.message]
+    assert len(transitions) == 2
+    assert "[right_leader->right_follower] engaged via button 0" in transitions[0]
+    assert "[right_leader->right_follower] disengaged via button 0" in transitions[1]
     session.shutdown()
+
+
+@pytest.mark.parametrize("initially_engaged", [False, True])
+def test_failed_follower_command_does_not_log_successful_button_transition(
+    rig, fake_connect, monkeypatch, caplog, initially_engaged,
+):
+    caplog.set_level("INFO", logger="yamkit.teleop")
+    session = TeleopSession.from_rig(rig, ["left_follower"], home_speed=0)
+    pair = session.pairs[0]
+    pair.engaged = initially_engaged
+    fake_connect["left_leader"].encoder[0].io_inputs = [1, 0]
+
+    def fail_command(*args, **kwargs):
+        raise RuntimeError("fixture command rejected")
+
+    monkeypatch.setattr(pair.follower, "command", fail_command)
+    try:
+        with pytest.raises(RuntimeError, match="command rejected"):
+            session.step()
+        assert not any("via button" in record.message for record in caplog.records)
+    finally:
+        session.shutdown(home=False)
 
 
 def test_session_homes_every_arm_on_start_and_stop(rig, fake_connect):
@@ -48,10 +75,11 @@ def test_session_homes_every_arm_on_start_and_stop(rig, fake_connect):
     assert leader.closed and follower.closed
 
 
-def test_run_duration_and_stats_start_after_slow_startup_home(rig, fake_connect, monkeypatch):
+def test_run_duration_and_stats_exclude_home_and_cleanup(rig, fake_connect, monkeypatch, caplog):
     import time
 
     clock = [100.0]
+    caplog.set_level("INFO", logger="yamkit.teleop")
     ticks = []
     homes = []
     session = TeleopSession.from_rig(rig, ["left_follower"], hz=4, on_tick=lambda _: ticks.append(clock[0]))
@@ -62,6 +90,8 @@ def test_run_duration_and_stats_start_after_slow_startup_home(rig, fake_connect,
         homes.append(why)
         if why == "start":
             clock[0] += 10.0  # longer than the whole requested teleop interval
+        else:
+            clock[0] += 20.0  # shutdown must not reduce the measured control-loop rate
 
     monkeypatch.setattr(session, "home_all", slow_home)
     stats = session.run(duration=1.0)
@@ -69,7 +99,12 @@ def test_run_duration_and_stats_start_after_slow_startup_home(rig, fake_connect,
     assert homes == ["start", "stop"]
     assert ticks == [110.0, 110.25, 110.5, 110.75, 111.0]
     assert stats.t_start == 110.0 and stats.ticks == len(ticks)
+    assert stats.t_stop == 111.0 and stats.rate_hz == 5.0
     assert all(robot.closed for robot in fake_connect.values())
+    clock[0] += 100.0
+    session.shutdown(home=False)  # the CLI's cleanup safety net must not move the stop timestamp
+    assert stats.t_stop == 111.0 and stats.rate_hz == 5.0
+    assert sum("teleop session closed" in record.message for record in caplog.records) == 1
 
 
 def test_stop_returns_home_after_teleop(rig, fake_connect, monkeypatch):
@@ -307,7 +342,8 @@ def test_shutdown_failure_closes_remaining_arms(rig, fake_connect, monkeypatch, 
     assert all(robot.closed for robot in fake_connect.values())
 
 
-def test_shutdown_retries_failed_close_without_repeating_home(rig, fake_connect, monkeypatch):
+def test_shutdown_retries_failed_close_without_repeating_home(rig, fake_connect, monkeypatch, caplog):
+    caplog.set_level("INFO", logger="yamkit.teleop")
     session = TeleopSession.from_rig(rig)
     robot = fake_connect["left_leader"]
     close = robot.close
@@ -326,8 +362,11 @@ def test_shutdown_retries_failed_close_without_repeating_home(rig, fake_connect,
         session.shutdown()
     assert homes == ["stop"] and not robot.closed
     assert all(other.closed for name, other in fake_connect.items() if name != "left_leader")
+    assert not any("teleop session closed" in record.message for record in caplog.records)
     session.shutdown()
     assert homes == ["stop"] and robot.closed
+    session.shutdown()
+    assert sum("teleop session closed" in record.message for record in caplog.records) == 1
 
 
 def test_run_failure_skips_return_home(rig, fake_connect, monkeypatch):
@@ -340,6 +379,37 @@ def test_run_failure_skips_return_home(rig, fake_connect, monkeypatch):
     with pytest.raises(RuntimeError, match="bad observation"):
         session.run(duration=0.1)
     assert all(robot.closed and not robot.commands for robot in fake_connect.values())
+
+
+def test_run_fault_with_failed_cleanup_does_not_log_closed_until_retry(rig, fake_connect, monkeypatch, caplog):
+    caplog.set_level("INFO", logger="yamkit.teleop")
+    session = TeleopSession.from_rig(rig, home_speed=0)
+    robot = fake_connect["left_leader"]
+    close = robot.close
+    failures = []
+
+    def fail_close_once():
+        if not failures:
+            failures.append(True)
+            raise RuntimeError("fixture SDK close failed")
+        close()
+
+    def fail_step():
+        raise ValueError("fixture observation failed")
+
+    monkeypatch.setattr(robot, "close", fail_close_once)
+    monkeypatch.setattr(session, "step", fail_step)
+    # close_all preserves this original error, suppressing its own cleanup exception.
+    with pytest.raises(ValueError, match="observation failed"):
+        session.run(duration=0.1)
+    assert not robot.closed
+    assert all(other.closed for name, other in fake_connect.items() if name != "left_leader")
+    assert not any("teleop session closed" in record.message for record in caplog.records)
+
+    session.shutdown(home=False)
+    session.shutdown(home=False)
+    assert all(robot.closed and not robot.commands for robot in fake_connect.values())
+    assert sum("teleop session closed" in record.message for record in caplog.records) == 1
 
 
 @pytest.mark.parametrize("duration", [-1, float("nan"), float("inf")])

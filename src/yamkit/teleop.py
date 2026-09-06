@@ -59,10 +59,11 @@ class TeleopStats:
     ticks: int = 0
     overruns: int = 0
     t_start: float = field(default_factory=time.monotonic)
+    t_stop: float | None = None
 
     @property
     def rate_hz(self) -> float:
-        el = time.monotonic() - self.t_start
+        el = (time.monotonic() if self.t_stop is None else self.t_stop) - self.t_start
         return self.ticks / el if el > 0 else 0.0
 
 
@@ -103,6 +104,7 @@ class TeleopSession:
         self.stop_event = threading.Event()
         self._home_aborted = False
         self._shutdown_started = False
+        self._shutdown_logged = False
 
     # ----- construction helpers ---------------------------------------------------------------
     @classmethod
@@ -220,6 +222,7 @@ class TeleopSession:
         for pair, lead, foll, gate, command, capture in pending:
             if self.stop_event.is_set():
                 return
+            engaged = not pair.engaged and gate.engaged
             released = pair.engaged and not gate.engaged
             if capture:
                 measured = pair.follower.read()
@@ -228,6 +231,14 @@ class TeleopSession:
                                              gripper_speed=pair.follower.max_gripper_speed)
             pair._gate = gate
             pair.follower.command(command[:6], command[6] if len(command) > 6 else None, limit_speed=not capture)
+            # Button transitions can occur between the CLI's 2 Hz state samples.
+            # Log only after the follower accepts the corresponding command.
+            if engaged:
+                log.info("[%s] engaged via button %d: follower synchronizing for at least %.2f s",
+                         pair.name, self.engage_button, gate.duration)
+            elif released:
+                log.info("[%s] disengaged via button %d: follower holding measured pose",
+                         pair.name, self.engage_button)
             if self.stop_event.is_set():
                 return
             if released:
@@ -294,6 +305,9 @@ class TeleopSession:
         first_shutdown = not self._shutdown_started
         self._shutdown_started = True
         self.stop_event.set()
+        if first_shutdown:
+            self.stats.t_stop = time.monotonic()  # exclude homing/close time from the loop rate
+        arms = [arm for pair in self.pairs for arm in (pair.leader, pair.follower)]
         try:
             if first_shutdown and home:
                 for pair in self.pairs:
@@ -306,5 +320,8 @@ class TeleopSession:
         finally:
             for pair in self.pairs:
                 pair.engaged = False
-            close_all([arm for pair in self.pairs for arm in (pair.leader, pair.follower)])
-        log.info("teleop session closed (%d ticks, %.1f Hz, %d overruns)", self.stats.ticks, self.stats.rate_hz, self.stats.overruns)
+            close_all(arms)
+        # Keep attempting failed resources on later shutdown calls; only the message is once-only.
+        if not self._shutdown_logged and all(arm._closed for arm in arms):
+            self._shutdown_logged = True
+            log.info("teleop session closed (%d ticks, %.1f Hz, %d overruns)", self.stats.ticks, self.stats.rate_hz, self.stats.overruns)

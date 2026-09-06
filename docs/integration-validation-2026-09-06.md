@@ -12,6 +12,8 @@ host is `yam-lenovo`, accessed as `andre`, with checkout `/home/andre/rohan-new`
 - Structured Settings updates validate control values before writing the rig. Invalid
   speeds, rates, buttons and nonfinite values leave the rig and camera configuration intact.
 - Native teleop duration and rate statistics begin after startup homing/engagement preparation.
+- Native teleop freezes the final rate before return-home/close time, reports successful button
+  transitions immediately, and logs successful session closure once while retaining cleanup retries.
 - Recording Stop during acquisition/reset uses LeRobot's existing Stop events to save the
   current episode. Subsequent interrupts and interruptions during startup/saving/homing
   retain their normal behavior. Stop before any captured frame cancels without an empty save.
@@ -28,7 +30,7 @@ relaxed. No vendored SDK code changed.
 
 ## Software checks
 
-The complete hardware-free suite passed **1,154 tests** in 149.53 seconds, with four existing
+The complete hardware-free suite passed **1,157 tests** in 151.31 seconds, with four existing
 Starlette/fork deprecation warnings. `make lint`, Ruff on all three diagnostic scripts,
 the offline lockfile check and `git diff --check` passed.
 
@@ -133,17 +135,50 @@ the three-second postflight sample, RX/TX errors stayed zero, and the rig checks
 The local command log is `.context/validation/right-pair-read.txt`; preflight and postflight
 reports are on the Lenovo under `.context/validation-20260906/right-pair-read-*.json`.
 
+## Approved left-pair teleop: input issue unresolved
+
+After operator approval, the following command ran once on deployed revision `f0c1753`
+(executable source `29787b1`):
+
+```bash
+tailscale ssh andre@yam-lenovo 'cd /home/andre/rohan-new && source scripts/env.sh && yamkit teleop --rig configs/rig.yaml --pair left_follower --duration 30 --no-home --bilateral-kp 0 --print-state'
+```
+
+The command exited successfully with 3,001 control ticks and zero overruns. All 60 printed
+status samples were idle, with buttons `00`, leader gripper 0.96–0.97 and follower gripper 0.95.
+The leader joints were unchanged except 0.001 rad variation at joint 5. The follower's largest
+printed change was 0.016 rad at joint 4 between its first two samples, then it held its pose.
+Both arms closed; postflight found no remaining arm process, no CAN traffic during three
+seconds, zero RX/TX errors and the original rig checksum. Logs are
+`.context/validation/left-teleop.txt` locally and `left-teleop-{preflight,postflight}.json` in
+the Lenovo validation directory.
+
+The operator reported pressing the top yellow button without activation or movement. This
+run therefore establishes initial hold and bounded cleanup, **not successful teleop tracking**.
+The old status logger samples only about twice per second, which can miss short button states.
+Follow-up code logs successful button transitions directly. The original final 98.7 Hz summary
+included close time despite approximately 100 Hz during acquisition; final rate timing now
+excludes cleanup. These are diagnostic fixes, not an explanation for the missing input.
+
+A subsequent motor-free diagnostic polled both teaching handles on their resolved interfaces
+(`left_leader`: `can2`, `right_leader`: `can1`) for 75 seconds using only CAN request `0x50E`
+with payload `ff02`. It did not construct a robot or write encoder configuration. Each handle
+returned 3,067 raw reports without a missed request; all digital-input bytes were zero and
+trigger counts varied only from 14–25 on the left and 4087–4098 on the right. The raw log is
+`.context/validation-20260906/handle-inputs-01.jsonl` on the Lenovo, with summary
+`.context/validation/handle-inputs-01.txt` locally. A coordinated held-button sample is still
+needed to establish which handle/button is being pressed and whether its raw input changes.
+
 ## Remaining physical acceptance
 
 Both pairs now have successful connection, state acquisition and orderly cleanup evidence.
 Operator confirmation of physical identity/behavior, button transitions, gripper travel,
-teleop tracking, recording, homing and physical policy execution remain unverified. Printed
+teleop tracking, recording, homing and physical policy execution remain unverified. The approved
+left teleop session exercised idle hold only. Printed
 samples do not measure sensor freshness or the firmware timeout.
 
-Each additional powered test requires approval of its exact command and effects first. The
-next proposed test is a bounded left-pair native teleop session with homing and bilateral force
-feedback disabled, initially disengaged. The follower actively holds its arm and gripper pose
-while disengaged; the top button must be released through startup, since a held button at the
-first tick counts as engagement. Subsequent engagement synchronizes toward the leader over
-the configured three seconds before tracking at 100 Hz. Existing live-LLM freshness and remote
-policy qualification restrictions remain in effect; see [the acceptance checklist](acceptance-test.md).
+Each additional powered test requires approval of its exact command and effects first. Resolve
+the handle input first using a motor-free sensor read before requesting another powered run.
+During future teleop, keep the top button released through startup: a held button at the first
+tick counts as engagement. Existing live-LLM freshness and remote policy qualification
+restrictions remain in effect; see [the acceptance checklist](acceptance-test.md).
