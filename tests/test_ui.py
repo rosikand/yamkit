@@ -331,12 +331,20 @@ def test_dataset_endpoints(client):
 
 def test_session_endpoints_spawn_and_stop(client, monkeypatch):
     # Replace the yamkit CLI child with a harmless stand-in that just idles.
+    child = ("import signal, time; signal.signal(signal.SIGINT, signal.default_int_handler); "
+             "print('TEST_CHILD_READY', flush=True); time.sleep(30)")
     monkeypatch.setattr(SessionManager, "yamkit_argv",
-                        lambda self, *args: [sys.executable, "-c", "import time; time.sleep(30)"])
+                        lambda self, *args: [sys.executable, "-c", child])
     r = client.post("/api/session/teleop", json={"auto_engage": False})
     assert r.status_code == 200 and r.json()["active"] is True
     assert client.post("/api/session/record",
                        json={"name": "x", "task": "y"}).status_code == 409  # busy
+    # Popen returning does not mean Python has installed its SIGINT handler.
+    # Measure Stop after child readiness, separately from interpreter startup.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and "TEST_CHILD_READY" not in client.get("/api/session").json()["log"]:
+        time.sleep(0.02)
+    assert "TEST_CHILD_READY" in client.get("/api/session").json()["log"]
     r = client.post("/api/session/stop")
     assert r.status_code == 200
     deadline = time.monotonic() + 5
