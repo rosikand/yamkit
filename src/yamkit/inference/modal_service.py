@@ -6,6 +6,7 @@ class constructors (each parameter set would otherwise have its own GPU pool).
 
 from __future__ import annotations
 
+import gc
 import os
 import time
 from pathlib import Path
@@ -18,6 +19,40 @@ DEV_SCALEDOWN_S = 15
 REMOTE_ROOT = "/opt/yamkit"
 MEMORY_MIB = 65536
 CPU_CORES = 4
+
+
+def _prepare_http_graph_gc(runtime) -> dict:
+    """Exclude the immutable container's loaded heap from future cyclic scans.
+
+    GC freezing is process-wide, so this must never run in a local policy, UI,
+    factory definition or test process. New observations, responses and graph
+    warm-up objects remain subject to ordinary automatic GC. Frozen cycles live
+    until this one-model container retires; models are never replaced in place.
+    """
+    import modal
+
+    if (getattr(modal, "is_local", lambda: True)() is not False
+            or os.environ.get("YAMKIT_ROOT") != REMOTE_ROOT
+            or getattr(getattr(runtime, "profile", None), "id", None) != "molmoact2"
+            or getattr(runtime, "execution_mode", None) != "cuda_graph10"
+            or not str(getattr(runtime, "device", "")).startswith("cuda")
+            or getattr(runtime, "_prediction_count", None) != 0):
+        raise RuntimeError("Model GC preparation requires the dedicated Modal HTTP graph container before its first prediction")
+    if not gc.isenabled():
+        raise RuntimeError("Model GC preparation requires automatic collection to remain enabled")
+    thresholds = gc.get_threshold()
+    started = time.monotonic()
+    collected = gc.collect(2)
+    collected_at = time.monotonic()
+    gc.freeze()
+    frozen_at = time.monotonic()
+    frozen = gc.get_freeze_count()
+    if not gc.isenabled() or gc.get_threshold() != thresholds or type(frozen) is not int or frozen <= 0:
+        raise RuntimeError("Model GC preparation failed to preserve automatic collection")
+    return {"strategy": "freeze_after_model_load_v1", "automatic_gc_enabled": True,
+            "thresholds": list(thresholds), "collected_objects": collected, "frozen_objects": frozen,
+            "collection_s": collected_at - started, "freeze_s": frozen_at - collected_at,
+            "scope": "Loaded container heap only; later request allocations use automatic GC"}
 
 
 def create_app(profile_id: str = "smolvla", *, gpu: str = DEFAULT_GPU, development: bool = False,
@@ -106,12 +141,17 @@ def create_app(profile_id: str = "smolvla", *, gpu: str = DEFAULT_GPU, developme
             self.runtime = ModelRuntime.load(fixed_profile_id, device="cuda", execution_mode=execution_mode)
             loaded = time.monotonic()
             volume.commit()
-            self.container_init_s = time.monotonic() - entered
-            self.volume_commit_s = self.container_init_s - (loaded - entered)
+            self.volume_commit_s = time.monotonic() - loaded
             if transport == "http":
                 from yamkit.inference.identity import inference_build_id
 
                 self.inference_build_id = inference_build_id()
+            self.python_gc = {"strategy": "automatic"}
+            if transport == "http" and execution_mode == "cuda_graph10":
+                # The process keeps exactly this loaded model for its lifetime.
+                # Freeze before requests exist, never on task changes or resets.
+                self.python_gc = _prepare_http_graph_gc(self.runtime)
+            self.container_init_s = time.monotonic() - entered
 
         def _readiness(self) -> dict:
             call_modes = ["remote", "spawn"] if routing_region == "us-east" else ["remote"]
@@ -123,6 +163,7 @@ def create_app(profile_id: str = "smolvla", *, gpu: str = DEFAULT_GPU, developme
                     "requested_memory_mib": memory_mib,
                     "memory_scope": "Requested memory is host RAM; CUDA telemetry measures GPU memory separately",
                     "container_init_s": self.container_init_s, "volume_commit_s": self.volume_commit_s,
+                    "python_gc": dict(self.python_gc),
                     "transport": transport, "execution_mode": execution_mode,
                     "supported_call_modes": call_modes + (["http"] if transport == "http" else []),
                     "preferred_call_mode": "http" if transport == "http" else "remote",

@@ -288,6 +288,10 @@ def test_factory_adds_opt_in_endpoint_to_same_class_without_forwarding_account_s
         return runtime
 
     monkeypatch.setattr("yamkit.inference.service.ModelRuntime.load", load)
+    # This factory runs in pytest; only the separate fake-GC tests exercise the
+    # cloud startup guard. Never freeze this process's real objects.
+    monkeypatch.setattr("yamkit.inference.modal_service._prepare_http_graph_gc",
+                        lambda runtime: {"strategy": "fake_gc_for_factory_test"})
     monkeypatch.setenv("HF_TOKEN", "test-hf-secret")
     monkeypatch.setenv("MODAL_TOKEN_SECRET", "must-never-forward")
     monkeypatch.setenv(HTTP_TOKEN_ENV, TOKEN)
