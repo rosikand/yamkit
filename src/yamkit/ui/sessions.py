@@ -38,6 +38,7 @@ _TELEOP_PAIR_RE = re.compile(r"(\S+->\S+): (ENGAGED|idle)\s*err=\s*([-+.\dnaif]+
 _OPERATOR_PHASE_RE = re.compile(r"\[yamkit-operator\] (starting|homing|synchronizing|ready|holding|stopping|closing)\s*$")
 # lerobot-record progress (message wording varies between versions; match loosely)
 _EPISODE_RE = re.compile(r"[Rr]ecord(?:ing)?\s+episode\s+(\d+)")
+_PREPARING_RE = re.compile(r"Preparing episode\s+(\d+): waiting for operator readiness\.")
 _SAVING_RE = re.compile(r"Saving episode\s+(\d+):")
 _FINISHING_RE = re.compile(r"Stop recording\b")
 _RESET_RE = re.compile(r"[Rr]eset the environment")
@@ -166,6 +167,14 @@ def parse_line(line: str, parsed: dict[str, Any]) -> None:
                 "error_rad": err_f,
                 "gripper": None if grip == "-" else _maybe_float(grip),
             }
+        return
+    m = _PREPARING_RE.search(line)
+    if m:
+        parsed["episode"] = int(m.group(1))
+        parsed["phase"] = "preparing"
+        # Synchronization and camera warm-up do not consume episode time. Clear
+        # the previous episode/reset clock until actual acquisition starts.
+        parsed.pop("phase_since", None)
         return
     m = _EPISODE_RE.search(line)
     if m:

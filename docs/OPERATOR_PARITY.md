@@ -32,6 +32,15 @@ Native teleop and LeRobot keep their own loops, rates, processes and dataset han
 The existing follower connection and recorder camera owner are reused. Recording reset
 continues through LeRobot's existing loop and preserves the operator state and live previews.
 
+For dashboard recording and CLI `--auto-engage`, a preparation pass runs that same
+upstream loop with `dataset=None` until all pairs acknowledge readiness. Only then
+does the requested acquisition loop start, with a fresh episode timer and timestamp
+zero for the first saved frame. Synchronization and camera warm-up contribute no
+frames or video. Each later episode checks the existing state: ready pairs proceed
+immediately; a paused pair waits for its handle button and synchronization. A pause
+within an episode keeps recording without resetting time. Manual CLI recordings
+without automatic engagement retain their previous held-pose recording behavior.
+
 The native `--duration` timer and rate statistics start after startup homing and engagement
 preparation. Recording temporarily translates the first SIGINT during LeRobot's existing
 acquisition/reset loop into that loop's normal Stop events. This saves the current episode and
@@ -41,17 +50,22 @@ startup, saving, finalization and homing keep their existing interruption behavi
 unsuccessful recorder exit never triggers upload or local-data deletion.
 
 The dashboard uses a separate cooperative first Stop once the recorder enters its
-first acquisition loop. The recorder registers its session-bound PID after installing
+first preparation or acquisition loop. The recorder registers its session-bound PID after installing
 a SIGUSR1 handler; the manager verifies that PID, process group and process start time.
 The signal only sets upstream recording stop events, which remain available during
 episode saving. Encoders receive no signal, so saving completes before normal home and
 release. A further dashboard Stop uses SIGINT to interrupt. Before registration,
 startup cancellation retains SIGINT behavior. No alternate acquisition loop is added.
+Stop during preparation cancels before an empty episode can be saved and releases
+connected arms without an additional home move. Signal handlers and temporary
+readiness/log adapters are restored on normal exit and failure.
 
 Operator readiness is separate from episode progress: an engaged pair can still be
 synchronizing. The UI reports ready only after every pair's synchronization completes
 and the follower accepts the command. Homing/closing keep Start disabled until the
 entire child process group and camera ownership finish cleanup.
+The preparation message has no episode clock; the deferred acquisition message
+starts it. Total session elapsed remains visible separately and includes preparation.
 
 ## Recorded action labels
 

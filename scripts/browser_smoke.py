@@ -66,6 +66,9 @@ def child(mode: str, control: Path) -> None:
                 elif phase == "record":
                     print("[yamkit-operator] ready", flush=True)
                     print("Recording episode 0", flush=True)
+                elif phase == "preparing":
+                    print("Preparing episode 0: waiting for operator readiness.", flush=True)
+                    print("[yamkit-operator] synchronizing", flush=True)
                 elif phase == "reset":
                     print("Reset the environment", flush=True)
                 elif phase == "saving":
@@ -79,7 +82,7 @@ def child(mode: str, control: Path) -> None:
                     lease.release()
                     print("[yamkit] recording finished — uploading browser fixture", flush=True)
                 prior = phase
-            if phase in ("starting", "homing", "synchronizing", "ready", "holding", "record", "reset"):
+            if phase in ("starting", "homing", "synchronizing", "ready", "holding", "preparing", "record", "reset"):
                 seq += 1
                 for index, name in enumerate(CAMERAS):
                     frame = np.full((120, 160, 3), (seq + index * 70) % 255, dtype=np.uint8)
@@ -486,19 +489,40 @@ def run(work: Path) -> dict:
             check("Session exit resets controls and progress while keeping Output",
                   browser.evaluate("!document.querySelector('#btn-teleop').disabled && !document.querySelector('#btn-record').disabled && !document.querySelector('#rec-name').disabled && document.querySelector('#rec-hub').disabled && document.querySelector('#btn-stop-top').hidden && document.querySelector('#rec-progress').textContent === 'idle' && document.querySelector('#log').textContent.includes('[yamkit-operator] ready')"))
             cameras("direct")
-            control.write_text("record")
+            control.write_text("preparing")
             browser.value("#rec-name", "browser_fixture")
             browser.value("#rec-task", "synthetic recording")
             browser.value("#rec-reset-s", "0")
             browser.click("#btn-record")
             cameras("session")
+            browser.wait("session.parsed?.phase === 'preparing' && session.elapsed_s >= 5")
+            check("Recording preparation does not consume episode time",
+                  browser.evaluate("session.phase_elapsed_s === null && document.querySelector('#btn-record').textContent === 'Starting Recording…' && document.querySelector('#teleop-ready').textContent.includes('synchronizing') && !document.querySelector('#rec-progress').textContent.includes('preparing 5s')"))
+            browser.call("Page.reload")
+            browser.wait("document.querySelector('#btn-record') && session.parsed?.phase === 'preparing'")
+            check("Reload during preparation keeps the episode clock stopped",
+                  browser.evaluate("session.phase_elapsed_s === null && document.querySelector('#btn-record').textContent === 'Starting Recording…' && document.querySelector('#rec-progress').textContent.includes('session elapsed')"))
+            control.write_text("ready")
+            browser.wait("session.parsed?.operator_phase === 'ready'")
+            check("Operator readiness alone cannot start the episode display before acquisition",
+                  browser.evaluate("session.parsed.phase === 'preparing' && session.phase_elapsed_s === null && document.querySelector('#btn-record').textContent === 'Starting Recording…' && document.querySelector('#teleop-ready').textContent.includes('episode clock has not started')"))
+            control.write_text("record")
             browser.wait("document.querySelector('#btn-record').textContent === 'Recording running'")
+            check("Acquisition starts a new episode clock after preparation",
+                  browser.evaluate("session.parsed.phase === 'record' && session.phase_elapsed_s < session.elapsed_s - 4 && document.querySelector('#teleop-ready').textContent.includes(' / 30 s')"))
             check("Dashboard recording enables automatic engagement", "--auto-engage" in seen[-1])
             check("Zero reset duration is preserved", seen[-1][seen[-1].index("--reset-s") + 1] == "0.0")
             check("Recording displays recorder-owned JPEGs through browser /stream")
             browser.evaluate("window.smokeImages = [...document.querySelectorAll('.cam img')]; window.smokeURLs = smokeImages.map(i => i.src)")
             time.sleep(3.2)
             check("Healthy MJPEG nodes and URLs survive normal polling", browser.evaluate("smokeImages.every((img, i) => img === document.querySelectorAll('.cam img')[i] && img.src === smokeURLs[i])"))
+            episode_started = browser.evaluate("session.parsed.phase_since")
+            control.write_text("holding")
+            browser.wait("session.parsed?.operator_phase === 'holding' && document.querySelector('#teleop-ready').textContent.includes('Following paused')")
+            control.write_text("ready")
+            browser.wait("session.parsed?.operator_phase === 'ready' && document.querySelector('#btn-record').textContent === 'Recording running'")
+            check("Pausing and resuming during acquisition preserves the episode clock",
+                  browser.evaluate(f"session.parsed.phase_since === {episode_started} && session.phase_elapsed_s >= 3"))
             control.write_text("reset")
             browser.wait("session.parsed?.phase === 'reset'")
             cameras("session")

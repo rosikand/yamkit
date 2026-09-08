@@ -58,6 +58,34 @@ def test_operator_readiness_does_not_reset_recording_progress():
     assert parsed["operator_phase"] == "closing"  # cached state cannot imply readiness
 
 
+def test_episode_clock_waits_for_acquisition_after_operator_preparation(monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    parsed = {}
+    parse_line("INFO Preparing episode 0: waiting for operator readiness.", parsed)
+    for phase in ("homing", "synchronizing", "ready"):
+        clock[0] += 5.0
+        parse_line(f"[yamkit-operator] {phase}", parsed)
+        assert parsed["episode"] == 0 and parsed["phase"] == "preparing"
+        assert "phase_since" not in parsed
+    parse_line("INFO Recording episode 0", parsed)
+    assert parsed["phase"] == "record" and parsed["phase_since"] == 25.0
+
+    clock[0] = 30.0
+    parse_line("[yamkit-operator] holding", parsed)
+    parse_line("[yamkit-operator] ready", parsed)
+    assert parsed["phase_since"] == 25.0  # a later pause/resume does not restart the episode
+    parse_line("INFO Reset the environment", parsed)
+    assert parsed["phase"] == "reset" and parsed["phase_since"] == 30.0
+    parse_line("INFO Saving episode 0: encoding videos", parsed)
+    parse_line("INFO Preparing episode 1: waiting for operator readiness.", parsed)
+    assert parsed["episode"] == 1 and parsed["phase"] == "preparing"
+    assert "phase_since" not in parsed  # neither reset nor save time enters the next episode
+    clock[0] = 35.0
+    parse_line("INFO Recording episode 1", parsed)
+    assert parsed["phase"] == "record" and parsed["phase_since"] == 35.0
+
+
 def test_parse_record_and_policy_lines():
     parsed = {}
     parse_line("INFO 2026-01-01 Recording episode 3", parsed)

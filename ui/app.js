@@ -358,6 +358,7 @@ pages.record = {
             <button id="btn-record" class="primary">Start Recording</button>
           </div>
           <div class="hint">Start Recording prepares the arms and cameras, then followers track the leaders automatically.
+            The episode clock and recorded frames start when the arms are ready.
             Stop ends acquisition, finishes saving and returns the arms home.</div>
         </div></div>
       </div>
@@ -413,7 +414,8 @@ pages.record = {
     const mode = this._starting || (session.active ? session.mode : null);
     const stopping = session.active && (session.stopping || p.operator_stopping || p.operator_phase === "stopping" || this._stopPending);
     const operator = p.operator_phase || "starting";
-    const settingUp = ["starting", "homing", "synchronizing"].includes(operator);
+    const preparingRecord = mode === "record" && (!p.phase || p.phase === "preparing");
+    const settingUp = ["starting", "homing", "synchronizing"].includes(operator) || preparingRecord;
     const gracefulRecordStop = !!session.record_stop_ready && !stopping;
     const returningHome = operator === "homing" && (stopping || p.phase === "finishing");
     for (const name of ["teleop", "record"]) {
@@ -466,6 +468,8 @@ pages.record = {
           style = "setup";
           message = operator === "homing" ? "Starting — arms moving home. Let go of the handles and wait."
             : operator === "synchronizing" ? "Starting — followers synchronizing with the leaders. Please wait."
+            : p.phase === "preparing" && operator === "holding" ? `Preparing episode ${(p.episode ?? 0) + 1} — following is paused by a handle button. Press that button again to resume; the episode clock has not started.`
+            : p.phase === "preparing" ? `Preparing episode ${(p.episode ?? 0) + 1} — waiting for the followers to be ready. The episode clock has not started.`
             : `Starting ${mode === "teleop" ? "teleop" : "recording"} — connecting arms${mode === "record" ? " and cameras" : ""}. Please wait.`;
         } else if (operator === "holding") {
           message = "Following paused by a handle button — press that button again to resume, or Stop to return home.";
@@ -492,7 +496,7 @@ pages.record = {
       </div>`).join("");
     const bits = [busy ? stN(stopping ? "stopping" : settingUp ? "starting" : `${mode} running`, true) : stN("idle")];
     if (session.active) {
-      bits.push(stN(`elapsed ${fmtDur(session.elapsed_s)}`));
+      bits.push(stN(`session elapsed ${fmtDur(session.elapsed_s)}`));
       if (p.episode != null) bits.push(stN(`episode ${p.episode + 1}${meta.episodes ? " of " + meta.episodes : ""}`));
       if (p.phase) bits.push(stN(p.phase + (session.phase_elapsed_s != null ? ` ${fmtDur(session.phase_elapsed_s)}` : "")));
       if (!stopping && operator === "ready" && p.rate_hz) bits.push(stN(`${p.rate_hz.toFixed(0)} Hz`));

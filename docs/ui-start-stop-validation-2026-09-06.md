@@ -158,3 +158,37 @@ teleop hardware run.
 Evidence: Lenovo `.context/validation-20260908/ui-autostart-02*`, cloud archive
 `.context/validation/lenovo-autostart-02-artifacts.tar`, and Chrome report/screenshots
 under `.context/validation/autostart-observer-nrh6956_/`.
+
+## Episode clock starts at readiness — 2026-09-08 UTC
+
+The operator independently tested both dashboard teleop modes and confirmed they
+worked, then reported that the episode clock was already four to five seconds into
+recording when the arms became ready. The pinned recorder started its timer and
+saved frames before the first operator step, so synchronization was included in
+both the episode duration and dataset.
+
+Automatic recording now runs the same upstream control loop without a dataset to
+prepare each episode. Every selected follower must acknowledge readiness before
+the acquisition announcement and timed dataset loop begin. Each episode reads fresh
+buttons and observations, including after saving; an already ready pair needs only
+one preparation tick, while a paused pair waits for manual resume and synchronization.
+No synchronization frames enter the dataset or videos. Manual CLI behavior and
+mid-episode pause behavior are preserved.
+
+The UI distinguishes preparation from acquisition and labels total session elapsed
+separately. Preparation does not start the episode clock, including after a reload.
+Stop during preparation cancels without an empty episode or additional home move.
+The existing upstream cleanup and scoped signal handlers remain in effect.
+
+Fifteen new hardware-free regressions pass using the actual pinned LeRobot loops,
+real dataset writer and fake YAM arms. A five-second synchronization followed by a
+requested one-second episode saves the full sixteen frames at sixteen FPS, starting
+at timestamp zero, for single and bimanual rigs. Tests also cover fresh readiness
+after saving, pause/resume, Stop before acquisition, rejected commands and cleanup.
+Sixty real Chrome fixture checks pass with no JavaScript errors or hardware calls.
+The full suite passes: **1,253 tests**, with four existing deprecation warnings.
+`make lint` and `git diff --check` also pass.
+
+No arm command was issued for this timing correction. The preceding physical
+acceptance describes the prior timing behavior; verification of the new timing on
+the real rig remains separate.

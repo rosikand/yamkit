@@ -4,6 +4,7 @@
 yamkit's thin CLI wrappers. There is no alternate recorder or acquisition loop.
 """
 
+import inspect
 import json
 import logging
 import os
@@ -26,6 +27,18 @@ from .teleop_control import GatedAction, LeaderAction, PairGate, action_vector, 
 from .validation import finite_scalar, vendor_joint_limits
 
 log = logging.getLogger(__name__)
+# Pinned LeRobot's image-writer decorator hides record_loop's signature. Declare
+# its public call layout so positional/keyword calls bind before any preparation;
+# execution still goes through the current upstream and Stop adapters.
+_RECORD_LOOP_SIGNATURE = inspect.Signature([
+    inspect.Parameter(name, inspect.Parameter.POSITIONAL_OR_KEYWORD, default=default)
+    for name, default in {
+        **dict.fromkeys(("robot", "events", "fps", "teleop_action_processor",
+                         "robot_action_processor", "robot_observation_processor"), inspect.Parameter.empty),
+        "dataset": None, "teleop": None, "control_time_s": None, "single_task": None,
+        "display_data": False, "display_mode": "rerun", "display_compressed_images": False,
+    }.items()
+])
 
 
 class OperatorStep(ProcessorStep):
@@ -63,6 +76,12 @@ class OperatorStep(ProcessorStep):
         self.auto_engage = teleop_config.auto_engage
         self.gates = {prefix: PairGate() for prefix in self.sides}
         self._reported_phase = None
+        self._on_ready = None
+
+    @property
+    def ready(self):
+        """All pairs synchronized, as acknowledged by the follower's send path."""
+        return self._reported_phase == "ready"
 
     def __call__(self, transition):
         raw, obs = transition[TransitionKey.ACTION], transition[TransitionKey.OBSERVATION]
@@ -126,6 +145,8 @@ class OperatorStep(ProcessorStep):
             if phase != self._reported_phase:
                 log.info("[yamkit-operator] %s", phase)
                 self._reported_phase = phase
+            if self.ready and self._on_ready is not None:
+                self._on_ready()
 
         return {**transition, TransitionKey.ACTION: GatedAction(output, capture_hold=captures,
                                                                on_sent=latch_sent_holds)}
@@ -255,10 +276,88 @@ def record_stop_events():
                 pass  # the manager also forgets registration when this process exits
 
 
+@contextmanager
+def record_ready_events(processor):
+    """Run automatic engagement through LeRobot before its timed dataset loop.
+
+    Preparation uses the very same upstream control loop without a dataset, like
+    an environment reset. Cameras, safety clamps, button edges and Stop remain
+    active, but no episode frames or time are consumed. The manual CLI still
+    permits recording held poses before engagement.
+    """
+    operator = processor.steps[0]
+    if not operator.auto_engage:
+        yield
+        return
+    original_loop, original_say = lerobot_record.record_loop, lerobot_record.log_say
+    if getattr(original_loop, "_yamkit_record_ready", False):
+        yield
+        return
+    pending_announcement = None
+
+    def delay_episode_announcement(message, *args, **kwargs):
+        nonlocal pending_announcement
+        if isinstance(message, str) and message.startswith("Recording episode "):
+            episode = message.removeprefix("Recording episode ")
+            if episode.isdecimal():
+                pending_announcement = (message, args, kwargs)
+                log.info("Preparing episode %s: waiting for operator readiness.", episode)
+                return
+        return original_say(message, *args, **kwargs)
+
+    def ready_loop(*args, **kwargs):
+        nonlocal pending_announcement
+        bound = _RECORD_LOOP_SIGNATURE.bind(*args, **kwargs)
+        dataset = bound.arguments.get("dataset")
+        if dataset is None:
+            return original_loop(*args, **kwargs)
+        events = bound.arguments["events"]
+
+        def cancelled():
+            return events.get("stop_recording") or events.get("rerecord_episode")
+
+        try:
+            if not cancelled():
+                # Refresh at least one observation/button sample per episode.
+                # Cached readiness predates any time spent saving; a handle may
+                # have been paused or moved while the control loop was stopped.
+                preparation = dict(bound.arguments, dataset=None, control_time_s=float("inf"))
+                previous_ready = operator._on_ready
+                operator._on_ready = lambda: events.update(exit_early=True)
+                try:
+                    original_loop(**preparation)
+                finally:
+                    operator._on_ready = previous_ready
+            if cancelled() or not operator.ready:
+                raise KeyboardInterrupt
+            if pending_announcement is not None:
+                message, announcement_args, announcement_kwargs = pending_announcement
+                pending_announcement = None
+                original_say(message, *announcement_args, **announcement_kwargs)
+            if cancelled():
+                raise KeyboardInterrupt
+        except KeyboardInterrupt:
+            # Preparation has no episode to save. SystemExit preserves the normal
+            # upstream finally blocks while the YAM plugins release without a new
+            # home move, matching cancellation during incomplete startup.
+            log.info("Recording cancelled before acquisition; no frames captured for this episode.")
+            raise SystemExit(130) from None
+        return original_loop(*args, **kwargs)
+
+    ready_loop._yamkit_record_ready = True
+    lerobot_record.record_loop = ready_loop
+    lerobot_record.log_say = delay_episode_announcement
+    try:
+        yield
+    finally:
+        lerobot_record.record_loop = original_loop
+        lerobot_record.log_say = original_say
+
+
 @parser.wrap()
 def record(cfg: lerobot_record.RecordConfig):
     processor = make_teleop_processor(cfg.robot, cfg.teleop, cfg.dataset.fps)
-    with release_after_upstream(cfg), record_stop_events():
+    with release_after_upstream(cfg), record_stop_events(), record_ready_events(processor):
         return lerobot_record.record(cfg, teleop_action_processor=processor)
 
 

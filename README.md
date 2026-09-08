@@ -120,6 +120,8 @@ both followers to their leaders. **Stop** returns the arms home and releases the
 the page returns to idle after cleanup. There is no separate Park Arms control.
 Handle buttons remain available to pause/resume an individual follower, but no button
 press is required to start following. **Start Recording** uses the same automatic engagement.
+Its episode timer, frame count and videos begin only after both followers finish
+synchronizing and are ready. Preparation does not consume the requested episode duration.
 The command-line defaults below still wait for the handle button; add `--auto-engage`
 to `yamkit teleop`, `yamkit record` or `yamkit teleoperate` to select automatic engagement.
 
@@ -196,6 +198,13 @@ the arms home and releases them. A further Stop interrupts that work and may dis
 an unfinished episode. During saving, followers hold their last command. Command-line
 Ctrl-C during saving still interrupts the save. Stop during incomplete startup cancels
 startup and releases connected arms without initiating an additional home move.
+
+Dashboard recordings and CLI recordings with `--auto-engage` prepare each episode
+before starting its clock or saving frames. The separate **session elapsed** display
+includes startup time. If a follower was paused before the next episode, resume it
+with its handle button; preparation waits without silently engaging it again. Pausing
+during an episode keeps recording and does not restart its clock. Manual CLI recording
+without `--auto-engage` retains its ability to record held poses before engagement.
 
 After updating this branch, restart an idle `yamkit ui` process and refresh the page.
 An already running dashboard keeps its old Python backend until restarted.
