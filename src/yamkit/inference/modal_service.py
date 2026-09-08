@@ -25,12 +25,15 @@ def create_app(profile_id: str = "smolvla", *, gpu: str = DEFAULT_GPU, developme
                timeout: int = 120, startup_timeout: int = 600, region: str | None = "us-west",
                routing_region: str = "us-west", cache_volume_name: str = "yamkit-policy-weights",
                memory_mib: int = MEMORY_MIB, transport: str = "sdk", execution_mode: str = "eager",
-               http_token: str | None = None):
+               http_token: str | None = None, min_containers: int = 0):
     """Build an App definition; the caller owns deployment, budget and shutdown.
 
     Only ``HF_TOKEN`` and, for opt-in HTTP, a dedicated bearer secret reach the
     container through Modal Secrets. Modal account credentials stay in the SDK.
     HTTP and SDK methods share the same unparameterized class and GPU pool.
+    ``min_containers=1`` is intended for an owned, time-bounded ``app.run()``
+    context whose coordinator guarantees shutdown. Persistent preparation keeps
+    the default zero; either setting retains the one-container maximum.
     """
     profile = get_profile(profile_id)
     if transport not in ("sdk", "http"):
@@ -47,6 +50,8 @@ def create_app(profile_id: str = "smolvla", *, gpu: str = DEFAULT_GPU, developme
         raise ValueError("A dedicated HTTP token requires the HTTP transport")
     if gpu not in (DEFAULT_GPU, "H100!"):
         raise ValueError("Use one L40S or an exact H100! for explicit diagnostics")
+    if type(min_containers) is not int or min_containers not in (0, 1):
+        raise ValueError("min_containers must be exactly 0 or 1")
     if type(memory_mib) is not int or not 49152 <= memory_mib <= MEMORY_MIB:
         raise ValueError("Host memory must be 49152–65536 MiB; lower loading peaks are unmeasured")
     if not 1 <= timeout <= 120 or not 1 <= startup_timeout <= 900:
@@ -88,7 +93,7 @@ def create_app(profile_id: str = "smolvla", *, gpu: str = DEFAULT_GPU, developme
     fixed_profile_id = profile.id
 
     @app.cls(image=image, gpu=gpu, cpu=(CPU_CORES, CPU_CORES), memory=(memory_mib, memory_mib),
-             min_containers=0, max_containers=1, buffer_containers=0,
+             min_containers=min_containers, max_containers=1, buffer_containers=0,
              scaledown_window=scaledown_window, timeout=timeout, startup_timeout=startup_timeout,
              retries=0, region=region, routing_region=routing_region,
              volumes={f"{REMOTE_ROOT}/data/hf": volume}, secrets=secrets, serialized=True, include_source=False)
@@ -113,7 +118,7 @@ def create_app(profile_id: str = "smolvla", *, gpu: str = DEFAULT_GPU, developme
             metadata = {**self.runtime.ready(), "gpu": gpu,
                     "compute_region": os.environ.get("MODAL_REGION", "unknown"),
                     "requested_compute_region": region, "routing_region": routing_region,
-                    "scaledown_window_s": scaledown_window, "min_containers": 0, "max_containers": 1,
+                    "scaledown_window_s": scaledown_window, "min_containers": min_containers, "max_containers": 1,
                     "request_timeout_s": timeout, "startup_timeout_s": startup_timeout,
                     "requested_memory_mib": memory_mib,
                     "memory_scope": "Requested memory is host RAM; CUDA telemetry measures GPU memory separately",

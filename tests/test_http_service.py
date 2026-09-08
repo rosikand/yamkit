@@ -233,7 +233,8 @@ def test_invalid_secret_rejected_without_echo(token):
         assert token not in str(exc.value)
 
 
-def test_factory_adds_opt_in_endpoint_to_same_class_without_forwarding_account_secrets(monkeypatch):
+@pytest.mark.parametrize("min_containers", [None, 1])
+def test_factory_adds_opt_in_endpoint_to_same_class_without_forwarding_account_secrets(monkeypatch, min_containers):
     from yamkit.inference.modal_service import create_app
 
     captured = {"secrets": [], "classes": [], "files": []}
@@ -290,12 +291,15 @@ def test_factory_adds_opt_in_endpoint_to_same_class_without_forwarding_account_s
     monkeypatch.setenv("HF_TOKEN", "test-hf-secret")
     monkeypatch.setenv("MODAL_TOKEN_SECRET", "must-never-forward")
     monkeypatch.setenv(HTTP_TOKEN_ENV, TOKEN)
-    create_app("molmoact2", transport="http", execution_mode="cuda_graph10", http_token=TOKEN, gpu="H100!")
+    pool_options = {} if min_containers is None else {"min_containers": min_containers}
+    create_app("molmoact2", transport="http", execution_mode="cuda_graph10", http_token=TOKEN,
+               gpu="H100!", **pool_options)
     assert len(captured["classes"]) == 1
     cls = captured["classes"][0]
     assert "__init__" not in cls.__dict__
     assert {"ready", "predict_chunk", "reset", "http"} <= cls.__dict__.keys()
     assert captured["config"]["max_containers"] == 1
+    assert captured["config"]["min_containers"] == (min_containers or 0)
     assert captured["secrets"] == [{"HF_TOKEN": "test-hf-secret"}, {HTTP_TOKEN_ENV: TOKEN}]
     assert not {"MODAL_TOKEN_SECRET", "HF_TOKEN", HTTP_TOKEN_ENV} & captured["env"].keys()
     assert captured["files"][0][1] == "/opt/yamkit/configs/modal-requirements.txt"
@@ -308,9 +312,20 @@ def test_factory_adds_opt_in_endpoint_to_same_class_without_forwarding_account_s
     assert sdk["preferred_call_mode"] == sdk["transport"] == "http"
     assert sdk["execution_mode"] == "cuda_graph10" and sdk["inference_build_id"] == "build-hash"
     assert sdk["http_wire_version"] == 1
+    assert sdk["min_containers"] == (min_containers or 0)
+    assert sdk["max_containers"] == 1
     create_app()
+    assert captured["config"]["min_containers"] == 0
     assert "http" not in captured["classes"][-1].__dict__
     for kwargs in ({"transport": "invalid"}, {"http_token": TOKEN}, {"transport": "http"},
                    {"execution_mode": "invalid"}, {"execution_mode": "cuda_graph10"}):
         with pytest.raises(ValueError):
             create_app(**kwargs)
+
+
+@pytest.mark.parametrize("min_containers", [-1, 2, True, False, 0.0, 1.0, "1", None])
+def test_factory_rejects_invalid_minimum_before_constructing_modal_objects(min_containers):
+    from yamkit.inference.modal_service import create_app
+
+    with pytest.raises(ValueError, match="min_containers"):
+        create_app(min_containers=min_containers)
