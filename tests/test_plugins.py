@@ -275,6 +275,8 @@ class _FakeCamera:
 @pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
 def test_plugins_cleanup_partial_camera_startup(make_plugin, fake_connect, kind, error_type):
     plugin = make_plugin(kind)
+    for handle in _handles(plugin):
+        handle.home_speed = 0.25
     first = _FakeCamera(disconnect_error=RuntimeError("camera close failed"))
     second = _FakeCamera(connect_error=error_type("camera open failed"))
     unused = _FakeCamera()
@@ -283,10 +285,42 @@ def test_plugins_cleanup_partial_camera_startup(make_plugin, fake_connect, kind,
         plugin.connect()
     assert first.disconnect_calls == second.disconnect_calls == 1
     assert unused.disconnect_calls == 0
-    assert all(r.closed and not r.commands for r in fake_connect.values())
+    assert not fake_connect, "A camera startup failure must never activate a follower"
     plugin.disconnect()
     assert first.disconnect_calls == 2  # retry the camera that reported a cleanup failure
     assert second.disconnect_calls == 1
+
+
+@pytest.mark.parametrize("kind,failed_arm", [("follower", 0), ("bi_follower", 0), ("bi_follower", 1)])
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+def test_arm_connect_failure_releases_previously_opened_cameras(
+    make_plugin, fake_connect, monkeypatch, kind, failed_arm, error_type,
+):
+    from yamkit.arm import YamArm
+
+    plugin = make_plugin(kind)
+    cameras = [_FakeCamera(), _FakeCamera()]
+    plugin.cameras = dict(zip(("first", "second"), cameras, strict=True))
+    connect = YamArm.connect
+    attempts = []
+
+    def fail_connect(spec, channel, **kwargs):
+        assert all(camera.is_connected for camera in cameras), "Every camera must open before any arm"
+        attempts.append(spec.name)
+        if len(attempts) - 1 == failed_arm:
+            raise error_type("arm open failed")
+        return connect(spec, channel, **kwargs)
+
+    monkeypatch.setattr(YamArm, "connect", fail_connect)
+    with pytest.raises(error_type, match="arm open failed"):
+        plugin.connect()
+    assert len(attempts) == failed_arm + 1
+    assert len(fake_connect) == failed_arm and all(arm.closed for arm in fake_connect.values())
+    assert all(not camera.is_connected and camera.disconnect_calls == 1 for camera in cameras)
+    assert plugin._opened_cameras == [] and plugin._camera_lease is None
+    assert all(handle.arm is None for handle in _handles(plugin))
+    plugin.disconnect(home=False)
+    assert all(camera.disconnect_calls == 1 for camera in cameras)
 
 
 @pytest.mark.parametrize("kind", ["follower", "bi_follower"])

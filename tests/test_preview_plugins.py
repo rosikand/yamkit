@@ -133,6 +133,24 @@ def test_partial_camera_connect_releases_before_propagating(preview_robot, monke
     assert not camera.is_connected and events[-1] == "release"
 
 
+def test_stop_during_camera_startup_never_activates_arms(preview_robot, fake_connect, monkeypatch):
+    robot, camera, _, events = preview_robot
+    stop = threading.Event()
+    robot.config._session_shutdown_event = stop
+    connect = camera.connect
+
+    def stopped_connect():
+        connect()
+        stop.set()
+
+    monkeypatch.setattr(camera, "connect", stopped_connect)
+    with pytest.raises(RuntimeError, match="stopped"):
+        robot.connect()
+    assert not fake_connect
+    assert not camera.is_connected and events[-1] == "release"
+    assert robot._camera_lease is None and robot._opened_cameras == []
+
+
 @pytest.mark.parametrize("cleanup", ["explicit", "operator_startup", "remote_startup"])
 def test_detached_live_reader_keeps_lease_across_cleanup_retries(
     preview_robot, fake_connect, monkeypatch, cleanup,
@@ -267,8 +285,8 @@ def test_pinned_camera_internal_warmup_cleanup_retains_every_reader(
     monkeypatch.setattr(camera, "connect", connect_with_retry)
     robot.cameras = {"top": camera}
     if retry_succeeds:
-        # Existing follower homing precedes camera setup. A surviving old reader
-        # prevents successful startup/observations and triggers no-home cleanup.
+        # A surviving old reader prevents successful camera startup, before any
+        # follower can be enabled, and retains ownership for explicit cleanup.
         with pytest.raises(RuntimeError, match="camera release could not be confirmed"):
             robot.connect()
         assert len(readers) == 2
@@ -279,7 +297,7 @@ def test_pinned_camera_internal_warmup_cleanup_retains_every_reader(
     assert camera.thread is None and not camera.is_connected
     assert "_stop_read_thread" not in vars(camera)  # temporary hook restored on success/failure
     assert "release" not in events and robot._camera_lease is not None
-    assert all(arm.closed and not arm.commands for arm in fake_connect.values())
+    assert not fake_connect
     with pytest.raises(RuntimeError, match="camera release could not be confirmed"):
         robot.disconnect_no_home()
     readers[0].alive = False

@@ -229,8 +229,8 @@ and task success still need supervised testing. The qualification-only owner
 stopped app `ap-2pCN40LN9qgvVgKCgjzmVk`, verified zero containers and retired the
 Lenovo endpoint credential. Full evidence is in
 `.context/validation/production-http-qualification-attempt4.json`.
-The day's conservative cloud compute estimate is **$5.37 of the $15 budget**;
-all experiment containers are stopped. Cached storage is retained, and the
+At that checkpoint, the conservative cloud compute estimate was **$5.37 of the
+original $15 budget**, with all experiment containers stopped. Cached storage is retained, and the
 estimate is not a billing invoice.
 
 ## Physical rollout boundary
@@ -248,6 +248,20 @@ followed by inspecting predictions before a separately approved short rollout.
 Rollout includes configured follower startup homing before policy control; its
 cleanup releases the followers without a return-home move. The motion approval
 must cover startup homing as well as predicted joint and gripper movements.
+Required cameras are acquired before either follower is enabled. If a camera is
+busy or fails to open, startup releases any acquired cameras without connecting
+an arm. UI-managed sessions hand off camera ownership automatically; for a
+standalone CLI rollout, close dashboard camera previews before starting.
+
+A supervised orange-lid placement attempt on 2026-09-08 exposed the previous
+startup order: a dashboard restarted during cloud preparation, and its previews
+reclaimed the cameras. The followers homed before camera acquisition failed;
+both were released and no policy actions executed. The camera-first startup
+order prevents that failure from enabling the followers. Validation passed
+1,804 software tests and 9 subtests, plus Ruff, including camera failure before
+arm activation and camera release after an arm connection failure. A subsequent physical
+policy rollout is still required to validate control and task behavior.
+
 The existing `policy-probe` CLI uses SDK/eager execution; inspecting a saved capture
 on this HTTP/graph service requires a matching HTTP `saved_probe` request. Saved
 predictions remain diagnostic and are never replayed as physical commands.

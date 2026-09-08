@@ -294,13 +294,15 @@ class YamFollower(_CameraPreview, Robot):
             raise RuntimeError("previous resources remain open; call disconnect(home=False) before reconnecting")
         _check_session_stop(self.config)
         try:
+            # Required camera acquisition must succeed before enabling or homing an arm.
+            self._connect_cameras()
+            _check_session_stop(self.config)
             self._h.connect(home=False)
             _check_session_stop(self.config)
             if self._h.home_job:
                 logger.info("[yamkit-operator] homing")
                 self._h.arm.go_home(self._h.home_speed, stop=getattr(self.config, "_session_shutdown_event", None))
             _check_session_stop(self.config)
-            self._connect_cameras()
         except BaseException:
             try:
                 self.disconnect(home=False)
@@ -391,14 +393,16 @@ class BiYamFollower(_CameraPreview, Robot):
         _validate_rig(self.rig)
         if any(h.arm is not None for h in self._sides.values()) or self._opened_cameras or self._camera_lease is not None:
             raise RuntimeError("previous resources remain open; call disconnect(home=False) before reconnecting")
+        _check_session_stop(self.config)
         try:
+            # Hold every required camera before either follower can be energized.
+            self._connect_cameras()
             for h in self._sides.values():
                 _check_session_stop(self.config)
                 h.connect(home=False)
             _check_session_stop(self.config)
             _home_together(self._sides.values(), stop=getattr(self.config, "_session_shutdown_event", None))
             _check_session_stop(self.config)
-            self._connect_cameras()
         except BaseException:
             try:
                 self.disconnect(home=False)
