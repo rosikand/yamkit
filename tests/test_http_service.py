@@ -3,6 +3,7 @@
 import asyncio
 import sys
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -231,6 +232,50 @@ def test_invalid_secret_rejected_without_echo(token):
         create_http_app(Runtime(), token=token)
     if token:
         assert token not in str(exc.value)
+
+
+def test_expired_session_rejects_before_reading_body_or_running_model():
+    runtime = Runtime()
+    app = create_http_app(runtime, token=TOKEN, session_expires_at=time.time() - 1)
+    status, value, reads = asyncio.run(rpc(app, events=[]))
+    assert status == 410 and value["error_type"] == "Expired"
+    assert not reads and not runtime.calls
+
+
+@pytest.mark.parametrize("expiry", [True, "tomorrow", float("nan"), float("inf"), 0])
+def test_malformed_session_expiry_is_rejected(expiry):
+    with pytest.raises(ValueError, match="expiry"):
+        create_http_app(Runtime(), token=TOKEN, session_expires_at=expiry)
+
+
+def test_session_expiring_while_executor_is_queued_never_calls_runtime(monkeypatch):
+    original_to_thread = asyncio.to_thread
+
+    async def scenario():
+        queued, release = asyncio.Event(), asyncio.Event()
+        finished = asyncio.Event()
+
+        async def delayed(function, *args):
+            queued.set()
+            await release.wait()
+            try:
+                return await original_to_thread(function, *args)
+            finally:
+                finished.set()
+
+        monkeypatch.setattr(asyncio, "to_thread", delayed)
+        runtime = Runtime()
+        app = create_http_app(runtime, token=TOKEN, request_timeout_s=1,
+                              session_expires_at=time.time() + 0.05)
+        request = asyncio.create_task(rpc(app))
+        await asyncio.wait_for(queued.wait(), 1)
+        status, value, _ = await request
+        assert status == 410 and value["error_type"] == "Expired"
+        release.set()
+        await asyncio.wait_for(finished.wait(), 1)
+        assert not runtime.calls
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("min_containers", [None, 1])

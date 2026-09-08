@@ -20,6 +20,8 @@ def make_transport(config):
 
         auth = http_credentials(config.modal_app)
         return HttpTransport(config.modal_app, config.profile, endpoint_url=auth["endpoint_url"], token=auth["token"],
+                             http_ingress=auth.get("http_ingress", "asgi"),
+                             http_session_expires_at=auth.get("http_session_expires_at"),
                              shutdown_event=getattr(config, "_session_shutdown_event", None))
     return ModalTransport(config.modal_app, config.profile,
                           shutdown_event=getattr(config, "_session_shutdown_event", None),

@@ -1,0 +1,488 @@
+{
+  "date": "2026-09-08",
+  "physical_hardware_opened": false,
+  "physical_actions_executed": 0,
+  "production_build_id": "872d2dfbee532896a76ced1f86f19d4772c3cb21611a6b674f1877611418d1e1",
+  "qualification": {
+    "app_id": "ap-zwczXiaShxkw8TGFTTeNvT",
+    "created_at": "2026-09-08T11:13:32.771636+00:00",
+    "hardware_tested": false,
+    "settings": {
+      "profile": "molmoact2",
+      "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+      "dependency_revision": "8dcbed66f2380e4393189c303ea72488eb9e63c2",
+      "modal_app": "yamkit-vla-session-bd989af36c6c4f73",
+      "call_mode": "http",
+      "image_encoding": "rgb8",
+      "jpeg_quality": null,
+      "image_hw": [
+        480,
+        640
+      ],
+      "crop": "none",
+      "requested_region": "us-west",
+      "observed_region": "us-west4",
+      "routing_region": "us-west",
+      "fps": 30,
+      "chunk_steps": 30,
+      "prediction_queue_threshold": 30,
+      "max_observation_age_s": 2.0,
+      "protocol_version": 1,
+      "lerobot_version": "0.6.1",
+      "jpeg_subsampling": null,
+      "image_boundary_version": "saved-policy-transform-v1",
+      "execution_mode": "cuda_graph10",
+      "execution_identity": {
+        "version": 1,
+        "execution_mode": "cuda_graph10",
+        "profile": "molmoact2",
+        "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+        "model_dtype": "bfloat16",
+        "num_inference_steps": 10,
+        "cuda_graph": true,
+        "chunk_size": 30,
+        "action_width": 14,
+        "parameter_dtype_numel": {
+          "torch.bfloat16": 5442196208
+        }
+      },
+      "inference_build_id": "872d2dfbee532896a76ced1f86f19d4772c3cb21611a6b674f1877611418d1e1",
+      "http_wire_version": 1,
+      "http_wire_codec": "yamkit-binary-v1",
+      "instance_id": "7f459ebb-4b53-405e-bfa6-15bf99b036ec",
+      "task": "pick up the red cube",
+      "graph_signature_sha256": "dc307de8539d9125cd9547a89ce031d03636a0e1154fc1e587d7b1d005cc9844",
+      "graph_cache_key_sha256": "b176c7823f594ed4afa13e2017fa28a37414bc6b84b9789683e833e0a957363d",
+      "http_endpoint": "https://rosikand--yamkit-vla-session-bd989af36c6c4f73-policy-3a8362-dev.us-west.modal.run"
+    },
+    "assessment": {
+      "qualified": false,
+      "reasons": [
+        "Missing raw integrated HTTP execution evidence",
+        "Insufficient completed warm requests in the direct and integrated paths",
+        "Integrated fake-robot execution failed or did not release normally",
+        "Integrated execution reported underruns or omitted its measurement",
+        "Missing or invalid integer counter minimum_execution_queue_depth",
+        "The executing queue drained",
+        "Warm RPC p95 does not fit the effective usable horizon with 20% margin"
+      ],
+      "requested_warm_samples": 50,
+      "completed_integrated_warm_samples": 12,
+      "nominal_action_horizon_s": 1.0,
+      "integrated_observation_age_p95_s": 0.4203749434062047,
+      "integrated_merged_horizon_p05_s": 0.5795386152924038,
+      "effective_usable_action_horizon_s": 0.5795386152924038,
+      "required_margin_fraction": 0.2,
+      "maximum_qualifying_rpc_p95_s": 0.46363089223392306,
+      "warm_round_trip_s": {
+        "sample_count": 50,
+        "min": 0.3462227229611017,
+        "max": 0.8118957490078174,
+        "p50": 0.3567502180230804,
+        "p95": 0.683704551574192,
+        "p99": 0.7892159034963696
+      }
+    },
+    "python_gc": {
+      "strategy": "freeze_after_model_load_v1",
+      "automatic_gc_enabled": true,
+      "thresholds": [
+        700,
+        10,
+        10
+      ],
+      "collected_objects": 0,
+      "frozen_objects": 481163,
+      "collection_s": 0.232724257000001,
+      "freeze_s": 4.993999993985199e-06,
+      "scope": "Loaded container heap only; later request allocations use automatic GC"
+    },
+    "direct": {
+      "sample_count": 51,
+      "warm_sample_count": 50,
+      "warm_round_trip_s": {
+        "sample_count": 50,
+        "min": 0.3462227229611017,
+        "max": 0.8118957490078174,
+        "p50": 0.3567502180230804,
+        "p95": 0.683704551574192,
+        "p99": 0.7892159034963696
+      },
+      "container_instance_count": 1,
+      "failures": []
+    },
+    "model_inference_s": {
+      "sample_count": 50,
+      "min": 0.15566369599997643,
+      "max": 0.1699709490000032,
+      "p50": 0.1601582790000009,
+      "p95": 0.16567550174998474,
+      "p99": 0.16990157969999786
+    },
+    "integrated": {
+      "elapsed_s": 7.0379340589861386,
+      "error": "Remote action queue underrun; no replay or CPU takeover",
+      "failed": true,
+      "underruns": 1,
+      "commands_after_stop": 0,
+      "all_fake_robots_released": true,
+      "executed_actions": 157,
+      "minimum_execution_queue_depth": 0,
+      "warm_sample_count": 12,
+      "warm_round_trip_s": {
+        "p50": 0.3805085269850679,
+        "p95": 0.3882428953860654,
+        "p99": 0.3909202830673894
+      },
+      "stop_to_robot_release_s": 0.40044182300334796
+    },
+    "shutdown": {
+      "status": "stopped",
+      "remaining_containers": 0,
+      "stopped_at": 1788866015.6520307
+    },
+    "lenovo_endpoint_credential_retired": true
+  },
+  "regional_cpu_echo": {
+    "us-east": {
+      "requested_region": "us-east",
+      "observed_compute_region": "us-east5",
+      "integrity_pass": true,
+      "unauthorized_rejected": true,
+      "summaries": {
+        "baseline_1k": {
+          "request_bytes": 1024,
+          "response_bytes": 2048,
+          "first_request_s": 2.136878052027896,
+          "warm_sample_count": 50,
+          "warm_round_trip_s": {
+            "sample_count": 50,
+            "min": 0.12015623698243871,
+            "max": 0.14882611896609887,
+            "p50": 0.12695690200780518,
+            "p95": 0.13807203938195015,
+            "p99": 0.14869101275864524
+          },
+          "warm_max_s": 0.14882611896609887
+        },
+        "raw_random": {
+          "request_bytes": 2764856,
+          "response_bytes": 2048,
+          "first_request_s": 0.664428929972928,
+          "warm_sample_count": 50,
+          "warm_round_trip_s": {
+            "sample_count": 50,
+            "min": 0.15109463402768597,
+            "max": 0.1955743069993332,
+            "p50": 0.15852412302047014,
+            "p95": 0.1748604459746275,
+            "p99": 0.18698731231037524
+          },
+          "warm_max_s": 0.1955743069993332
+        }
+      },
+      "scope": "Persistent HTTP upload and fixed 2 KiB response; includes ingress, not network-only or model latency",
+      "app_id": "ap-mbyod6ERWwxqFI9rziXlG5",
+      "shutdown_verified": true,
+      "remaining_containers": 0
+    },
+    "us-west": {
+      "requested_region": "us-west",
+      "observed_compute_region": "westus3",
+      "integrity_pass": true,
+      "unauthorized_rejected": true,
+      "summaries": {
+        "baseline_1k": {
+          "request_bytes": 1024,
+          "response_bytes": 2048,
+          "first_request_s": 2.7272049309685826,
+          "warm_sample_count": 50,
+          "warm_round_trip_s": {
+            "sample_count": 50,
+            "min": 0.1285103660193272,
+            "max": 0.15007556200725958,
+            "p50": 0.13231700047617778,
+            "p95": 0.1360736592905596,
+            "p99": 0.1440611055312911
+          },
+          "warm_max_s": 0.15007556200725958
+        },
+        "raw_random": {
+          "request_bytes": 2764856,
+          "response_bytes": 2048,
+          "first_request_s": 0.42127233097562566,
+          "warm_sample_count": 50,
+          "warm_round_trip_s": {
+            "sample_count": 50,
+            "min": 0.155944368976634,
+            "max": 0.18373037298442796,
+            "p50": 0.16317055150284432,
+            "p95": 0.17529187884938438,
+            "p99": 0.18122583747783208
+          },
+          "warm_max_s": 0.18373037298442796
+        }
+      },
+      "scope": "Persistent HTTP upload and fixed 2 KiB response; includes ingress, not network-only or model latency",
+      "app_id": "ap-ZC6M3dlFuCmEhPvEFZeIKf",
+      "shutdown_verified": true,
+      "remaining_containers": 0
+    }
+  },
+  "instrumented_follow_up": {
+    "app_id": "ap-JxQ1Ukr7TH5BzdgUtqgtwb",
+    "diagnostic_only": true,
+    "qualification_authorization": false,
+    "source": {
+      "diagnostic_only": true,
+      "production_base_build_id": "d6dfbf64d6985746bf82981983afdf4e90bf3de5f9710a3167fde24240cf6d41",
+      "helper_sha256": {
+        "run_gc_http_diagnostic.py": "6365c00dfcccba06a9b68de6414e763f3fe5ed331b17895136677d1c2c310f9f",
+        "gc_modal_service.py": "619629904332ae0e5ff0bf13f2ec9dc6c4680caea00ca91a646a4e8ea6198505",
+        "runtime_gc_diagnostics.py": "34e82e09148a8ff6f832ff97f4e53366d520a36a8e1a3f767adccbb03fe9dbc9"
+      },
+      "scope": "GC observer helpers are outside the production build identity; these measurements never authorize physical execution"
+    },
+    "direct_warm_sample_count": 100,
+    "full_gc_observations": [
+      {
+        "sequence_id": 52,
+        "round_trip_s": 0.6508006299845874,
+        "inference_s": 0.3882953789999988,
+        "gc_pauses_s": [
+          0.22562279100000637
+        ],
+        "gc_policy_overlap_s": [
+          0.22562279100000637
+        ],
+        "collected": [
+          894
+        ]
+      },
+      {
+        "sequence_id": 94,
+        "round_trip_s": 0.5772703710244969,
+        "inference_s": 0.3128601139999887,
+        "gc_pauses_s": [
+          0.16504141699999764
+        ],
+        "gc_policy_overlap_s": [
+          0.16504141699999764
+        ],
+        "collected": [
+          13236
+        ]
+      }
+    ],
+    "integrated_warm_sample_count": 33,
+    "integrated_error": "Remote action queue underrun; no replay or CPU takeover",
+    "zero_commands_after_stop": true,
+    "all_fake_arms_released": true,
+    "shutdown_verified": true,
+    "remaining_containers": 0,
+    "scope": "Observer adds telemetry and allocations; RTT is not production qualification. Server collection spans overlap actual policy calls."
+  },
+  "previous_qualification": {
+    "app_id": "ap-bvIV2We2ATD7h2gNFtji7F",
+    "created_at": "2026-09-08T10:43:41.234691+00:00",
+    "hardware_tested": false,
+    "settings": {
+      "profile": "molmoact2",
+      "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+      "dependency_revision": "8dcbed66f2380e4393189c303ea72488eb9e63c2",
+      "modal_app": "yamkit-vla-session-fcea0f19594942a9",
+      "call_mode": "http",
+      "image_encoding": "rgb8",
+      "jpeg_quality": null,
+      "image_hw": [
+        480,
+        640
+      ],
+      "crop": "none",
+      "requested_region": "us-west",
+      "observed_region": "us-west4",
+      "routing_region": "us-west",
+      "fps": 30,
+      "chunk_steps": 30,
+      "prediction_queue_threshold": 30,
+      "max_observation_age_s": 2.0,
+      "protocol_version": 1,
+      "lerobot_version": "0.6.1",
+      "jpeg_subsampling": null,
+      "image_boundary_version": "saved-policy-transform-v1",
+      "execution_mode": "cuda_graph10",
+      "execution_identity": {
+        "version": 1,
+        "execution_mode": "cuda_graph10",
+        "profile": "molmoact2",
+        "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+        "model_dtype": "bfloat16",
+        "num_inference_steps": 10,
+        "cuda_graph": true,
+        "chunk_size": 30,
+        "action_width": 14,
+        "parameter_dtype_numel": {
+          "torch.bfloat16": 5442196208
+        }
+      },
+      "inference_build_id": "d6dfbf64d6985746bf82981983afdf4e90bf3de5f9710a3167fde24240cf6d41",
+      "http_wire_version": 1,
+      "http_wire_codec": "yamkit-binary-v1",
+      "instance_id": "fa64cfe2-f1a5-403f-8f35-d0e8c6134df4",
+      "task": "pick up the red cube",
+      "graph_signature_sha256": "dc307de8539d9125cd9547a89ce031d03636a0e1154fc1e587d7b1d005cc9844",
+      "graph_cache_key_sha256": "b176c7823f594ed4afa13e2017fa28a37414bc6b84b9789683e833e0a957363d",
+      "http_endpoint": "https://rosikand--yamkit-vla-session-fcea0f19594942a9-policy-d46086-dev.us-west.modal.run"
+    },
+    "assessment": {
+      "qualified": false,
+      "reasons": [
+        "Missing raw integrated HTTP execution evidence",
+        "Insufficient completed warm requests in the direct and integrated paths",
+        "Integrated fake-robot execution failed or did not release normally",
+        "Integrated execution reported underruns or omitted its measurement",
+        "Missing or invalid integer counter minimum_execution_queue_depth",
+        "The executing queue drained",
+        "Warm RPC p95 does not fit the effective usable horizon with 20% margin"
+      ],
+      "requested_warm_samples": 50,
+      "completed_integrated_warm_samples": 4,
+      "nominal_action_horizon_s": 1.0,
+      "integrated_observation_age_p95_s": 0.594722217018716,
+      "integrated_merged_horizon_p05_s": 0.405190020496957,
+      "effective_usable_action_horizon_s": 0.405190020496957,
+      "required_margin_fraction": 0.2,
+      "maximum_qualifying_rpc_p95_s": 0.32415201639756563,
+      "warm_round_trip_s": {
+        "sample_count": 50,
+        "min": 0.3567215650109574,
+        "max": 0.577602414006833,
+        "p50": 0.372363871516427,
+        "p95": 0.40020825634128415,
+        "p99": 0.5388156060228355
+      }
+    },
+    "direct": {
+      "sample_count": 51,
+      "warm_sample_count": 50,
+      "warm_round_trip_s": {
+        "sample_count": 50,
+        "min": 0.3567215650109574,
+        "max": 0.577602414006833,
+        "p50": 0.372363871516427,
+        "p95": 0.40020825634128415,
+        "p99": 0.5388156060228355
+      },
+      "container_instance_count": 1,
+      "failures": []
+    },
+    "integrated": {
+      "elapsed_s": 4.016245833016001,
+      "error": "Remote action queue underrun; no replay or CPU takeover",
+      "failed": true,
+      "underruns": 1,
+      "commands_after_stop": 0,
+      "all_fake_robots_released": true,
+      "executed_actions": 67,
+      "minimum_execution_queue_depth": 0,
+      "warm_sample_count": 4,
+      "warm_round_trip_s": {
+        "p50": 0.44688617601059377,
+        "p95": 0.5619360735494411,
+        "p99": 0.5671277131111128
+      },
+      "stop_to_robot_release_s": 0.40045138099230826
+    },
+    "shutdown": {
+      "status": "stopped",
+      "remaining_containers": 0,
+      "stopped_at": 1788864225.633084
+    },
+    "lenovo_endpoint_credential_retired": true
+  },
+  "tunnel_cpu_comparison": {
+    "app_id": "ap-pdPdTEFj1iFizS4vivntgJ",
+    "instance_id": "4b38309e-992f-4be3-b440-1ee7eb164d8d",
+    "qualification_evidence": false,
+    "hardware_opened": false,
+    "model_loaded": false,
+    "observed_compute_region": "westus3",
+    "raw_request_bytes": 2764856,
+    "response_bytes": 14336,
+    "summaries": {
+      "normal": {
+        "asgi": {
+          "warm_samples": 50,
+          "first_request_s": 0.5653613560134545,
+          "warm_http_s": {
+            "sample_count": 50,
+            "min": 0.14786298299441114,
+            "max": 0.5607847420033067,
+            "p50": 0.16798431551433168,
+            "p95": 0.3250652735645413,
+            "p99": 0.47721806831890684
+          },
+          "warm_max_s": 0.5607847420033067,
+          "warm_over_400ms": 1
+        },
+        "tunnel": {
+          "warm_samples": 50,
+          "first_request_s": 0.3389235539943911,
+          "warm_http_s": {
+            "sample_count": 50,
+            "min": 0.04620658204657957,
+            "max": 0.08441070595290512,
+            "p50": 0.051805513008730486,
+            "p95": 0.07264384205045644,
+            "p99": 0.07881106242071835
+          },
+          "warm_max_s": 0.08441070595290512,
+          "warm_over_400ms": 0
+        }
+      },
+      "frozen": {
+        "asgi": {
+          "warm_samples": 50,
+          "first_request_s": 0.18254173401510343,
+          "warm_http_s": {
+            "sample_count": 50,
+            "min": 0.2104534530080855,
+            "max": 0.4616834240150638,
+            "p50": 0.21715604400378652,
+            "p95": 0.2292146628955379,
+            "p99": 0.35044182520941786
+          },
+          "warm_max_s": 0.4616834240150638,
+          "warm_over_400ms": 1
+        },
+        "tunnel": {
+          "warm_samples": 50,
+          "first_request_s": 0.06115405698074028,
+          "warm_http_s": {
+            "sample_count": 50,
+            "min": 0.04908864799654111,
+            "max": 0.08976479695411399,
+            "p50": 0.06206864697742276,
+            "p95": 0.07382922508113551,
+            "p99": 0.08232949776516758
+          },
+          "warm_max_s": 0.08976479695411399,
+          "warm_over_400ms": 0
+        }
+      }
+    },
+    "integrity_pass": true,
+    "unauthorized_rejected": true,
+    "source_sha256": {
+      "tunnel_http_echo.py": "b7102b386815eed563bb51c9964406f87d041b17d38ced0566e844aa3cd313f8",
+      "regional_http_echo.py": "526b4eda8c9820360be2f5b1726915de08ef821318b8fec56ca4481ca91c435b",
+      "http_wire.py": "10e40aca40ca5c38f281c2bef936dec880d24b46189675af7d236ce46944feef"
+    },
+    "shutdown": {
+      "status": "stopped",
+      "remaining_containers": 0,
+      "stopped_at": 1788867712.5073597
+    },
+    "limits": "CPU ingress comparison only; generated raw request and fixed synthetic action reply. No model or qualification."
+  }
+}

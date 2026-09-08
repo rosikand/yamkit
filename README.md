@@ -294,6 +294,8 @@ An opt-in persistent HTTP path with `cuda_graph10` preserves raw RGB and ten-ste
 Molmo inference, warms the actual task before hardware connection, and requires fresh
 qualification of its exact source, task, graph and container. See the
 [HTTP preparation and qualification commands](docs/MODAL.md#transport-and-qualification).
+The [HTTP rollout investigation](docs/VLA_HTTP_ROLLOUT.md) records Lenovo measurements,
+numerical fidelity checks and the current qualification outcome.
 Collect evidence on the robot host without opening its arms or cameras:
 
 ```bash

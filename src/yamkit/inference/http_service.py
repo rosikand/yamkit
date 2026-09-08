@@ -9,14 +9,20 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import math
 import re
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
 from .http_wire import MAX_WIRE_BYTES, decode_message, encode_message
 
 HTTP_TOKEN_ENV = "YAMKIT_HTTP_TOKEN"
+
+
+class _SessionExpired(Exception):
+    """The owning HTTP session can no longer admit runtime work."""
 
 
 def validate_http_token(token: str) -> None:
@@ -40,7 +46,7 @@ def _validate_envelope(message: dict) -> tuple[str, dict | None]:
 
 
 def create_http_app(runtime: Any, *, token: str, ready: Callable[[], dict] | None = None,
-                    request_timeout_s: float = 120):
+                    request_timeout_s: float = 120, session_expires_at: float | None = None):
     """Serve ``POST /rpc`` with one active runtime call and no credential logs.
 
     The caller supplies the already loaded runtime, so this adds no second model
@@ -49,10 +55,19 @@ def create_http_app(runtime: Any, *, token: str, ready: Callable[[], dict] | Non
     validate_http_token(token)
     if (type(request_timeout_s) not in (int, float) or not 0 < request_timeout_s <= 120):
         raise ValueError("HTTP inference requires a finite timeout of at most 120 seconds")
+    if session_expires_at is not None and (type(session_expires_at) not in (int, float)
+            or not math.isfinite(session_expires_at) or session_expires_at <= 0):
+        raise ValueError("HTTP session expiry must be a finite positive timestamp")
+    expiry_deadline = (None if session_expires_at is None else
+                       time.monotonic() + max(0.0, session_expires_at - time.time()))
     expected = ("Bearer " + token).encode("ascii")
     ready = ready or runtime.ready
     busy = threading.Lock()
     workers = set()
+
+    def expired():
+        return expiry_deadline is not None and (
+            time.monotonic() >= expiry_deadline or time.time() >= session_expires_at)
 
     def worker_finished(worker):
         workers.discard(worker)
@@ -75,6 +90,8 @@ def create_http_app(runtime: Any, *, token: str, ready: Callable[[], dict] | Non
 
     def invoke(method: str, payload: dict | None) -> bytes:
         try:
+            if expired():
+                raise _SessionExpired()
             if method == "ready":
                 result = ready()
             elif method == "predict_chunk":
@@ -106,6 +123,9 @@ def create_http_app(runtime: Any, *, token: str, ready: Callable[[], dict] | Non
         if len(authorization) != 1 or not hmac.compare_digest(authorization[0], expected):
             await reject(send, 401)
             return
+        if expired():
+            await reject(send, 410, "Expired")
+            return
         if scope["method"] != "POST" or scope["path"] != "/rpc" or scope.get("query_string", b""):
             await reject(send, 404)
             return
@@ -118,7 +138,9 @@ def create_http_app(runtime: Any, *, token: str, ready: Callable[[], dict] | Non
             return
         body = bytearray()
         try:
-            async with asyncio.timeout(request_timeout_s):
+            remaining = request_timeout_s if expiry_deadline is None else min(
+                request_timeout_s, max(0.0, expiry_deadline - time.monotonic()))
+            async with asyncio.timeout(remaining):
                 while True:
                     event = await receive()
                     if event["type"] == "http.disconnect":
@@ -141,6 +163,9 @@ def create_http_app(runtime: Any, *, token: str, ready: Callable[[], dict] | Non
                 except ValueError:
                     await reject(send, 400)
                     return
+                if expired():
+                    await reject(send, 410, "Expired")
+                    return
                 if not busy.acquire(blocking=False):
                     await reject(send, 409, "Busy")
                     return
@@ -153,11 +178,17 @@ def create_http_app(runtime: Any, *, token: str, ready: Callable[[], dict] | Non
                     # Shield even a queued executor submission: cancelling it
                     # before invoke starts would otherwise strand the busy lock.
                     response = await asyncio.shield(worker)
+                except _SessionExpired:
+                    await reject(send, 410, "Expired")
+                    return
                 except Exception:  # noqa: BLE001 — RPC boundary must never expose runtime exception text.
                     await reject(send, 500, "Failed")
                     return
         except TimeoutError:
-            await reject(send, 504, "Deadline")
+            await reject(send, 410 if expired() else 504, "Expired" if expired() else "Deadline")
+            return
+        if expired():
+            await reject(send, 410, "Expired")
             return
         await send({"type": "http.response.start", "status": 200,
                     "headers": [(b"content-type", b"application/octet-stream"),

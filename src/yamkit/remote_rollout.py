@@ -282,6 +282,9 @@ class UnguidedRemoteInferenceEngine(RTCInferenceEngine):
                                              and self._global_shutdown_event.is_set()):
             raise RemoteFault("Local execution stopped")
         try:
+            session_check = getattr(self._policy.transport, "ensure_session_active", None)
+            if session_check is not None:
+                session_check()
             result = super().get_action(obs_frame)
             if result is None:
                 if self._ever_had_action or (self._started_at is not None and
@@ -409,6 +412,7 @@ class _StoppableRobot(ThreadSafeRobot):
         self.action_deadline = None
         self.on_fault = None
         self.on_dispatch = None
+        self.session_check = None
 
     def send_action(self, action):
         with self._lock:
@@ -422,6 +426,15 @@ class _StoppableRobot(ThreadSafeRobot):
                 if self.on_fault is not None:
                     self.on_fault()
                 raise RemoteFault("Remote action expired before hardware dispatch")
+            # A buffered action can remain fresh after its cloud session ends.
+            # Check again at dispatch so expiry never waits for another RPC.
+            if self.session_check is not None:
+                try:
+                    self.session_check()
+                except RemoteFault:
+                    if self.on_fault is not None:
+                        self.on_fault()
+                    raise
             result = self.inner.send_action(action)
             if self.on_dispatch is not None:
                 self.on_dispatch(margin_s)
@@ -462,6 +475,8 @@ def run_remote_rollout(cfg, *, shutdown_event: Event | None = None):
         ctx.hardware.robot_wrapper.action_deadline = lambda: engine.action_queue.last_action_deadline
         ctx.hardware.robot_wrapper.on_fault = engine._fault
         ctx.hardware.robot_wrapper.on_dispatch = engine.record_dispatch
+        ctx.hardware.robot_wrapper.session_check = getattr(
+            ctx.policy.policy.transport, "ensure_session_active", None)
         ctx.policy.inference = engine
         strategy = create_strategy(cfg.strategy)
         strategy.setup(ctx)

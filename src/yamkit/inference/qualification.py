@@ -97,14 +97,17 @@ def qualification_settings(profile, *, modal_app: str, call_mode: str = "remote"
             "jpeg_subsampling": 2 if image_encoding == "jpeg" else None,
             "image_boundary_version": "saved-policy-transform-v1"}
     if call_mode == "http":
-        from .http_transport import validate_endpoint_url
         from .identity import http_runtime_binding
 
         try:
+            if endpoint_url is None:
+                raise ValueError("HTTP qualification requires the measured endpoint")
             result.update(http_runtime_binding(profile, metadata or {}, execution_mode=execution_mode,
                                                task=task, image_hw=image_hw, crop=crop,
-                                               image_encoding=image_encoding, jpeg_quality=jpeg_quality))
-            result["http_endpoint"] = validate_endpoint_url(endpoint_url)
+                                               image_encoding=image_encoding, jpeg_quality=jpeg_quality,
+                                               endpoint_url=endpoint_url))
+            if not result.get("http_endpoint"):
+                raise ValueError("HTTP qualification requires the measured endpoint")
         except (ValueError, TypeError) as exc:
             raise QualificationError(str(exc)) from None
     elif execution_mode != "eager":
@@ -128,8 +131,21 @@ def current_settings(config, *, image_hw, metadata=None) -> dict:
         raise QualificationError("Current service placement differs from its ownership receipt")
     if config.call_mode == "http" and (
             receipt.get("transport") != "http"
+            or not receipt.get("http_endpoint")
             or receipt.get("execution_mode") != getattr(config, "execution_mode", "eager")):
         raise QualificationError("Current HTTP execution differs from the owned service")
+    if config.call_mode == "http":
+        from .identity import http_ingress_binding
+
+        try:
+            current = http_ingress_binding(metadata, endpoint_url=receipt.get("http_endpoint"))
+            owned = http_ingress_binding(receipt.get("metadata", {}), endpoint_url=receipt.get("http_endpoint"))
+            if (current != owned or current["http_ingress"] != receipt.get("http_ingress", "asgi")
+                    or current["http_session_expires_at"] != receipt.get("http_session_expires_at")
+                    or metadata.get("instance_id") != receipt.get("metadata", {}).get("instance_id")):
+                raise ValueError("Current HTTP ingress, expiry or instance differs from the owned service")
+        except (ValueError, TypeError) as exc:
+            raise QualificationError(str(exc)) from None
     return qualification_settings(
         profile, modal_app=receipt["app_name"], call_mode=config.call_mode,
         image_encoding=config.image_encoding, jpeg_quality=config.jpeg_quality,
@@ -244,7 +260,7 @@ def _check_http_evidence(settings, direct, integrated, reasons, requested):
         return http_runtime_binding(settings["profile"], metadata,
                                     execution_mode=settings.get("execution_mode"), task=settings.get("task"),
                                     image_hw=settings["image_hw"], crop=settings["crop"],
-                                    image_encoding=settings["image_encoding"])
+                                    image_encoding=settings["image_encoding"], endpoint_url=settings.get("http_endpoint"))
 
     for report in (direct, integrated):
         try:
@@ -298,6 +314,13 @@ def _check_http_evidence(settings, direct, integrated, reasons, requested):
                     reasons.append(f"A warm {label} HTTP request captured another graph")
                     break
             timing = _mapping(row.get("transport_timing"), f"{label} HTTP transport timing", reasons)
+            expected_route = {"http_ingress": settings.get("http_ingress", "asgi"),
+                              "http_session_expires_at": settings.get("http_session_expires_at"),
+                              "http_endpoint_sha256": hashlib.sha256(settings["http_endpoint"].encode()).hexdigest()}
+            if any(not _same_value(timing.get(key), value) for key, value in expected_route.items()
+                   if settings.get("http_ingress") == "tunnel" or key in timing):
+                reasons.append(f"A {label} HTTP request used another ingress, endpoint or session expiry")
+                break
             size = row.get("wire_payload_bytes")
             response_size = timing.get("wire_response_bytes")
             if (type(size) is not int or not raw_image_bytes < size <= MAX_MESSAGE_BYTES

@@ -8,6 +8,7 @@ There is no retry and no promise that local cancellation stops remote compute.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 import threading
@@ -18,18 +19,21 @@ from .client import InvalidatedRequest, RemoteFault
 from .http_wire import MAX_MESSAGE_BYTES, WIRE_CODEC, WIRE_VERSION, decode_message, encode_message
 
 
-def validate_endpoint_url(value: str) -> str:
+def validate_endpoint_url(value: str, *, http_ingress: str = "asgi") -> str:
     """Return a canonical HTTPS Modal origin; never include invalid input in errors."""
-    if type(value) is not str or not 1 <= len(value) <= 512 or not value.isascii() or value != value.strip():
+    if (http_ingress not in ("asgi", "tunnel") or type(value) is not str
+            or not 1 <= len(value) <= 512 or not value.isascii() or value != value.strip()):
         raise ValueError("HTTP inference requires a valid HTTPS Modal endpoint")
     try:
         parts = urlsplit(value)
         hostname = parts.hostname or ""
         labels = hostname.split(".")
+        provider = (len(labels) >= 3 and labels[-2:] == ["modal", "run"] if http_ingress == "asgi"
+                    else len(labels) == 4 and labels[-2:] == ["modal", "host"])
         valid = (parts.scheme == "https" and parts.username is None and parts.password is None
                  and parts.port in (None, 443) and parts.path in ("", "/")
                  and not parts.query and not parts.fragment and "?" not in value and "#" not in value
-                 and len(hostname) <= 253 and len(labels) >= 3 and labels[-2:] == ["modal", "run"]
+                 and len(hostname) <= 253 and provider
                  and all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels)
                  and not any(char.isspace() for char in value))
     except ValueError:
@@ -57,12 +61,22 @@ class HttpTransport:
 
     call_mode = "http"
 
-    def __init__(self, app_name: str, profile: str, *, endpoint_url: str, token: str, shutdown_event=None):
+    def __init__(self, app_name: str, profile: str, *, endpoint_url: str, token: str, shutdown_event=None,
+                 http_ingress: str = "asgi", http_session_expires_at: float | None = None):
         if type(app_name) is not str or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}", app_name):
             raise ValueError("An explicit bounded inference app name is required")
         if profile not in ("smolvla", "molmoact2", "pi05"):
             raise ValueError("A reviewed inference profile is required")
-        self._endpoint_url = validate_endpoint_url(endpoint_url)
+        self._endpoint_url = validate_endpoint_url(endpoint_url, http_ingress=http_ingress)
+        from .identity import http_ingress_binding
+
+        self._http_binding = http_ingress_binding(
+            {"http_ingress": http_ingress, "http_session_expires_at": http_session_expires_at,
+             "http_endpoint": self._endpoint_url}, endpoint_url=self._endpoint_url)
+        self.http_ingress = http_ingress
+        self.http_session_expires_at = http_session_expires_at
+        self._session_deadline_monotonic = (None if http_session_expires_at is None
+                                            else time.monotonic() + http_session_expires_at - time.time())
         if type(token) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", token):
             raise ValueError("A bounded inference bearer credential is required")
         self.app_name, self.profile = app_name, profile
@@ -75,6 +89,19 @@ class HttpTransport:
         self._current_cancel: threading.Event | None = None
         self._client = None
         self.last_timing: dict = {}
+        self._expiry_timer = None
+        if self._session_deadline_monotonic is not None and shutdown_event is not None:
+            # Startup homing already watches this same event, before the final
+            # rollout dispatch guard exists. The timer never opens any resource.
+            timer = threading.Timer(max(0.0, self._session_deadline_monotonic - time.monotonic()), shutdown_event.set)
+            timer.daemon = True
+            self._expiry_timer = timer
+            try:
+                timer.start()
+            except RuntimeError:
+                self._closed = True
+                self._expiry_timer = None
+                raise RemoteFault("HTTP session expiry guard could not start") from None
 
     def __repr__(self):
         return f"HttpTransport(app_name={self.app_name!r}, profile={self.profile!r})"
@@ -105,6 +132,9 @@ class HttpTransport:
                     self._current_cancel.set()
             if not self._busy.locked():
                 client, self._client = self._client, None
+            timer, self._expiry_timer = self._expiry_timer, None
+        if timer is not None:
+            timer.cancel()
         if client is not None:
             # Even idle pool cleanup stays off the Stop caller's thread. A
             # running worker takes sole ownership of cleanup in its finally.
@@ -118,6 +148,17 @@ class HttpTransport:
     def _stopped(self, cancel: threading.Event) -> bool:
         return cancel.is_set() or (self._shutdown_event is not None and self._shutdown_event.is_set())
 
+    def ensure_session_active(self) -> None:
+        """Nonblocking dispatch guard; clock changes can never extend a tunnel."""
+        if self._closed:
+            raise InvalidatedRequest("HTTP transport is closed")
+        if self._shutdown_event is not None and self._shutdown_event.is_set():
+            raise InvalidatedRequest("Local execution is stopped")
+        if self._session_deadline_monotonic is not None and (
+                time.monotonic() >= self._session_deadline_monotonic
+                or time.time() >= self.http_session_expires_at):
+            raise RemoteFault("HTTP session expired; prepare and qualify a new owned session")
+
     def _invoke(self, method: str, payload: dict | None, timeout_s: float) -> dict:
         begin = time.monotonic()
         maximum = 900.0 if method == "ready" else 120.0
@@ -128,10 +169,15 @@ class HttpTransport:
         if ((method == "ready" and payload is not None)
                 or (method != "ready" and type(payload) is not dict)):
             raise ValueError("HTTP inference payload is malformed")
-        deadline = begin + timeout_s
+        self.ensure_session_active()
+        remaining = (None if self.http_session_expires_at is None else min(
+            self.http_session_expires_at - time.time(), self._session_deadline_monotonic - begin))
+        deadline = begin + (timeout_s if remaining is None else min(timeout_s, remaining))
         done, cancel = threading.Event(), threading.Event()
         result = {}
         timing = {"call_mode": self.call_mode, "wire_codec": WIRE_CODEC, "wire_version": WIRE_VERSION,
+                  "http_ingress": self.http_ingress, "http_session_expires_at": self.http_session_expires_at,
+                  "http_endpoint_sha256": hashlib.sha256(self._endpoint_url.encode()).hexdigest(),
                   "wire_compression": "none", "remote_cancellation_supported": False,
                   "network_only_s": None, "modal_queue_s": None,
                   "note": "Measured HTTP time includes routing and network; image pixels are unchanged"}
@@ -158,6 +204,7 @@ class HttpTransport:
                     return
                 if self._client is None:
                     self._client = _make_client(self._token)
+                self.ensure_session_active()
                 remaining = deadline - time.monotonic()
                 if self._stopped(cancel) or remaining <= 0:
                     return
@@ -216,6 +263,11 @@ class HttpTransport:
                 self._busy.release()
             raise RemoteFault("HTTP inference worker could not start") from None
         while not done.wait(min(0.01, max(0.0, deadline - time.monotonic()))):
+            try:
+                self.ensure_session_active()
+            except RemoteFault:
+                cancel.set()
+                raise
             if self._stopped(cancel):
                 cancel.set()
                 raise InvalidatedRequest("HTTP request invalidated locally")
@@ -223,6 +275,7 @@ class HttpTransport:
                 cancel.set()
                 raise RemoteFault("HTTP request deadline exceeded")
         self.last_timing = timing
+        self.ensure_session_active()
         with self._state_lock:
             if self._stopped(cancel) or self._generation != generation:
                 raise InvalidatedRequest("HTTP request invalidated locally")
@@ -233,7 +286,17 @@ class HttpTransport:
             return result["value"]
 
     def ready(self, timeout_s: float) -> dict:
-        return self._invoke("ready", None, timeout_s)
+        from .identity import http_ingress_binding
+
+        metadata = self._invoke("ready", None, timeout_s)
+        try:
+            binding = http_ingress_binding(metadata, endpoint_url=self._endpoint_url)
+            if binding != self._http_binding:
+                raise ValueError("HTTP ingress changed")
+        except (ValueError, TypeError):
+            self.close()
+            raise RemoteFault("HTTP readiness endpoint, ingress or session expiry changed") from None
+        return metadata
 
     def predict_chunk(self, request: dict, timeout_s: float) -> dict:
         return self._invoke("predict_chunk", request, timeout_s)

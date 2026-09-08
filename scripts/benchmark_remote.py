@@ -94,6 +94,8 @@ def make_benchmark_transport(app_name, profile_name="molmoact2", *, shutdown_eve
             raise ValueError("SDK handle/serialization diagnostics do not apply to HTTP")
         credentials = http_credentials(app_name)
         return HttpTransport(app_name, profile_name, endpoint_url=credentials["endpoint_url"],
+                             http_ingress=credentials.get("http_ingress", "asgi"),
+                             http_session_expires_at=credentials.get("http_session_expires_at"),
                              token=credentials["token"], shutdown_event=shutdown_event)
 
     class MeasuredModalTransport(ModalTransport):

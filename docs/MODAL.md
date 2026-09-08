@@ -167,6 +167,23 @@ evidence. Existing SDK/eager diagnostic results cannot qualify HTTP/graph execut
 The HTTP path's integrated qualification must pass before any supervised physical
 rollout; the measured direct latency alone is insufficient.
 
+The CLI preparation above uses Modal's ASGI Web Function ingress. For bounded
+Conductor sessions, the app factory also accepts `http_ingress="tunnel"` with
+`min_containers=1` and an absolute `http_session_expires_at` within 900 seconds.
+The coordinator must retain its `app.run()` context and independently stop and
+verify the exact container at the deadline. Tunnel traffic does not keep the
+ordinary Function autoscaler active. No persistent tunnel deployment command is
+provided.
+
+The tunnel serves the same authenticated binary protocol through one Uvicorn
+listener. Its endpoint comes from the owned container's SDK readiness; SDK
+prediction/reset and a second HTTP ingress are disabled. The Lenovo receives
+only its endpoint credential and public receipt. Qualification binds the
+ingress, exact endpoint, expiry and instance, including per-request transport
+evidence. Session expiry rejects requests and stops local buffered actions;
+neither expiry nor a closed listener proves the GPU container has retired.
+See [the measured ingress comparison and rollout status](VLA_HTTP_ROLLOUT.md).
+
 Modal images default to raw RGB (`--image-encoding rgb8`). Three images, ordered state
 and task travel in one request. Encoding happens once per camera; recording resolution,
 the optional center crop and the model's saved preprocessing remain unchanged.

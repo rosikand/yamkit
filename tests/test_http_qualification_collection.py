@@ -17,13 +17,17 @@ from yamkit.modal_qualification import collect_qualification
 TASK = "put the blue block in the black bin"
 
 
-def test_http_factory_uses_only_matching_endpoint_credential(monkeypatch):
+@pytest.mark.parametrize("ingress", ["asgi", "tunnel"])
+def test_http_factory_uses_only_matching_endpoint_credential(monkeypatch, ingress):
     captured = {}
     token = "test-only-token-that-never-enters-a-public-report"
+    endpoint = "https://owned-http.modal.run" if ingress == "asgi" else "https://owned-http.r5.modal.host"
+    expires = None if ingress == "asgi" else 1234567890.0
 
     def credentials(app_name):
         assert app_name == "owned-http-app"
-        return {"endpoint_url": "https://owned-http.modal.run", "token": token}
+        return {"endpoint_url": endpoint, "token": token,
+                **({"http_ingress": ingress, "http_session_expires_at": expires} if ingress == "tunnel" else {})}
 
     def transport(*args, **kwargs):
         captured.update(args=args, kwargs=kwargs)
@@ -35,7 +39,8 @@ def test_http_factory_uses_only_matching_endpoint_credential(monkeypatch):
     assert benchmark_remote.make_benchmark_transport("owned-http-app", shutdown_event=stop,
                                                       call_mode="http") == "http-transport"
     assert captured == {"args": ("owned-http-app", "molmoact2"), "kwargs": {
-        "endpoint_url": "https://owned-http.modal.run", "token": token, "shutdown_event": stop}}
+        "endpoint_url": endpoint, "token": token, "shutdown_event": stop,
+        "http_ingress": ingress, "http_session_expires_at": expires}}
     for kwargs in ({"uncached_handles": True}, {"sdk_metrics": {}}):
         with pytest.raises(ValueError, match="SDK"):
             benchmark_remote.make_benchmark_transport("owned-http-app", call_mode="http", **kwargs)

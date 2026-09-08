@@ -55,13 +55,13 @@ def http_auth_path() -> Path:
     return receipt_path().with_name("http-auth.json")
 
 
-def _save_http_auth(app_name: str, endpoint_url: str, token: str) -> None:
+def _save_http_auth(app_name: str, endpoint_url: str, token: str, *, http_ingress: str = "asgi") -> None:
     from .inference.http_service import validate_http_token
     from .inference.http_transport import validate_endpoint_url
 
     if not isinstance(app_name, str) or not re.fullmatch(r"yamkit-vla-[a-z0-9-]{1,80}", app_name):
         raise ValueError("HTTP credentials require the exact owned app name")
-    endpoint_url = validate_endpoint_url(endpoint_url)
+    endpoint_url = validate_endpoint_url(endpoint_url, http_ingress=http_ingress)
     validate_http_token(token)
     path = http_auth_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,7 +98,10 @@ def _read_http_auth() -> dict:
             or not isinstance(value["app_name"], str)
             or not re.fullmatch(r"yamkit-vla-[a-z0-9-]{1,80}", value["app_name"])):
         raise ValueError("Dedicated HTTP credential identity is invalid")
-    canonical = validate_endpoint_url(value["endpoint_url"])
+    try:
+        canonical = validate_endpoint_url(value["endpoint_url"])
+    except ValueError:
+        canonical = validate_endpoint_url(value["endpoint_url"], http_ingress="tunnel")
     validate_http_token(value["token"])
     if canonical != value["endpoint_url"]:
         raise ValueError("HTTP credential endpoint must be canonical")
@@ -131,6 +134,17 @@ def http_credentials(app_name: str) -> dict:
     value = _read_http_auth()
     if value["app_name"] != app_name or value["endpoint_url"] != receipt.get("http_endpoint"):
         raise ValueError("HTTP credential identity does not match the owned service")
+    from .inference.identity import http_ingress_binding
+
+    binding = http_ingress_binding(receipt.get("metadata", {}), endpoint_url=value["endpoint_url"])
+    if (binding["http_ingress"] != receipt.get("http_ingress", "asgi")
+            or binding["http_session_expires_at"] != receipt.get("http_session_expires_at")):
+        raise ValueError("HTTP ingress or lifetime differs from its owned receipt")
+    if binding["http_ingress"] == "tunnel":
+        instance = receipt.get("metadata", {}).get("instance_id")
+        if not isinstance(instance, str) or not 1 <= len(instance) <= 128:
+            raise ValueError("Owned HTTP tunnel requires its exact runtime instance")
+        return {**value, "http_ingress": "tunnel", "http_session_expires_at": binding["http_session_expires_at"]}
     return value
 
 

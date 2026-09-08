@@ -62,6 +62,36 @@ def test_action_expiration_checked_again_immediately_before_dispatch(monkeypatch
     assert events == []
 
 
+def test_session_expiry_rejects_a_still_fresh_buffered_action(monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr("yamkit.remote_rollout.time", SimpleNamespace(monotonic=lambda: clock[0]))
+    sent, faults = [], []
+    stop = threading.Event()
+    queue = InvalidatableActionQueue(max_steps=30, max_age_s=2, fps=30,
+                                    observation_time=lambda: 10.0)
+    actions = torch.ones(30, 14)
+    queue.merge(actions, actions, 0)
+    queue.get()
+    wrapper = _StoppableRobot(SimpleNamespace(send_action=sent.append), stop)
+    wrapper.action_deadline = lambda: queue.last_action_deadline
+
+    def expired():
+        raise RemoteFault("HTTP inference session expired")
+
+    def fault():
+        faults.append(True)
+        stop.set()
+        queue.invalidate()
+
+    wrapper.session_check = expired
+    wrapper.on_fault = fault
+    clock[0] = 10.01  # The dequeued action itself remains valid until10.0333.
+    with pytest.raises(RemoteFault, match="session expired"):
+        wrapper.send_action({"joint_1.pos": 0.2})
+    assert sent == [] and faults == [True] and stop.is_set()
+    assert not queue.valid and queue.qsize() == 0
+
+
 @pytest.mark.parametrize("at_deadline", [True, False])
 def test_dequeued_action_keeps_original_deadline_across_background_merge(monkeypatch, at_deadline):
     clock = [10.0]

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import math
+import time
 from pathlib import Path
 
 
@@ -30,9 +32,47 @@ def inference_build_id() -> str:
     return digest.hexdigest()
 
 
+def http_ingress_binding(metadata: dict, *, endpoint_url: str | None = None) -> dict:
+    """Bind an explicit tunnel to its exact origin and finite owned lifetime.
+
+    Older ASGI readiness may omit ingress metadata. Tunnel readiness must carry
+    every field; a tunnel cannot silently inherit ASGI's unbounded lifetime.
+    """
+    from .http_transport import validate_endpoint_url
+
+    if not isinstance(metadata, dict):
+        raise ValueError("HTTP ingress readiness must be a mapping")  # noqa: TRY004 — uniform validation error
+    ingress = metadata.get("http_ingress", "asgi")
+    if ingress not in ("asgi", "tunnel"):
+        raise ValueError("Unsupported HTTP ingress")
+    expires = metadata.get("http_session_expires_at")
+    if ingress == "tunnel":
+        now = time.time()
+        try:
+            valid_expiry = type(expires) in (int, float) and math.isfinite(expires) and now < expires <= now + 900
+        except OverflowError:
+            valid_expiry = False
+        if not valid_expiry or not metadata.get("http_endpoint"):
+            raise ValueError("HTTP tunnel requires an unexpired bounded session and explicit endpoint")
+    elif expires is not None:
+        raise ValueError("ASGI readiness cannot inherit a tunnel session expiry")
+    advertised = metadata.get("http_endpoint")
+    if advertised is not None:
+        if validate_endpoint_url(advertised, http_ingress=ingress) != advertised:
+            raise ValueError("HTTP readiness endpoint must be canonical")
+        if endpoint_url is not None and advertised != validate_endpoint_url(endpoint_url, http_ingress=ingress):
+            raise ValueError("HTTP readiness endpoint differs from the requested origin")
+    endpoint = endpoint_url if endpoint_url is not None else advertised
+    result = {"http_ingress": ingress, "http_session_expires_at": expires}
+    if endpoint is not None:
+        result["http_endpoint"] = validate_endpoint_url(endpoint, http_ingress=ingress)
+    return result
+
+
 def http_runtime_binding(profile, metadata: dict, *, execution_mode: str, task: str,
                          image_hw, crop: str = "none", image_encoding: str = "rgb8",
-                         jpeg_quality: int = 85, require_warmup: bool = True) -> dict:
+                         jpeg_quality: int = 85, require_warmup: bool = True,
+                         endpoint_url: str | None = None) -> dict:
     """Check the reviewed HTTP runtime independently of a saved qualification."""
     from .execution import request_execution_signature, signature_digest
     from .http_wire import WIRE_CODEC, WIRE_VERSION
@@ -70,6 +110,7 @@ def http_runtime_binding(profile, metadata: dict, *, execution_mode: str, task: 
     result = {"execution_mode": execution_mode, "execution_identity": copy.deepcopy(identity),
               "inference_build_id": metadata["inference_build_id"], "http_wire_version": WIRE_VERSION,
               "http_wire_codec": WIRE_CODEC, "instance_id": instance, "task": task}
+    result.update(http_ingress_binding(metadata, endpoint_url=endpoint_url))
     execution = metadata.get("model_execution") or {}
     graph_enabled = execution_mode == "cuda_graph10"
     if (not isinstance(execution, dict) or execution.get("configured_model_dtype") != "bfloat16"
