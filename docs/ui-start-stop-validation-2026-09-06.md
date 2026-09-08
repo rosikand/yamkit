@@ -67,8 +67,49 @@ an explicitly entered zero instead of silently substituting ten seconds.
   navigation, playback and settings. No physical hardware or external model/service
   calls are made by these tests.
 
-Physical acceptance of these changed defaults requires a fresh supervised test.
-Earlier manual-button hardware tests do not qualify this new dashboard flow.
+The hardware session below qualifies the new automatic engagement and dashboard
+lifecycle. Deliberate operator movement and full gripper travel still require
+confirmation; earlier manual-button tests do not qualify those changed defaults.
 
 After deployment the idle dashboard must be restarted, then the browser refreshed:
 `git pull` alone leaves an already running Python backend on its old imported code.
+
+## Lenovo automatic recording test — 2026-09-08 UTC
+
+Conductor connected directly to `andre@yam-lenovo` over Tailscale. No Mac was used.
+The user requested deployment of the fixed branch; the clean Lenovo checkout was
+switched from `andre-dev` to `codex/yamkit-integration-validation` at `8a3ddf8`,
+preserving `andre-dev` at `31793da`. The idle dashboard was restarted so its imported
+backend and the recording child used the same source. Rig configuration and saved
+calibration were unchanged.
+
+The previously approved dashboard Start ran once for `ui_autostart_01`: one episode,
+180-second limit, 30 FPS, zero reset, local storage. Both pairs logged automatic
+engagement and then readiness after startup homing and synchronization. The first
+dashboard Stop was sent during acquisition after approximately 103 seconds. Saving
+took about 55 seconds, during which followers held their last commands. Normal
+homing and closing followed for all four arms; the process exited 0. No second Stop
+was needed. No additional powered test was run.
+
+- Dataset validation passed: 3,085 frames (102.83 seconds), finite 14-dimensional
+  state/action vectors, consistent indices and timestamps, and three complete
+  640×480 videos with matching frame counts. First/middle/last LeRobot samples read
+  successfully using PyAV.
+- Real Chrome observed recorder previews, Saving, Returning home, Closing and Idle.
+  Both Start buttons were restored and Stop was hidden. Ten checks passed with
+  244 GET requests, no POST requests from the observer and no JavaScript errors.
+- After cleanup the recorder was gone, camera ownership was released, all three
+  camera clients/captures were closed, and a three-second passive CAN sample showed
+  no traffic or new errors. The rig file retained its pre-test checksum.
+
+This was a lifecycle and recording-integrity result, not full physical acceptance.
+Joint spans were small (largest measured spans: left 0.121 rad, right 0.084 rad),
+and measured grippers stayed near open (left 0.941–0.996, right 0.980–0.995).
+These data do not establish deliberate leader movement or squeeze/release coverage.
+Operator confirmation of tracking, grippers and physical home arrival was still
+pending when this report was written. Saving latency also remains an improvement
+opportunity; this test did not change the existing encoder CPU budget.
+
+Evidence is retained under Lenovo `.context/validation-20260908/`, with a cloud
+archive at `.context/validation/lenovo-autostart-01-artifacts.tar`. Browser evidence
+is in `.context/validation/autostart-observer-pmrx9et6/` in the Conductor checkout.
