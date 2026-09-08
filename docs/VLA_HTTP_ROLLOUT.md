@@ -1,5 +1,12 @@
 # HTTP rollout preparation — 2026-09-08
 
+**The bounded TLS tunnel passed qualification on the Lenovo**, using the real
+H100 model and LeRobot control loop with simulated arms and cameras. Direct warm
+p95 was 284 ms; integrated warm p95 was 281 ms. There were no queue underruns or
+commands after Stop. Physical rollout remains untested and requires separate
+approval. The measured container was retired, so a supervised session must
+qualify its newly retained container again.
+
 The HTTP transport and production `cuda_graph10` runtime are available on
 `codex/yamkit-integration-validation`, implemented in `cfdcce9`; `06cc5cd` adds
 one-container retention for bounded sessions. Conductor deploys the cloud GPU;
@@ -188,6 +195,43 @@ an explicit session expiry and independent shutdown verification. Full H100
 qualification remains required before physical rollout.
 The tested tunnel integration source build is
 `7ebf3e8700e954a2dad79b006d2735f490b247a39bc2bd75a08dfe486582ae3d`.
+
+## Passing H100 tunnel qualification
+
+Commit `011b0f0` was pushed and deployed to the Lenovo with the same inference
+build above. The Lenovo passed 109 targeted tests and its rig configuration hash
+was unchanged. Conductor then retained one H100 container in `us-west4`, using
+the production ten-step graph runtime without diagnostic execution overrides.
+
+| Measurement | Result |
+|---|---:|
+| Direct requests | 51 completed, including 50 warm |
+| Direct warm p50 / p95 / maximum | 272 / 284 / 456 ms |
+| Model inference warm p50 / p95 | 170 / 176 ms |
+| First direct prediction, including graph capture | 9.206 s |
+| Integrated requests | 51 completed, including 50 warm |
+| Integrated warm p50 / p95 / maximum | 268 / 281 / 284 ms |
+| Simulated action dispatches | 419 |
+| Minimum executing queue depth | 11 actions |
+| Underruns / expired actions dispatched / commands after Stop | 0 / 0 / 0 |
+
+The measured effective usable action horizon was 681 ms. Its required 20%
+margin permits a warm RPC p95 up to 545 ms; the 284 ms direct p95 passed.
+The integrated test requested Stop during an additional in-flight request;
+that request was invalidated locally, all simulated arms released, and no later
+action was dispatched. The simulated Stop-to-release interval was 400 ms.
+All completed requests matched the same source, task, model, graph, container,
+tunnel endpoint hash and session expiry. The task remained `pick up the red cube`.
+
+This is a 15.4-second simulated control-loop test, not a physical manipulation
+result or a guarantee about future network tails. Real cameras, live arm state
+and task success still need supervised testing. The qualification-only owner
+stopped app `ap-2pCN40LN9qgvVgKCgjzmVk`, verified zero containers and retired the
+Lenovo endpoint credential. Full evidence is in
+`.context/validation/production-http-qualification-attempt4.json`.
+The day's conservative cloud compute estimate is **$5.37 of the $15 budget**;
+all experiment containers are stopped. Cached storage is retained, and the
+estimate is not a billing invoice.
 
 ## Physical rollout boundary
 

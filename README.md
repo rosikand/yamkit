@@ -280,8 +280,10 @@ For optional Modal GPU inference and browser deployment, see [docs/MODAL.md](doc
 Local remains the default. MolmoAct2-YAM has a reviewed source mapping and a local synchronous
 path, but no supervised physical validation was performed. **Physical Modal rollout requires
 a current passing qualification on the actual robot host**, separate mapping acceptance and
-explicit supervised confirmation. No passing qualification has been demonstrated; readiness or
-confirmation alone cannot enable motion. Checks and probes remain available. SmolVLA
+explicit supervised confirmation. A bounded HTTP tunnel passed Lenovo qualification with
+simulated arms and cameras; physical execution remains untested. The measured container was
+retired, so a new supervised session must qualify again. Readiness or confirmation alone
+cannot enable motion. Checks and probes remain available. SmolVLA
 and pi05 base profiles support native checks and are blocked from physical rollout because they
 lack a reviewed YAM mapping. Guided remote RTC and local Molmo guidance are unsupported. See
 [remote performance and its measurement limits](docs/REMOTE_PERFORMANCE.md).

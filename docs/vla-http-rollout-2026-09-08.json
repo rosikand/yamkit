@@ -2,16 +2,16 @@
   "date": "2026-09-08",
   "physical_hardware_opened": false,
   "physical_actions_executed": 0,
-  "production_build_id": "872d2dfbee532896a76ced1f86f19d4772c3cb21611a6b674f1877611418d1e1",
+  "production_build_id": "7ebf3e8700e954a2dad79b006d2735f490b247a39bc2bd75a08dfe486582ae3d",
   "qualification": {
-    "app_id": "ap-zwczXiaShxkw8TGFTTeNvT",
-    "created_at": "2026-09-08T11:13:32.771636+00:00",
+    "app_id": "ap-2pCN40LN9qgvVgKCgjzmVk",
+    "created_at": "2026-09-08T12:06:02.690423+00:00",
     "hardware_tested": false,
     "settings": {
       "profile": "molmoact2",
       "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
       "dependency_revision": "8dcbed66f2380e4393189c303ea72488eb9e63c2",
-      "modal_app": "yamkit-vla-session-bd989af36c6c4f73",
+      "modal_app": "yamkit-vla-session-b2c09070f0794619",
       "call_mode": "http",
       "image_encoding": "rgb8",
       "jpeg_quality": null,
@@ -46,100 +46,85 @@
           "torch.bfloat16": 5442196208
         }
       },
-      "inference_build_id": "872d2dfbee532896a76ced1f86f19d4772c3cb21611a6b674f1877611418d1e1",
+      "inference_build_id": "7ebf3e8700e954a2dad79b006d2735f490b247a39bc2bd75a08dfe486582ae3d",
       "http_wire_version": 1,
       "http_wire_codec": "yamkit-binary-v1",
-      "instance_id": "7f459ebb-4b53-405e-bfa6-15bf99b036ec",
+      "instance_id": "f9cda252-1b8f-4647-9fdb-27879f360a26",
       "task": "pick up the red cube",
+      "http_ingress": "tunnel",
+      "http_session_expires_at": 1788869849.0472338,
+      "http_endpoint": "https://ta-01m20ec7r3zn59sz68xketee3r-8000-jjchx48w9lkd1iixufexwopcc.w.modal.host",
       "graph_signature_sha256": "dc307de8539d9125cd9547a89ce031d03636a0e1154fc1e587d7b1d005cc9844",
-      "graph_cache_key_sha256": "b176c7823f594ed4afa13e2017fa28a37414bc6b84b9789683e833e0a957363d",
-      "http_endpoint": "https://rosikand--yamkit-vla-session-bd989af36c6c4f73-policy-3a8362-dev.us-west.modal.run"
+      "graph_cache_key_sha256": "b176c7823f594ed4afa13e2017fa28a37414bc6b84b9789683e833e0a957363d"
     },
     "assessment": {
-      "qualified": false,
-      "reasons": [
-        "Missing raw integrated HTTP execution evidence",
-        "Insufficient completed warm requests in the direct and integrated paths",
-        "Integrated fake-robot execution failed or did not release normally",
-        "Integrated execution reported underruns or omitted its measurement",
-        "Missing or invalid integer counter minimum_execution_queue_depth",
-        "The executing queue drained",
-        "Warm RPC p95 does not fit the effective usable horizon with 20% margin"
-      ],
+      "qualified": true,
+      "reasons": [],
       "requested_warm_samples": 50,
-      "completed_integrated_warm_samples": 12,
+      "completed_integrated_warm_samples": 50,
       "nominal_action_horizon_s": 1.0,
-      "integrated_observation_age_p95_s": 0.4203749434062047,
-      "integrated_merged_horizon_p05_s": 0.5795386152924038,
-      "effective_usable_action_horizon_s": 0.5795386152924038,
+      "integrated_observation_age_p95_s": 0.3184986489242874,
+      "integrated_merged_horizon_p05_s": 0.6814127059711609,
+      "effective_usable_action_horizon_s": 0.6814127059711609,
       "required_margin_fraction": 0.2,
-      "maximum_qualifying_rpc_p95_s": 0.46363089223392306,
+      "maximum_qualifying_rpc_p95_s": 0.5451301647769288,
       "warm_round_trip_s": {
         "sample_count": 50,
-        "min": 0.3462227229611017,
-        "max": 0.8118957490078174,
-        "p50": 0.3567502180230804,
-        "p95": 0.683704551574192,
-        "p99": 0.7892159034963696
+        "min": 0.26153364597121254,
+        "max": 0.4563323780312203,
+        "p50": 0.27191926949308254,
+        "p95": 0.2838135105004767,
+        "p99": 0.37797609139641253
       }
-    },
-    "python_gc": {
-      "strategy": "freeze_after_model_load_v1",
-      "automatic_gc_enabled": true,
-      "thresholds": [
-        700,
-        10,
-        10
-      ],
-      "collected_objects": 0,
-      "frozen_objects": 481163,
-      "collection_s": 0.232724257000001,
-      "freeze_s": 4.993999993985199e-06,
-      "scope": "Loaded container heap only; later request allocations use automatic GC"
     },
     "direct": {
       "sample_count": 51,
       "warm_sample_count": 50,
       "warm_round_trip_s": {
         "sample_count": 50,
-        "min": 0.3462227229611017,
-        "max": 0.8118957490078174,
-        "p50": 0.3567502180230804,
-        "p95": 0.683704551574192,
-        "p99": 0.7892159034963696
+        "min": 0.26153364597121254,
+        "max": 0.4563323780312203,
+        "p50": 0.27191926949308254,
+        "p95": 0.2838135105004767,
+        "p99": 0.37797609139641253
       },
       "container_instance_count": 1,
-      "failures": []
-    },
-    "model_inference_s": {
-      "sample_count": 50,
-      "min": 0.15566369599997643,
-      "max": 0.1699709490000032,
-      "p50": 0.1601582790000009,
-      "p95": 0.16567550174998474,
-      "p99": 0.16990157969999786
+      "failures": [],
+      "first_round_trip_s": 9.205778109026141,
+      "model_inference_s": {
+        "sample_count": 50,
+        "min": 0.16274423500001944,
+        "max": 0.19887210499999242,
+        "p50": 0.16988803650001216,
+        "p95": 0.1756297105999991,
+        "p99": 0.18874991333998817
+      }
     },
     "integrated": {
-      "elapsed_s": 7.0379340589861386,
-      "error": "Remote action queue underrun; no replay or CPU takeover",
-      "failed": true,
-      "underruns": 1,
+      "elapsed_s": 15.396648127993103,
+      "error": null,
+      "failed": false,
+      "underruns": 0,
       "commands_after_stop": 0,
       "all_fake_robots_released": true,
-      "executed_actions": 157,
-      "minimum_execution_queue_depth": 0,
-      "warm_sample_count": 12,
+      "executed_actions": 419,
+      "minimum_execution_queue_depth": 11,
+      "warm_sample_count": 50,
       "warm_round_trip_s": {
-        "p50": 0.3805085269850679,
-        "p95": 0.3882428953860654,
-        "p99": 0.3909202830673894
+        "p50": 0.26790355250705034,
+        "p95": 0.2811934338824358,
+        "p99": 0.2834739224775694,
+        "max": 0.28411322401370853
       },
-      "stop_to_robot_release_s": 0.40044182300334796
+      "stop_to_robot_release_s": 0.40043691400205716,
+      "expired_before_dispatch": 0,
+      "expired_queued_actions": 0,
+      "stop_requested_during_inflight_rpc": true
     },
     "shutdown": {
       "status": "stopped",
       "remaining_containers": 0,
-      "stopped_at": 1788866015.6520307
+      "stopped_at": 1788869167.2711961
     },
     "lenovo_endpoint_credential_retired": true
   },
@@ -484,5 +469,159 @@
       "stopped_at": 1788867712.5073597
     },
     "limits": "CPU ingress comparison only; generated raw request and fixed synthetic action reply. No model or qualification."
+  },
+  "previous_asgi_after_gc_qualification": {
+    "app_id": "ap-zwczXiaShxkw8TGFTTeNvT",
+    "created_at": "2026-09-08T11:13:32.771636+00:00",
+    "hardware_tested": false,
+    "settings": {
+      "profile": "molmoact2",
+      "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+      "dependency_revision": "8dcbed66f2380e4393189c303ea72488eb9e63c2",
+      "modal_app": "yamkit-vla-session-bd989af36c6c4f73",
+      "call_mode": "http",
+      "image_encoding": "rgb8",
+      "jpeg_quality": null,
+      "image_hw": [
+        480,
+        640
+      ],
+      "crop": "none",
+      "requested_region": "us-west",
+      "observed_region": "us-west4",
+      "routing_region": "us-west",
+      "fps": 30,
+      "chunk_steps": 30,
+      "prediction_queue_threshold": 30,
+      "max_observation_age_s": 2.0,
+      "protocol_version": 1,
+      "lerobot_version": "0.6.1",
+      "jpeg_subsampling": null,
+      "image_boundary_version": "saved-policy-transform-v1",
+      "execution_mode": "cuda_graph10",
+      "execution_identity": {
+        "version": 1,
+        "execution_mode": "cuda_graph10",
+        "profile": "molmoact2",
+        "model_revision": "fdade02d1f1c1dd819114b0478f735072fb6b212",
+        "model_dtype": "bfloat16",
+        "num_inference_steps": 10,
+        "cuda_graph": true,
+        "chunk_size": 30,
+        "action_width": 14,
+        "parameter_dtype_numel": {
+          "torch.bfloat16": 5442196208
+        }
+      },
+      "inference_build_id": "872d2dfbee532896a76ced1f86f19d4772c3cb21611a6b674f1877611418d1e1",
+      "http_wire_version": 1,
+      "http_wire_codec": "yamkit-binary-v1",
+      "instance_id": "7f459ebb-4b53-405e-bfa6-15bf99b036ec",
+      "task": "pick up the red cube",
+      "graph_signature_sha256": "dc307de8539d9125cd9547a89ce031d03636a0e1154fc1e587d7b1d005cc9844",
+      "graph_cache_key_sha256": "b176c7823f594ed4afa13e2017fa28a37414bc6b84b9789683e833e0a957363d",
+      "http_endpoint": "https://rosikand--yamkit-vla-session-bd989af36c6c4f73-policy-3a8362-dev.us-west.modal.run"
+    },
+    "assessment": {
+      "qualified": false,
+      "reasons": [
+        "Missing raw integrated HTTP execution evidence",
+        "Insufficient completed warm requests in the direct and integrated paths",
+        "Integrated fake-robot execution failed or did not release normally",
+        "Integrated execution reported underruns or omitted its measurement",
+        "Missing or invalid integer counter minimum_execution_queue_depth",
+        "The executing queue drained",
+        "Warm RPC p95 does not fit the effective usable horizon with 20% margin"
+      ],
+      "requested_warm_samples": 50,
+      "completed_integrated_warm_samples": 12,
+      "nominal_action_horizon_s": 1.0,
+      "integrated_observation_age_p95_s": 0.4203749434062047,
+      "integrated_merged_horizon_p05_s": 0.5795386152924038,
+      "effective_usable_action_horizon_s": 0.5795386152924038,
+      "required_margin_fraction": 0.2,
+      "maximum_qualifying_rpc_p95_s": 0.46363089223392306,
+      "warm_round_trip_s": {
+        "sample_count": 50,
+        "min": 0.3462227229611017,
+        "max": 0.8118957490078174,
+        "p50": 0.3567502180230804,
+        "p95": 0.683704551574192,
+        "p99": 0.7892159034963696
+      }
+    },
+    "python_gc": {
+      "strategy": "freeze_after_model_load_v1",
+      "automatic_gc_enabled": true,
+      "thresholds": [
+        700,
+        10,
+        10
+      ],
+      "collected_objects": 0,
+      "frozen_objects": 481163,
+      "collection_s": 0.232724257000001,
+      "freeze_s": 4.993999993985199e-06,
+      "scope": "Loaded container heap only; later request allocations use automatic GC"
+    },
+    "direct": {
+      "sample_count": 51,
+      "warm_sample_count": 50,
+      "warm_round_trip_s": {
+        "sample_count": 50,
+        "min": 0.3462227229611017,
+        "max": 0.8118957490078174,
+        "p50": 0.3567502180230804,
+        "p95": 0.683704551574192,
+        "p99": 0.7892159034963696
+      },
+      "container_instance_count": 1,
+      "failures": []
+    },
+    "model_inference_s": {
+      "sample_count": 50,
+      "min": 0.15566369599997643,
+      "max": 0.1699709490000032,
+      "p50": 0.1601582790000009,
+      "p95": 0.16567550174998474,
+      "p99": 0.16990157969999786
+    },
+    "integrated": {
+      "elapsed_s": 7.0379340589861386,
+      "error": "Remote action queue underrun; no replay or CPU takeover",
+      "failed": true,
+      "underruns": 1,
+      "commands_after_stop": 0,
+      "all_fake_robots_released": true,
+      "executed_actions": 157,
+      "minimum_execution_queue_depth": 0,
+      "warm_sample_count": 12,
+      "warm_round_trip_s": {
+        "p50": 0.3805085269850679,
+        "p95": 0.3882428953860654,
+        "p99": 0.3909202830673894
+      },
+      "stop_to_robot_release_s": 0.40044182300334796
+    },
+    "shutdown": {
+      "status": "stopped",
+      "remaining_containers": 0,
+      "stopped_at": 1788866015.6520307
+    },
+    "lenovo_endpoint_credential_retired": true
+  },
+  "software_validation": {
+    "full_suite_passed": 1796,
+    "subtests_passed": 9,
+    "ruff_passed": true,
+    "lenovo_targeted_tests_passed": 109,
+    "implementation_commit": "011b0f0ec0c5757d3a815176103e5e2fc6a5ec31"
+  },
+  "compute_budget": {
+    "user_approved_budget_usd": 15,
+    "compute_upper_usd": 5.36356841123482,
+    "rounded_up_compute_upper_usd": 5.37,
+    "all_experiments_stopped": true,
+    "scope": "Conservative control-plane created-to-stopped lifetime plus2s timestamp-rounding margin perapp; includes failures and shutdown. Compute estimate, not invoice; cached storage retained."
   }
 }
