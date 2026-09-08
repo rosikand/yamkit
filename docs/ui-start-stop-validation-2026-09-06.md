@@ -67,9 +67,10 @@ an explicitly entered zero instead of silently substituting ten seconds.
   navigation, playback and settings. No physical hardware or external model/service
   calls are made by these tests.
 
-The hardware session below qualifies the new automatic engagement and dashboard
-lifecycle. Deliberate operator movement and full gripper travel still require
-confirmation; earlier manual-button tests do not qualify those changed defaults.
+The hardware sessions below qualify automatic recording engagement, the dashboard
+lifecycle, operator-confirmed tracking and return home, and normalized endpoint
+coverage for both grippers. The first run was a lifecycle check; the second added
+the deliberate operator movement missing from that run.
 
 After deployment the idle dashboard must be restarted, then the browser refreshed:
 `git pull` alone leaves an already running Python backend on its old imported code.
@@ -89,7 +90,7 @@ engagement and then readiness after startup homing and synchronization. The firs
 dashboard Stop was sent during acquisition after approximately 103 seconds. Saving
 took about 55 seconds, during which followers held their last commands. Normal
 homing and closing followed for all four arms; the process exited 0. No second Stop
-was needed. No additional powered test was run.
+was needed. The separately approved repeat is documented below.
 
 - Dataset validation passed: 3,085 frames (102.83 seconds), finite 14-dimensional
   state/action vectors, consistent indices and timestamps, and three complete
@@ -113,3 +114,47 @@ opportunity; this test did not change the existing encoder CPU budget.
 Evidence is retained under Lenovo `.context/validation-20260908/`, with a cloud
 archive at `.context/validation/lenovo-autostart-01-artifacts.tar`. Browser evidence
 is in `.context/validation/autostart-observer-pmrx9et6/` in the Conductor checkout.
+
+## Supervised movement and gripper repeat — 2026-09-08 UTC
+
+The operator subsequently clarified that they had not moved the leaders in
+`ui_autostart_01`. They approved the same Start/Stop flow with the fresh dataset
+`ui_autostart_02`. Runtime source, rig settings and calibration were unchanged.
+Start ran once. Both pairs engaged automatically, synchronized and reported ready.
+After the ready cue, the operator moved both leaders and squeezed/released both
+triggers, confirming "done both worked". After Stop, they separately confirmed
+that all four arms returned home smoothly and released.
+
+First Stop was sent during acquisition, approximately 144 seconds into the
+180-second episode limit. Saving took about 71 seconds, followed by normal homing
+and closing of all four arms. The process exited 0; no second Stop was needed.
+
+- Dataset validation passed: 4,292 frames (143.07 seconds), consistent metadata,
+  timestamps and finite 14-dimensional state/action vectors. All three 640×480
+  videos decoded completely with exactly 4,292 frames each. LeRobot first, middle
+  and final samples read successfully using PyAV.
+- Both arms showed measured movement: the largest joint spans were 0.536 rad on
+  the left and 0.401 rad on the right. This supports the operator's basic tracking
+  confirmation; it does not qualify every joint's full range or worst-case latency.
+- Both grippers covered the normalized near-closed/open thresholds (≤0.1 and
+  ≥0.9) in both commands and measurements. Left commanded 0.020–0.998 and measured
+  0.024–0.993; right commanded 0.027–1.000 and measured 0.030–0.995. This establishes
+  endpoint coverage, not contact with mechanical stops.
+- Real Chrome passed 13 checks across startup, homing, synchronization, readiness,
+  saving, return home, closing and idle. All three recorder previews updated at
+  640×480. Both Start buttons restored, Stop disappeared and progress reset to
+  idle. The observer made 640 GET requests and no POST requests, with no JavaScript
+  errors. Its timestamps use the cloud clock; backend logs use the Lenovo clock.
+- Postflight confirmed the recorder was gone, all camera ownership/capture was
+  released and a three-second passive CAN sample had no traffic or new errors.
+  The rig file checksum was unchanged.
+
+The automatic recording Start → teleoperate → Stop → save → home → idle workflow
+passed this supervised test. Saving latency remains visible: arms hold their last
+commands during encoding, before homing begins. Encoder defaults were not changed.
+This result does not qualify a physical policy rollout or constitute a new native
+teleop hardware run.
+
+Evidence: Lenovo `.context/validation-20260908/ui-autostart-02*`, cloud archive
+`.context/validation/lenovo-autostart-02-artifacts.tar`, and Chrome report/screenshots
+under `.context/validation/autostart-observer-nrh6956_/`.
