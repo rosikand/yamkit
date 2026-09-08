@@ -755,6 +755,7 @@ def rollout(
     image_encoding: str = "rgb8",
     jpeg_quality: int = 85,
     call_mode: str = "remote",
+    execution_mode: str = "eager",
     prediction_queue_threshold: int | None = None,
     confirm_supervised: Annotated[bool, typer.Option("--confirm-supervised")] = False,
     accept_mapping: Annotated[bool, typer.Option("--accept-mapping")] = False,
@@ -766,6 +767,7 @@ def rollout(
                                modal_app=modal_app, center_crop=center_crop, rtc=rtc,
                                async_chunks=async_chunks, duration=duration, fps=fps, arms=tuple(arms or ()),
                                image_encoding=image_encoding, jpeg_quality=jpeg_quality, call_mode=call_mode,
+                               execution_mode=execution_mode,
                                prediction_queue_threshold=prediction_queue_threshold,
                                supervised_confirmed=confirm_supervised, mapping_accepted=accept_mapping,
                                rig_path=str(rig))
@@ -801,6 +803,7 @@ def rollout(
             policy=YamkitRemoteConfig(profile=get_profile(policy).id, modal_app=app_name,
                                      center_crop=center_crop, image_encoding=image_encoding,
                                      jpeg_quality=jpeg_quality, call_mode=call_mode,
+                                     execution_mode=execution_mode, task=task,
                                      prediction_queue_threshold=prediction_queue_threshold,
                                      supervised_confirmed=confirm_supervised, mapping_accepted=accept_mapping),
             task=task, duration=duration, fps=fps, device="cpu", play_sounds=False,
@@ -1048,19 +1051,22 @@ def policy_check(
 @app.command("modal-prepare")
 def modal_prepare(policy: str = "molmoact2", gpu: str = "L40S", development: bool = False,
                   cache_volume: str = "yamkit-policy-weights", region: str = "us-west",
-                  routing_region: str = "us-west", memory_mib: int = 65536) -> None:
+                  routing_region: str = "us-west", memory_mib: int = 65536,
+                  transport: str = "sdk", execution_mode: str = "eager") -> None:
     """Explicitly deploy and warm this workspace's dedicated cloud pool; never activate hardware."""
     from .modal_ops import prepare
 
     _print_inference_result(prepare(policy, gpu=gpu, development=development, cache_volume_name=cache_volume,
-                                   region=region, routing_region=routing_region, memory_mib=memory_mib))
+                                   region=region, routing_region=routing_region, memory_mib=memory_mib,
+                                   transport=transport, execution_mode=execution_mode))
 
 
 @app.command("modal-qualify")
 def modal_qualify(policy: str = "molmoact2", requests: int = 50, modal_app: str | None = None,
                   rig: RigOpt = DEFAULT_RIG, image_encoding: str = "rgb8", jpeg_quality: int = 85,
                   call_mode: str = "remote", center_crop: bool = False,
-                  prediction_queue_threshold: int | None = None) -> None:
+                  prediction_queue_threshold: int | None = None,
+                  execution_mode: str = "eager", task: str = "pick up the red cube") -> None:
     """Measure this host's existing Modal service with generated frames and fake arms only."""
     from .modal_qualification import collect_qualification
 
@@ -1068,7 +1074,8 @@ def modal_qualify(policy: str = "molmoact2", requests: int = 50, modal_app: str 
         result = collect_qualification(policy, requests=requests, modal_app=modal_app, rig_path=rig,
                                        image_encoding=image_encoding, jpeg_quality=jpeg_quality,
                                        call_mode=call_mode, center_crop=center_crop,
-                                       prediction_queue_threshold=prediction_queue_threshold)
+                                       prediction_queue_threshold=prediction_queue_threshold,
+                                       execution_mode=execution_mode, task=task)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from None
     _print_inference_result(result)

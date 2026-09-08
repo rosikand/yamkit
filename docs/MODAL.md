@@ -58,6 +58,16 @@ No such synthetic statistics are used for rollout.
 
 ## Credentials on the robot computer
 
+The opt-in HTTP path below keeps Modal account credentials in Conductor. The Lenovo
+needs only the matching public ownership receipt and a dedicated endpoint credential
+in `outputs/modal/http-auth.json`, mode `0600`. This file is git-ignored, contains
+`app_name`, `endpoint_url` and `token`, and must be transferred privately; a Git pull
+does not transfer it. The endpoint accepts only the bounded binary inference protocol.
+Stopping the owned app removes its local endpoint credential. Any separately copied
+Lenovo credential should be retired too.
+
+The SDK path uses the account credentials described here:
+
 Credentials configured in Conductor do **not** arrive on the Lenovo after a Git pull.
 Start yamkit in a shell containing `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. When the
 model or its nested tokenizer/backbone requires Hub access, also set `HF_TOKEN`.
@@ -114,7 +124,8 @@ Preparation reserves 65,536 MiB of host memory by default. `--memory-mib` accept
 weights or GPU count.
 
 The service has one fixed profile and at most one GPU (L40S by default, or explicit
-`--gpu H100` for a prepared H100 service), zero minimum/buffer containers,
+`--gpu 'H100!'` for an exact H100 service), four CPU cores and the selected host-memory
+limit, zero minimum/buffer containers,
 serialized model state, finite startup/request timeouts, and no permanent heartbeat.
 Ordinary requests retain warmth; production idle scale-down defaults to 300 seconds
 (configurable to 300–600 through the app factory). Idle warm time is billable.
@@ -122,6 +133,39 @@ Ordinary requests retain warmth; production idle scale-down defaults to 300 seco
 validation ledger and overall deadline are separate from these production commands.
 
 ### Transport and qualification
+
+The production HTTP path is opt-in and currently available through the CLI:
+
+```bash
+# Conductor: paid cloud preparation, no robot access.
+yamkit modal-prepare --policy molmoact2 --gpu 'H100!' \
+  --transport http --execution-mode cuda_graph10
+
+# Lenovo, after privately receiving the matching receipt and endpoint credential:
+# paid inference through real LeRobot workers, exclusively fake arms/cameras.
+yamkit modal-qualify --policy molmoact2 --requests 50 \
+  --call-mode http --execution-mode cuda_graph10 --task "pick up the red cube"
+
+# Conductor: stop the owned app and verify that its containers are gone.
+yamkit modal-shutdown
+```
+
+`cuda_graph10` retains the pinned bfloat16 Molmo model, ten denoising steps, saved
+processors, raw RGB and 30 × 14 actions. It replays the upstream action graph. A
+native fixture warms the exact task, crop and image shape before any arms connect,
+even when reusing an already warm service. Real observations cannot recapture a graph
+or fall back to eager execution; their image and state values are copied into the
+existing graph inputs. Changing the task requires new qualification.
+
+HTTP uses an authenticated persistent connection, bounded inert binary messages,
+one in-flight request, and a total local deadline. Stop invalidates late responses
+without waiting for network completion; it does not promise to cancel GPU compute.
+Qualification binds the exact source contents, wire format, model execution, task,
+graph warm-up, endpoint and container instance, plus the existing host, queue,
+freshness and Stop checks. A source update or replacement container requires new
+evidence. Existing SDK/eager diagnostic results cannot qualify HTTP/graph execution.
+The HTTP path's integrated qualification must pass before any supervised physical
+rollout; the measured direct latency alone is insufficient.
 
 Modal images default to raw RGB (`--image-encoding rgb8`). Three images, ordered state
 and task travel in one request. Encoding happens once per camera; recording resolution,

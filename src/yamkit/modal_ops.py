@@ -11,6 +11,8 @@ import fcntl
 import json
 import os
 import re
+import secrets
+import stat
 import subprocess
 import sys
 import time
@@ -46,6 +48,90 @@ def owned_service() -> dict | None:
         return json.loads(receipt_path().read_text())
     except FileNotFoundError:
         return None
+
+
+def http_auth_path() -> Path:
+    """Dedicated endpoint credential, separate from public receipts and rig files."""
+    return receipt_path().with_name("http-auth.json")
+
+
+def _save_http_auth(app_name: str, endpoint_url: str, token: str) -> None:
+    from .inference.http_service import validate_http_token
+    from .inference.http_transport import validate_endpoint_url
+
+    if not isinstance(app_name, str) or not re.fullmatch(r"yamkit-vla-[a-z0-9-]{1,80}", app_name):
+        raise ValueError("HTTP credentials require the exact owned app name")
+    endpoint_url = validate_endpoint_url(endpoint_url)
+    validate_http_token(token)
+    path = http_auth_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".http-auth-{uuid.uuid4().hex}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w") as stream:
+            json.dump({"app_name": app_name, "endpoint_url": endpoint_url, "token": token}, stream)
+            stream.write("\n")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_http_auth() -> dict:
+    """Read one bounded private regular file without following a symlink."""
+    from .inference.http_service import validate_http_token
+    from .inference.http_transport import validate_endpoint_url
+
+    try:
+        descriptor = os.open(http_auth_path(), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "r") as stream:
+            details = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(details.st_mode) or details.st_mode & 0o077
+                    or details.st_uid != os.geteuid() or not 0 < details.st_size <= 4096):
+                raise ValueError("HTTP credential file requires private permissions and bounded size")
+            content = stream.read(4097)
+        if len(content) > 4096:
+            raise ValueError("HTTP credential file exceeds its bound")
+        value = json.loads(content)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise ValueError("Dedicated HTTP credentials are missing or invalid") from None
+    if (not isinstance(value, dict) or set(value) != {"app_name", "endpoint_url", "token"}
+            or not isinstance(value["app_name"], str)
+            or not re.fullmatch(r"yamkit-vla-[a-z0-9-]{1,80}", value["app_name"])):
+        raise ValueError("Dedicated HTTP credential identity is invalid")
+    canonical = validate_endpoint_url(value["endpoint_url"])
+    validate_http_token(value["token"])
+    if canonical != value["endpoint_url"]:
+        raise ValueError("HTTP credential endpoint must be canonical")
+    return value
+
+
+def _remove_http_auth(app_name: str) -> None:
+    """Retire only the credential belonging to this confirmed stopped app."""
+    try:
+        value = _read_http_auth()
+    except ValueError:
+        return  # Missing or unverified identity cannot authorize deleting another app's file.
+    if value["app_name"] == app_name:
+        try:
+            http_auth_path().unlink(missing_ok=True)
+        except OSError:
+            raise RuntimeError("Service stopped, but its local HTTP credential could not be removed") from None
+
+
+def http_credentials(app_name: str) -> dict:
+    """Read only the credential for the matching ready owned HTTP service.
+
+    The returned object is private: callers must never print or serialize it as
+    public status. Endpoint credentials need not include any Modal account key.
+    """
+    receipt = owned_service() or {}
+    if (receipt.get("status") != "ready" or receipt.get("app_name") != app_name
+            or receipt.get("transport") != "http"):
+        raise ValueError("Prepare the matching owned HTTP service first")
+    value = _read_http_auth()
+    if value["app_name"] != app_name or value["endpoint_url"] != receipt.get("http_endpoint"):
+        raise ValueError("HTTP credential identity does not match the owned service")
+    return value
 
 
 def _save(receipt: dict) -> None:
@@ -113,20 +199,26 @@ def service_handle(app_name: str, profile_id: str):
 
 def prepare(profile_name: str, *, gpu: str = "L40S", development: bool = False,
             cache_volume_name: str = "yamkit-policy-weights", region: str | None = "us-west",
-            routing_region: str = "us-west", memory_mib: int = 65536) -> dict:
+            routing_region: str = "us-west", memory_mib: int = 65536,
+            transport: str = "sdk", execution_mode: str = "eager") -> dict:
     """Deploy and warm explicitly. A failed prepare shuts down only its owned app."""
     with _ownership_lock():
         return _prepare_locked(profile_name, gpu=gpu, development=development,
                                cache_volume_name=cache_volume_name, region=region, routing_region=routing_region,
-                               memory_mib=memory_mib)
+                               memory_mib=memory_mib, transport=transport, execution_mode=execution_mode)
 
 
 def _prepare_locked(profile_name: str, *, gpu: str, development: bool, cache_volume_name: str,
-                    region: str | None, routing_region: str, memory_mib: int) -> dict:
+                    region: str | None, routing_region: str, memory_mib: int,
+                    transport: str = "sdk", execution_mode: str = "eager") -> dict:
     from .inference.modal_service import create_app
     from .inference.profiles import get_profile
 
     profile = get_profile(profile_name)
+    if transport not in ("sdk", "http") or execution_mode not in ("eager", "cuda_graph10"):
+        raise ValueError("Unknown service transport or execution mode")
+    if execution_mode == "cuda_graph10" and (transport != "http" or profile.id != "molmoact2"):
+        raise ValueError("Production graph10 requires the MolmoAct2 HTTP service")
     prior = owned_service()
     if prior and prior.get("status") != "stopped":
         if prior.get("profile_id") != profile.id or prior.get("revision") != profile.revision:
@@ -136,25 +228,36 @@ def _prepare_locked(profile_name: str, *, gpu: str, development: bool, cache_vol
         if (prior.get("gpu", "L40S") != gpu
                 or prior.get("region") != region or prior.get("routing_region", "us-east") != routing_region
                 or prior.get("cache_volume_name", "yamkit-policy-weights") != cache_volume_name
-                or prior.get("memory_mib", 65536) != memory_mib):
+                or prior.get("memory_mib", 65536) != memory_mib
+                or prior.get("transport", "sdk") != transport
+                or prior.get("execution_mode", "eager") != execution_mode):
             raise ValueError("shut down the owned cloud service before changing its GPU, placement or weight cache")
         metadata = call(service_handle(prior["app_name"], profile.id).ready, timeout=300)
         _validate_ready(metadata, profile)
-        return {**prior, "metadata": metadata}
+        if transport == "http":
+            _validate_http_ready(metadata, execution_mode)
+            http_credentials(prior["app_name"])
+        updated = {**prior, "metadata": metadata}
+        _save(updated)
+        return updated
     app_name = "yamkit-vla-" + uuid.uuid4().hex[:16]
     receipt = {"app_name": app_name, "app_id": None, "profile_id": profile.id,
                "revision": profile.revision, "status": "preparing", "created_at": time.time(),
                "development": development, "gpu": gpu, "scaledown_window": 15 if development else 300,
                "region": region, "routing_region": routing_region, "cache_volume_name": cache_volume_name,
                "memory_mib": memory_mib,
+               "transport": transport, "execution_mode": execution_mode,
                "deployment_started": False}
     _save(receipt)
     app = None
+    http_token = secrets.token_urlsafe(48) if transport == "http" else None
     try:
         try:
+            extra = {"transport": transport, "execution_mode": execution_mode, "http_token": http_token} \
+                if transport == "http" else {}
             app = create_app(profile_id=profile.id, gpu=gpu, development=development, app_name=app_name,
                              cache_volume_name=cache_volume_name, region=region, routing_region=routing_region,
-                             memory_mib=memory_mib)
+                             memory_mib=memory_mib, **extra)
         except Exception as error:  # noqa: BLE001 — image/secret construction also invokes the SDK
             raise _safe_sdk_error(error, "application construction") from None
         receipt["deployment_started"] = True
@@ -168,8 +271,16 @@ def _prepare_locked(profile_name: str, *, gpu: str, development: bool, cache_vol
         asyncio.run(deploy())
         receipt["app_id"] = app.app_id
         _save(receipt)
-        metadata = call(service_handle(app_name, profile.id).ready, timeout=300 if development else 660)
+        service = service_handle(app_name, profile.id)
+        metadata = call(service.ready, timeout=300 if development else 660)
         _validate_ready(metadata, profile)
+        if transport == "http":
+            from .inference.http_transport import validate_endpoint_url
+
+            _validate_http_ready(metadata, execution_mode)
+            endpoint = validate_endpoint_url(service.http.get_web_url())
+            _save_http_auth(app_name, endpoint, http_token)
+            receipt["http_endpoint"] = endpoint
         receipt.update(status="ready", metadata=metadata)
         _save(receipt)
         return receipt
@@ -181,6 +292,20 @@ def _prepare_locked(profile_name: str, *, gpu: str, development: bool, cache_vol
         # If deployment failed before returning its ID, the unique owned name remains sufficient.
         _shutdown_locked()
         raise
+
+
+def _validate_http_ready(metadata: dict, execution_mode: str) -> None:
+    """Validate deploy/reuse identity without requiring a task-specific warm-up."""
+    from .inference.http_wire import WIRE_CODEC, WIRE_VERSION
+    from .inference.identity import inference_build_id
+
+    if (metadata.get("transport") != "http" or metadata.get("execution_mode") != execution_mode
+            or metadata.get("inference_build_id") != inference_build_id()
+            or type(metadata.get("http_wire_version")) is not int or metadata["http_wire_version"] != WIRE_VERSION
+            or metadata.get("http_wire_codec") != WIRE_CODEC
+            or not isinstance(metadata.get("supported_call_modes"), (list, tuple))
+            or "http" not in metadata["supported_call_modes"]):
+        raise ValueError("HTTP runtime differs from local source, execution mode or wire format; prepare it again")
 
 
 def _validate_ready(metadata: dict, profile) -> None:
@@ -216,7 +341,10 @@ def shutdown() -> dict:
 
 def _shutdown_locked() -> dict:
     receipt = owned_service()
-    if receipt is None or receipt.get("status") == "stopped":
+    if receipt is None:
+        return {"status": "stopped", "owned_app": None}
+    if receipt.get("status") == "stopped":
+        _remove_http_auth(receipt.get("app_name"))
         return {"status": "stopped", "owned_app": None}
     name = receipt.get("app_name", "")
     if not isinstance(name, str) or not re.fullmatch(r"yamkit-vla-[a-z0-9-]{1,80}", name):
@@ -225,8 +353,10 @@ def _shutdown_locked() -> dict:
         receipt.update(status="stopped", stopped_at=time.time(), remaining_containers=0,
                        shutdown_verification="deployment was never invoked")
         _save(receipt)
+        _remove_http_auth(name)
         return receipt
-    env = {k: v for k, v in os.environ.items() if k not in ("YAMKIT_OPENAI_API_KEY", "DATABASE_URL", "HF_TOKEN")}
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("YAMKIT_OPENAI_API_KEY", "DATABASE_URL", "HF_TOKEN", "YAMKIT_HTTP_TOKEN")}
     env["MODAL_CONFIG_PATH"] = str(ROOT / ".context" / "modal.toml")
 
     def run(*args: str, timeout: int = 15):
@@ -285,4 +415,5 @@ def _shutdown_locked() -> dict:
         raise
     receipt.update(status="stopped", stopped_at=time.time())
     _save(receipt)
+    _remove_http_auth(name)
     return receipt

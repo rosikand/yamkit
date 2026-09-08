@@ -191,7 +191,7 @@ def test_detached_live_reader_keeps_lease_across_cleanup_retries(
             # plugin; context construction fails before policy/transport creation.
             monkeypatch.setattr(remote_rollout, "validate_remote_rollout", lambda cfg: None)
             monkeypatch.setattr(remote_rollout, "build_rollout_context", lambda cfg, stop: robot.connect())
-            cfg = SimpleNamespace(robot=robot.config, policy=SimpleNamespace())
+            cfg = SimpleNamespace(robot=robot.config, policy=SimpleNamespace(), task="pick up the red cube")
             with pytest.raises(RuntimeError, match="camera release could not be confirmed"):
                 remote_rollout.run_remote_rollout(cfg, shutdown_event=threading.Event())
 

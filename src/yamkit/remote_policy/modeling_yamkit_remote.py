@@ -14,6 +14,13 @@ from .configuration_yamkit_remote import YamkitRemoteConfig
 
 def make_transport(config):
     """Dependency seam for hardware/cloud-free factory and context tests."""
+    if config.call_mode == "http":
+        from yamkit.inference.http_transport import HttpTransport
+        from yamkit.modal_ops import http_credentials
+
+        auth = http_credentials(config.modal_app)
+        return HttpTransport(config.modal_app, config.profile, endpoint_url=auth["endpoint_url"], token=auth["token"],
+                             shutdown_event=getattr(config, "_session_shutdown_event", None))
     return ModalTransport(config.modal_app, config.profile,
                           shutdown_event=getattr(config, "_session_shutdown_event", None),
                           call_mode=config.call_mode)
@@ -41,17 +48,22 @@ class YamkitRemotePolicy(PreTrainedPolicy):
         self.on_prediction_start = None
         self.on_prediction_end = None
         self.session = RemoteSession(self.transport, self.profile, timeout_s=config.request_timeout_s,
-                                     max_observation_age_s=config.max_observation_age_s)
+                                     max_observation_age_s=config.max_observation_age_s,
+                                     execution_mode=config.execution_mode)
         self._actions = deque(maxlen=self.profile.chunk_size)
         self._actions_expire_at = None
         self._observation_time = None
         self._last_requested_observation_time = None
         self._last_prediction_timing = {}
         readiness_started = time.monotonic()
-        self.metadata = self.transport.ready(config.readiness_timeout_s)
-        self.validate_readiness()
+        try:
+            self.metadata = self.transport.ready(config.readiness_timeout_s)
+            self.validate_readiness()
+        except Exception:
+            self.close()
+            raise
         self.warmup_s = 0.0
-        if self.metadata.get("prediction_count") == 0:
+        if self.metadata.get("prediction_count") == 0 or config.execution_mode == "cuda_graph10":
             # First-forward initialization must complete before hardware connects.
             # Its checkpoint-native fixture is never inserted into an action queue.
             from yamkit.inference.protocol import encode_image, native_fixture_request, validate_response
@@ -59,6 +71,9 @@ class YamkitRemotePolicy(PreTrainedPolicy):
             request = native_fixture_request(self.profile, encoding=config.image_encoding,
                                              quality=config.jpeg_quality,
                                              crop="center_16_9" if config.center_crop else "none")
+            request["task"] = config.task
+            if config.call_mode == "http":
+                request["execution_mode"] = config.execution_mode
             for robot_name, native_name in zip(self.profile.image_keys, self.profile.native_image_keys, strict=True):
                 height, width = config.input_features[f"observation.images.{robot_name}"].shape[-2:]
                 request["images"][native_name] = encode_image(np.zeros((height, width, 3), dtype=np.uint8),
@@ -75,17 +90,35 @@ class YamkitRemotePolicy(PreTrainedPolicy):
                 if response.get("instance_id") != self.metadata["instance_id"]:
                     raise RemoteFault("Remote container changed during model warmup")
                 self.validate_readiness()  # Recheck Stop after the blocking warmup.
+                if config.call_mode == "http":
+                    remaining = config.readiness_timeout_s - (time.monotonic() - readiness_started)
+                    if remaining <= 0:
+                        raise RemoteFault("Remote readiness deadline expired after graph warmup")
+                    refreshed = self.transport.ready(remaining)
+                    if refreshed.get("instance_id") != self.metadata["instance_id"]:
+                        raise RemoteFault("Remote container changed after graph warmup")
+                    self.metadata = refreshed
+                    self.validate_readiness(require_warmup=True)
             except Exception:
                 self.close()
                 raise
             self.warmup_s = time.monotonic() - warmed_at
-        require_physical_modal_rollout(lambda: settings_from_policy(config, self.metadata),
-                                       supervised_confirmed=config.supervised_confirmed,
-                                       mapping_accepted=config.mapping_accepted)
+        try:
+            require_physical_modal_rollout(lambda: settings_from_policy(config, self.metadata),
+                                           supervised_confirmed=config.supervised_confirmed,
+                                           mapping_accepted=config.mapping_accepted)
+        except Exception:
+            self.close()
+            raise
         self.readiness_s = time.monotonic() - readiness_started
         self.session.instance_id = self.metadata["instance_id"]
+        if config.call_mode == "http":
+            self.validate_readiness(require_warmup=True)
+            self.session.execution_identity = self.metadata["execution_identity"]
+            if config.execution_mode == "cuda_graph10":
+                self.session.graph_warmup = self.metadata["graph_warmup"]
 
-    def validate_readiness(self):
+    def validate_readiness(self, *, require_warmup=False):
         stop = getattr(self.config, "_session_shutdown_event", None)
         if stop is not None and stop.is_set():
             self.close()
@@ -112,6 +145,18 @@ class YamkitRemotePolicy(PreTrainedPolicy):
             raise RemoteFault("Remote readiness requires a container instance identity")
         if type(self.metadata.get("prediction_count")) is not int or self.metadata["prediction_count"] < 0:
             raise RemoteFault("Remote readiness requires a valid completed prediction count")
+        if self.config.call_mode == "http":
+            from yamkit.inference.identity import http_runtime_binding
+
+            try:
+                http_runtime_binding(self.profile, self.metadata, execution_mode=self.config.execution_mode,
+                                     task=self.config.task, image_hw=self.config.image_hw,
+                                     crop="center_16_9" if self.config.center_crop else "none",
+                                     image_encoding=self.config.image_encoding, jpeg_quality=self.config.jpeg_quality,
+                                     require_warmup=require_warmup)
+            except ValueError as exc:
+                self.close()
+                raise RemoteFault(str(exc)) from None
 
     @classmethod
     def from_pretrained(cls, pretrained_name_or_path=None, *, config=None, **kwargs):
@@ -130,6 +175,9 @@ class YamkitRemotePolicy(PreTrainedPolicy):
     def close(self):
         self._actions.clear()
         self.session.close()
+        close = getattr(self.transport, "close", None)
+        if close is not None:
+            close()
 
     def supports_rtc(self):
         # Unguided background inference is not denoising guidance.
@@ -195,6 +243,8 @@ class YamkitRemotePolicy(PreTrainedPolicy):
         task = batch.get("task", [""])
         if not isinstance(task, (list, tuple)) or len(task) != 1 or not isinstance(task[0], str):
             raise RemoteFault("Remote inference requires exactly one task string")
+        if self.config.execution_mode == "cuda_graph10" and task[0] != self.config.task:
+            raise RemoteFault("The rollout task differs from the graph warmed before hardware connection")
         observation_time = self._observation_time if self._observation_time is not None else started
         self._last_prediction_timing = {"encoding_s": time.monotonic() - started,
                                        "image_tensor_transform_s": transform_s,

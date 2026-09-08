@@ -7,12 +7,14 @@ normalization statistics or changed physical feature dimensions are used here.
 
 from __future__ import annotations
 
+import copy
 import threading
 import time
 import uuid
 from contextlib import contextmanager
 from typing import Any
 
+from .execution import request_execution_signature, signature_digest, validate_execution_mode
 from .mapping import CAMERA_RENAME_MAP, center_crop_rgb
 from .profiles import ModelProfile, get_profile
 from .protocol import (
@@ -88,7 +90,8 @@ def _run_processor(processor: Any, value: Any) -> tuple[Any, dict[str, float]]:
 
 class ModelRuntime:
     def __init__(self, profile: ModelProfile, policy: Any, pre: Any, post: Any, *, device: str,
-                 load_s: float = 0.0, native_pre: Any = None):
+                 load_s: float = 0.0, native_pre: Any = None, execution_mode: str = "eager"):
+        self.execution_mode = validate_execution_mode(execution_mode, profile, device)
         self.profile, self.policy = profile, policy
         self.pre, self.native_pre, self.post = pre, native_pre or pre, post
         self.device, self.load_s = device, load_s
@@ -102,6 +105,10 @@ class ModelRuntime:
         self._model_backbone = getattr(policy, "_backbone", lambda: None)() if profile.id == "molmoact2" else None
         self._action_expert = getattr(self._model_backbone, "action_expert", None)
         self._action_graph = getattr(self._model_backbone, "action_cuda_graph_manager", None)
+        self._graph_warmup: dict | None = None
+        self._graph_warmup_cache = None
+        self._graph_warmup_key: tuple | None = None
+        self._graph_warmup_generation = 0
         self._observed_activation_dtypes: dict[str, dict] = {}
         config = getattr(policy, "config", None)
         backbone_config = getattr(self._model_backbone, "config", None)
@@ -116,6 +123,11 @@ class ModelRuntime:
             "cuda_graph_supported": self._action_graph is not None,
             "production_cuda_graph_configured": getattr(config, "enable_inference_cuda_graph", None),
         }
+        if self.execution_mode == "cuda_graph10":
+            self._validate_graph_configuration(require_enabled=False)
+            config.enable_inference_cuda_graph = True
+            self._action_graph.set_enabled(True)
+            self._model_metadata["production_cuda_graph_configured"] = True
         self.unclipped_post = post
         if profile.id == "molmoact2" and hasattr(post, "steps"):
             from lerobot.policies.molmoact2.processor_molmoact2 import MolmoAct2ClampActionProcessorStep
@@ -128,12 +140,13 @@ class ModelRuntime:
             )
 
     @classmethod
-    def load(cls, profile: str | ModelProfile, *, device: str = "cpu") -> ModelRuntime:
+    def load(cls, profile: str | ModelProfile, *, device: str = "cpu", execution_mode: str = "eager") -> ModelRuntime:
+        profile = get_profile(profile)
+        validate_execution_mode(execution_mode, profile, device)
         from huggingface_hub import snapshot_download
         from lerobot.configs.policies import PreTrainedConfig
         from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 
-        profile = get_profile(profile)
         started = time.monotonic()
         snapshot = snapshot_download(profile.repo_id, revision=profile.revision,
                                      allow_patterns=["*.json", "*.safetensors"])
@@ -162,7 +175,7 @@ class ModelRuntime:
         elif profile.id == "molmoact2":
             cfg.checkpoint_path = dependency
             cfg.checkpoint_revision = profile.dependency_revision
-            cfg.enable_inference_cuda_graph = False
+            cfg.enable_inference_cuda_graph = execution_mode == "cuda_graph10"
             cfg.model_dtype = "bfloat16" if device.startswith("cuda") else "float32"
             overrides["molmoact2_pack_inputs"] = {
                 "checkpoint_path": dependency, "checkpoint_revision": profile.dependency_revision,
@@ -192,10 +205,81 @@ class ModelRuntime:
                 }}, postprocessor_overrides={"device_processor": {"device": "cpu"}},
             )
         return cls(profile, policy, pre, post, device=device, load_s=time.monotonic() - started,
-                   native_pre=native_pre)
+                   native_pre=native_pre, execution_mode=execution_mode)
+
+    def _validate_graph_configuration(self, *, require_enabled: bool = True) -> None:
+        """The execution choice cannot change denoising, model dtype or action shape."""
+        validate_execution_mode(self.execution_mode, self.profile, self.device)
+        config = self.policy.config
+        steps = getattr(config, "num_inference_steps", None)
+        if steps is None:
+            steps = getattr(getattr(self._model_backbone, "config", None), "flow_matching_num_steps", None)
+        if (getattr(config, "model_dtype", None) != "bfloat16" or steps != 10
+                or getattr(config, "n_action_steps", None) != 30 or self.profile.chunk_size != 30
+                or len(self.profile.action_names) != 14 or getattr(config, "inference_action_mode", None) == "discrete"
+                or getattr(config, "action_mode", None) == "discrete"):
+            raise ValueError("cuda_graph10 requires unchanged Molmo bfloat16, ten denoising steps and 30×14 continuous actions")
+        counts = self._model_metadata["parameter_dtype_numel"]
+        if not counts or set(counts) != {"torch.bfloat16"}:
+            raise ValueError("cuda_graph10 requires bfloat16 model parameters")
+        if any(not callable(getattr(self._action_graph, name, None))
+               for name in ("set_enabled", "run_action_flow", "can_use_action_flow")):
+            raise ValueError("cuda_graph10 requires the pinned Molmo action graph manager")
+        if require_enabled and (not self._action_graph.enabled or not config.enable_inference_cuda_graph):
+            raise ValueError("cuda_graph10 execution configuration changed; prepare the service again")
+
+    def _execution_identity(self) -> dict:
+        return {"version": 1, "execution_mode": self.execution_mode, "profile": self.profile.id,
+                "model_revision": self.profile.revision,
+                "model_dtype": self._model_metadata["configured_model_dtype"],
+                "num_inference_steps": self._model_metadata["default_num_inference_steps"],
+                "cuda_graph": self.execution_mode == "cuda_graph10", "chunk_size": self.profile.chunk_size,
+                "action_width": len(self.profile.action_names),
+                "parameter_dtype_numel": dict(self._model_metadata["parameter_dtype_numel"])}
+
+    def _graph_warmup_metadata(self) -> dict:
+        cache = getattr(self._action_graph, "action_flow_graph", None)
+        current = bool(self._graph_warmup is not None and cache is self._graph_warmup_cache
+                       and cache is not None and cache.key == self._graph_warmup_key
+                       and self._action_graph.enabled)
+        return {**copy.deepcopy(self._graph_warmup or {}), "ready": current}
+
+    def _prepare_execution_request(self, request: dict) -> None:
+        if request.get("execution_mode", self.execution_mode) != self.execution_mode:
+            raise ValueError("Request execution mode does not match the prepared service")
+        if self.execution_mode != "cuda_graph10":
+            return
+        self._validate_graph_configuration()
+        if request.get("diagnostic_cuda_graph") is False or request.get("diagnostic_num_inference_steps") not in (None, 10):
+            raise ValueError("Diagnostic overrides cannot change a cuda_graph10 production service")
+        if request.get("mode", "robot") == "native_fixture":
+            # A failed or differently shaped warm-up must not leave old proof in
+            # place for a cache it may have replaced. Only success publishes proof.
+            self._graph_warmup = None
+            self._graph_warmup_cache = None
+            self._graph_warmup_key = None
+            return
+        signature = request_execution_signature(request, self.profile)
+        warm = self._graph_warmup_metadata()
+        if not warm["ready"] or signature != warm["signature"]:
+            raise ValueError("cuda_graph10 requires a matching native-fixture warm-up before real observations")
+
+    def _successful_graph_warmup(self, request: dict, metadata: dict) -> dict:
+        cache = getattr(self._action_graph, "action_flow_graph", None)
+        digest = None if cache is None else signature_digest(cache.key)
+        if not metadata["cuda_graph_used"] or digest is None or digest != metadata.get("graph_cache_key_sha256"):
+            raise ValueError("cuda_graph10 did not produce the expected warmed action graph")
+        signature = request_execution_signature(request, self.profile)
+        return {"ready": True, "signature": signature, "signature_sha256": signature_digest(signature),
+                "cache_key_sha256": digest, "generation": self._graph_warmup_generation + 1,
+                "fixture_session_id": request["session_id"], "fixture_sequence_id": request["sequence_id"]}
 
     def ready(self) -> dict:
+        if self.execution_mode == "cuda_graph10":
+            self._validate_graph_configuration()
         return {**self.profile.metadata(), "ready": True, "instance_id": self.instance_id,
+                "execution_mode": self.execution_mode, "execution_identity": self._execution_identity(),
+                "graph_warmup": self._graph_warmup_metadata(),
                 "device": self.device, "load_s": self.load_s, "fresh_chunk": True,
                 "prediction_count": self._prediction_count,
                 "runtime_age_s": time.monotonic() - self._created_at,
@@ -212,7 +296,7 @@ class ModelRuntime:
 
     @contextmanager
     def _observe_execution(self, request: dict):
-        """Pinned Molmo experiments are non-executable fixtures and never persist settings."""
+        """Observe upstream execution and prevent real requests from capturing graphs."""
         graph = self._action_graph
         requested_graph = request.get("diagnostic_cuda_graph")
         requested_steps = request.get("diagnostic_num_inference_steps")
@@ -223,7 +307,11 @@ class ModelRuntime:
             raise ValueError("Diagnostic CUDA graphs require a CUDA Molmo action graph manager")
         previous_enabled = bool(getattr(graph, "enabled", False))
         original_run = getattr(graph, "run_action_flow", None)
+        original_can_use = getattr(graph, "can_use_action_flow", None)
+        production_graph = self.execution_mode == "cuda_graph10"
+        fixture = request.get("mode", "robot") == "native_fixture"
         metadata = {**self._model_metadata, "effective_num_inference_steps": requested_steps or default_steps,
+                    "execution_mode": self.execution_mode, "execution_identity": self._execution_identity(),
                     "cuda_graph_used": False,
                     "cuda_graph_cache_populated_before": getattr(graph, "action_flow_graph", None) is not None}
         hooks = []
@@ -244,9 +332,38 @@ class ModelRuntime:
             handle = module.register_forward_hook(observe)
             hooks.append(handle)
 
+        def check_graph_inputs(inputs, steps):
+            from lerobot.policies.molmoact2.molmoact2_hf_model.inference import _cuda_graph_key
+
+            if type(steps) is not int or steps != 10 or len(inputs.trajectory.shape) != 3 or inputs.trajectory.shape[0] != 1:
+                raise ValueError("cuda_graph10 requires ten steps and one observation per action graph")
+            key = _cuda_graph_key(inputs, steps)
+            cache = graph.action_flow_graph
+            if not fixture and (cache is None or cache is not self._graph_warmup_cache or cache.key != key
+                                or self._graph_warmup is None or key != self._graph_warmup_key):
+                raise ValueError("Action graph inputs/cache changed; warm the matching native fixture before real inference")
+            # The upstream key includes every layer/timestep tensor signature.
+            # Compare it in full before replay, but only serialize/hash on warm-up.
+            metadata["graph_cache_key_sha256"] = (signature_digest(key) if fixture
+                                                  else self._graph_warmup["cache_key_sha256"])
+            metadata["graph_capture_required"] = cache is None or cache.key != key
+            return key
+
+        def can_use_flow(inputs):
+            if not original_can_use(inputs):
+                raise ValueError("cuda_graph10 cannot use the prepared graph; eager fallback is forbidden")
+            return True
+
         def run_flow(*args, **kwargs):
+            if production_graph:
+                inputs = args[0] if args else kwargs["inputs"]
+                steps = args[1] if len(args) > 1 else kwargs["steps"]
+                key = check_graph_inputs(inputs, steps)
             metadata["cuda_graph_used"] = True
-            return original_run(*args, **kwargs)
+            result = original_run(*args, **kwargs)
+            if production_graph and (graph.action_flow_graph is None or graph.action_flow_graph.key != key):
+                raise ValueError("Upstream action graph cache did not match the validated inputs")
+            return result
 
         try:
             observe_once("action_embedding", getattr(self._action_expert, "action_embed", None))
@@ -257,6 +374,8 @@ class ModelRuntime:
                 graph.set_enabled(requested_graph)
             if original_run is not None:
                 graph.run_action_flow = run_flow
+            if production_graph:
+                graph.can_use_action_flow = can_use_flow
             metadata["cuda_graph_enabled"] = bool(getattr(graph, "enabled", False))
             yield metadata
         finally:
@@ -266,6 +385,8 @@ class ModelRuntime:
             metadata["cuda_graph_cache_populated_after"] = getattr(graph, "action_flow_graph", None) is not None
             if original_run is not None:
                 graph.run_action_flow = original_run
+            if production_graph:
+                graph.can_use_action_flow = original_can_use
             if requested_graph is not None:
                 graph.set_enabled(previous_enabled)
 
@@ -290,6 +411,7 @@ class ModelRuntime:
             raise TimeoutError("Inference queue deadline exceeded")
         try:
             acquired = time.monotonic()
+            self._prepare_execution_request(request)
             session, sequence = request["session_id"], request["sequence_id"]
             if session in self._closed or sequence <= self._sequences.get(session, -1):
                 raise ValueError("Retired session or duplicate/out-of-order sequence")
@@ -342,6 +464,8 @@ class ModelRuntime:
                 if seed is not None:
                     torch.manual_seed(seed)
                 raw = self.policy.predict_action_chunk(prepared, **prediction_kwargs)
+                if self.execution_mode == "cuda_graph10" and not model_execution["cuda_graph_used"]:
+                    raise ValueError("cuda_graph10 prediction did not execute the prepared action graph")
                 model_execution["raw_output_dtype"] = str(raw.dtype)
                 if self.device.startswith("cuda"):
                     torch.cuda.synchronize()
@@ -358,6 +482,8 @@ class ModelRuntime:
             post_end = time.monotonic()
             if processed.ndim != 3 or processed.shape[0] != 1:
                 raise ValueError("Policy must produce exactly one B×T×D action chunk")
+            if self.execution_mode == "cuda_graph10" and tuple(processed.shape) != (1, 30, 14):
+                raise ValueError("cuda_graph10 must preserve the complete 30×14 action chunk")
             decode_started = time.monotonic()
             chunk = processed[0].detach().float().cpu().tolist()
             decode_end = time.monotonic()
@@ -365,6 +491,8 @@ class ModelRuntime:
                 "protocol_version", "profile", "model_revision", "session_id", "sequence_id", "observation_time",
             )}
             response.update(
+                execution_mode=self.execution_mode, execution_identity=self._execution_identity(),
+                graph_warmup=self._graph_warmup_metadata(),
                 action_units="checkpoint_native" if request.get("mode", "robot") == "native_fixture" else "robot",
                 action_names=list(self.profile.action_names), chunk=chunk,
                 timing={"request_validation_s": validated - started,
@@ -402,6 +530,10 @@ class ModelRuntime:
                 response["unclipped_note"] = "Diagnostic only: saved numerical/frame transforms, " \
                     "excluding the saved Molmo normalized-action clamp; never execute this diagnostic chunk."
             response["timing"]["diagnostic_conversion_s"] = time.monotonic() - diagnostic_conversion_started
+            warmup = None
+            if self.execution_mode == "cuda_graph10" and request.get("mode", "robot") == "native_fixture":
+                warmup = self._successful_graph_warmup(request, model_execution)
+                response["graph_warmup"] = copy.deepcopy(warmup)
             response_validation_started = time.monotonic()
             validate_response(response, request, self.profile)
             finished = time.monotonic()
@@ -409,6 +541,11 @@ class ModelRuntime:
             response["timing"]["total_s"] = finished - started
             if finished - started >= timeout:
                 raise TimeoutError("Inference deadline exceeded; result discarded")
+            if warmup is not None:
+                self._graph_warmup = warmup
+                self._graph_warmup_cache = self._action_graph.action_flow_graph
+                self._graph_warmup_key = self._graph_warmup_cache.key
+                self._graph_warmup_generation = warmup["generation"]
             self._last_prediction_finished = finished
             return response
         finally:

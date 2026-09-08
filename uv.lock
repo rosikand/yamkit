@@ -2682,6 +2682,7 @@ dev = [
     { name = "ruff" },
 ]
 modal = [
+    { name = "httpx" },
     { name = "modal" },
 ]
 molmoact2 = [
@@ -2695,6 +2696,7 @@ realsense = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
+    { name = "httpx", marker = "extra == 'modal'", specifier = "==0.28.1" },
     { name = "i2rt", editable = "third_party/i2rt" },
     { name = "lerobot", extras = ["core-scripts", "smolvla", "pi", "async", "training"], specifier = "==0.6.1" },
     { name = "lerobot", extras = ["intelrealsense"], marker = "extra == 'realsense'" },

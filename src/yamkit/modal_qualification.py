@@ -23,7 +23,8 @@ def _benchmark_module():
 
 def collect_qualification(policy="molmoact2", *, requests=50, modal_app=None, rig_path=DEFAULT_RIG,
                           image_encoding="rgb8", jpeg_quality=85, call_mode="remote", center_crop=False,
-                          prediction_queue_threshold=None) -> dict:
+                          prediction_queue_threshold=None, execution_mode="eager",
+                          task="pick up the red cube") -> dict:
     from .config import RigConfig
     from .inference.profiles import get_profile
     from .inference.qualification import build_qualification, qualification_settings, save_qualification
@@ -33,8 +34,14 @@ def collect_qualification(policy="molmoact2", *, requests=50, modal_app=None, ri
         raise ValueError("Qualification requires 50–200 warm requests plus a first request")
     if image_encoding not in ("jpeg", "rgb8") or type(jpeg_quality) is not int or not 1 <= jpeg_quality <= 100:
         raise ValueError("Use JPEG quality 1–100 or raw rgb8 encoding")
-    if call_mode not in ("remote", "spawn"):
-        raise ValueError("call_mode must be remote or spawn")
+    if call_mode not in ("remote", "spawn", "http"):
+        raise ValueError("call_mode must be remote, spawn or http")
+    if execution_mode not in ("eager", "cuda_graph10"):
+        raise ValueError("Unknown qualification execution mode")
+    if execution_mode == "cuda_graph10" and (call_mode != "http" or image_encoding != "rgb8"):
+        raise ValueError("Production graph10 qualification requires HTTP and raw RGB")
+    if not isinstance(task, str) or not task.strip() or len(task) > 2048:
+        raise ValueError("The qualification task must contain 1–2048 characters")
     profile = get_profile(policy)
     if profile.id != "molmoact2":
         raise ValueError("Only the reviewed MolmoAct2 YAM candidate supports physical qualification")
@@ -66,7 +73,7 @@ def collect_qualification(policy="molmoact2", *, requests=50, modal_app=None, ri
     direct = benchmark.profile_modal(transport_factory(), profile_name=profile.id, warm_samples=requests,
                                      max_wall_s=min(600, 15 * requests), image_hw=image_hw,
                                      image_encoding=image_encoding, jpeg_quality=jpeg_quality,
-                                     center_crop=center_crop)
+                                     center_crop=center_crop, execution_mode=execution_mode, task=task)
     readiness = direct.get("readiness") or {}
 
     def save_failure(reason, integrated=None):
@@ -78,6 +85,7 @@ def collect_qualification(policy="molmoact2", *, requests=50, modal_app=None, ri
                   "hardware_tested": False,
                   "settings": {"profile": profile.id, "model_revision": profile.revision, "modal_app": app_name,
                                "call_mode": call_mode, "image_encoding": image_encoding,
+                               "execution_mode": execution_mode, "task": task,
                                "jpeg_quality": jpeg_quality if image_encoding == "jpeg" else None,
                                "image_hw": list(image_hw),
                                "crop": "center_16_9" if center_crop else "none",
@@ -91,6 +99,18 @@ def collect_qualification(policy="molmoact2", *, requests=50, modal_app=None, ri
 
     if direct.get("terminated") != "request_limit" or direct.get("warm_sample_count", 0) < requests:
         return save_failure("Direct measurements did not complete; no additional integrated requests were sent")
+    if call_mode == "http":
+        from .modal_ops import _ownership_lock, _save
+
+        # Keep local gate resolution synchronized with the graph cache actually
+        # warmed above. Do not overwrite another service's ownership or status.
+        with _ownership_lock():
+            current = owned_service() or {}
+            if (current.get("app_name") != app_name or current.get("status") != "ready"
+                    or current.get("transport") != "http"
+                    or current.get("http_endpoint") != receipt.get("http_endpoint")):
+                return save_failure("Owned HTTP service changed during direct measurements")
+            _save({**current, "metadata": readiness})
     # Import the repository fake SDK only inside the diagnostic. Every camera and
     # hardware factory is replaced before run_remote_rollout constructs a robot.
     original_path = list(sys.path)
@@ -99,8 +119,11 @@ def collect_qualification(policy="molmoact2", *, requests=50, modal_app=None, ri
         integrated = benchmark.run_scenario(
             "host_modal_qualification", [0], duration=min(300, requests * 1.5 + 15),
             image_hw=image_hw, transport_factory=transport_factory, target_warm_samples=requests,
+            task=task,
             policy_options={"profile": profile.id, "image_encoding": image_encoding, "jpeg_quality": jpeg_quality,
                             "call_mode": call_mode, "center_crop": center_crop,
+                            "execution_mode": execution_mode, "task": task,
+                            **({"modal_app": app_name} if call_mode == "http" else {}),
                             "prediction_queue_threshold": prediction_queue_threshold})
     except Exception as exc:  # noqa: BLE001 — record failure type without SDK data or credentials
         return save_failure(f"Integrated diagnostic failed ({type(exc).__name__})")
@@ -111,7 +134,9 @@ def collect_qualification(policy="molmoact2", *, requests=50, modal_app=None, ri
             profile, modal_app=app_name, call_mode=call_mode, image_encoding=image_encoding,
             jpeg_quality=jpeg_quality, image_hw=image_hw, crop="center_16_9" if center_crop else "none",
             requested_region=readiness.get("requested_compute_region"), observed_region=readiness.get("compute_region"),
-            routing_region=readiness.get("routing_region"), prediction_queue_threshold=prediction_queue_threshold)
+            routing_region=readiness.get("routing_region"), prediction_queue_threshold=prediction_queue_threshold,
+            execution_mode=execution_mode, task=task, metadata=readiness,
+            endpoint_url=receipt.get("http_endpoint") if call_mode == "http" else None)
         record = build_qualification(settings, direct=direct, integrated=integrated, requested_warm_samples=requests)
     except ValueError as exc:
         return save_failure(f"Qualification evidence was rejected ({type(exc).__name__})", integrated)

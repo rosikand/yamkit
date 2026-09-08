@@ -17,6 +17,8 @@ class YamkitRemoteConfig(PreTrainedConfig):
     image_encoding: str = "rgb8"
     jpeg_quality: int = 85
     call_mode: str = "remote"
+    execution_mode: str = "eager"
+    task: str = "pick up the red cube"
     prediction_queue_threshold: int | None = None
     supervised_confirmed: bool = False
     mapping_accepted: bool = False
@@ -41,8 +43,15 @@ class YamkitRemoteConfig(PreTrainedConfig):
             raise ValueError("Remote images require jpeg or rgb8 encoding")
         if type(self.jpeg_quality) is not int or not 1 <= self.jpeg_quality <= 100:
             raise ValueError("JPEG quality must be an integer from 1 to 100")
-        if self.call_mode not in ("remote", "spawn"):
-            raise ValueError("Remote call_mode must be remote or spawn")
+        if self.call_mode not in ("remote", "spawn", "http"):
+            raise ValueError("Remote call_mode must be remote, spawn or http")
+        if self.execution_mode not in ("eager", "cuda_graph10"):
+            raise ValueError("Unknown remote execution mode")
+        if self.execution_mode == "cuda_graph10" and (
+                self.call_mode != "http" or profile.id != "molmoact2" or self.image_encoding != "rgb8"):
+            raise ValueError("Production graph10 requires MolmoAct2 over HTTP with raw RGB")
+        if not isinstance(self.task, str) or not self.task.strip() or len(self.task) > 2048:
+            raise ValueError("The actual remote rollout task must contain 1–2048 characters")
         if self.prediction_queue_threshold is not None and (
                 type(self.prediction_queue_threshold) is not int
                 or not 0 <= self.prediction_queue_threshold <= profile.chunk_size):

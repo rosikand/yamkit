@@ -86,6 +86,16 @@ def make_benchmark_transport(app_name, profile_name="molmoact2", *, shutdown_eve
                              uncached_handles=False, sdk_metrics=None, call_mode="remote"):
     from yamkit.inference.client import ModalTransport
 
+    if call_mode == "http":
+        from yamkit.inference.http_transport import HttpTransport
+        from yamkit.modal_ops import http_credentials
+
+        if uncached_handles or sdk_metrics is not None:
+            raise ValueError("SDK handle/serialization diagnostics do not apply to HTTP")
+        credentials = http_credentials(app_name)
+        return HttpTransport(app_name, profile_name, endpoint_url=credentials["endpoint_url"],
+                             token=credentials["token"], shutdown_event=shutdown_event)
+
     class MeasuredModalTransport(ModalTransport):
         def _invoke(self, method, payload, timeout_s):
             if uncached_handles:
@@ -102,7 +112,8 @@ def make_benchmark_transport(app_name, profile_name="molmoact2", *, shutdown_eve
 
 
 def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(480, 640),
-                 transport_factory=None, target_warm_samples: int | None = None, policy_options=None) -> dict:
+                 transport_factory=None, target_warm_samples: int | None = None, policy_options=None,
+                 task: str = "synthetic timing diagnostic") -> dict:
     from lerobot.rollout.configs import RolloutConfig
     from lerobot_robot_yamkit import BiYamFollowerConfig
 
@@ -195,6 +206,10 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
         def last_timing(self):
             return getattr(self.inner, "last_timing", {})
 
+        @property
+        def call_mode(self):
+            return getattr(self.inner, "call_mode", "remote")
+
         def ready(self, timeout_s):
             started = time.monotonic()
             self.readiness = self.inner.ready(timeout_s)
@@ -204,11 +219,22 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
         def cancel(self):
             self.inner.cancel()
 
+        def close(self):
+            close = getattr(self.inner, "close", None)
+            if close is not None:
+                close()
+            else:
+                self.inner.cancel()
+
         def predict_chunk(self, request, timeout_s):
-            event = {"started": time.monotonic()}
+            event = {"started": time.monotonic(), "mode": request.get("mode", "robot"),
+                     "task": request["task"], "execution_mode": request.get("execution_mode", "eager")}
             self.requests.append(event)
             response = self.inner.predict_chunk(request, timeout_s)
             event["returned"] = time.monotonic()
+            event.update({key: response.get(key) for key in (
+                "instance_id", "execution_mode", "execution_identity", "graph_warmup", "model_execution")})
+            event["wire_payload_bytes"] = self.last_timing.get("wire_request_bytes")
             return response
 
     def connect(spec, channel, **kwargs):
@@ -250,9 +276,10 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
         stack.enter_context(patch("lerobot_robot_yamkit.yam_follower.claim_from_env",
                                   lambda names: CameraLease()))
         stack.enter_context(patch("lerobot_robot_yamkit.yam_follower.start_from_env", lambda *a, **k: NullPreview()))
+        options = {"modal_app": "fake-benchmark", **(policy_options or {}), "task": task}
         cfg = RolloutConfig(robot=BiYamFollowerConfig(rig=str(rig.path)),
-                            policy=YamkitRemoteConfig(modal_app="fake-benchmark", **(policy_options or {})), device="cpu",
-                            task="synthetic timing diagnostic", duration=duration, fps=30,
+                            policy=YamkitRemoteConfig(**options), device="cpu",
+                            task=task, duration=duration, fps=30,
                             return_to_initial_position=False)
         started = time.monotonic()
         error = None
@@ -262,9 +289,12 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
             # Observe completed responses only. The worker still validates/merges
             # normally; Stop invalidates any final unconsumed response as usual.
             while not monitor_done.wait(0.05):
-                completed = sum("returned" in event for event in transport.requests)
+                # Pre-hardware native warm-up does not count toward accepted
+                # predictions by the actual rollout worker and queue.
+                rollout_requests = [event for event in transport.requests if event["mode"] != "native_fixture"]
+                completed = sum("returned" in event for event in rollout_requests)
                 if (target_warm_samples is not None and completed >= target_warm_samples + 1
-                        and len(transport.requests) > completed):
+                        and len(rollout_requests) > completed):
                     stop.set()
                     return
 
@@ -288,13 +318,16 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
             + ("real Modal RPC" if transport_factory else "fake RPC"),
             "measurement_host": host_identity(),
             "injected_delay_cycle_s": None if transport_factory else delays, "fps": 30, "chunk_steps": 30,
-            "image_hw": list(image_hw), "elapsed_s": wall_s, "error": error,
+            "image_hw": list(image_hw), "elapsed_s": wall_s, "error": error, "task": task,
             "fixture_pattern": "fixed seeded random RGB per camera; fake measured state follows commanded actions",
             "policy_options": {"image_encoding": cfg.policy.image_encoding, "jpeg_quality": cfg.policy.jpeg_quality,
                                "call_mode": cfg.policy.call_mode, "center_crop": cfg.policy.center_crop,
+                               "execution_mode": cfg.policy.execution_mode, "task": cfg.policy.task,
+                               "modal_app": cfg.policy.modal_app,
                                "prediction_queue_threshold": cfg.policy.prediction_queue_threshold
                                if cfg.policy.prediction_queue_threshold is not None else profile.chunk_size},
             "readiness_s": transport.readiness_s, "readiness": transport.readiness,
+            "transport_predictions": transport.requests,
             "stop_requested_monotonic_s": stop.requested_at,
             "commands_after_stop": sum(at >= stop.requested_at for at in execution_times)
             if stop.requested_at is not None else None,
@@ -308,7 +341,8 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
 def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
                   max_wall_s=600.0, image_hw=(480, 640), on_sample=None,
                   image_encoding="rgb8", jpeg_quality=85, center_crop=False,
-                  diagnostic_num_inference_steps=None, diagnostic_cuda_graph=None) -> dict:
+                  diagnostic_num_inference_steps=None, diagnostic_cuda_graph=None,
+                  execution_mode="eager", task="pick up the red cube") -> dict:
     """Bounded direct protocol profiling; generated fixture results never enter a queue.
 
     In contrast to rollout, non-executable native fixtures can be measured after
@@ -336,6 +370,14 @@ def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
         raise ValueError("Molmo diagnostic inference steps must be 5 or 10; production defaults are unchanged")
     if diagnostic_cuda_graph is not None and type(diagnostic_cuda_graph) is not bool:
         raise ValueError("diagnostic_cuda_graph must be a boolean")
+    if execution_mode not in ("eager", "cuda_graph10"):
+        raise ValueError("Unknown execution mode")
+    is_http = getattr(transport, "call_mode", None) == "http"
+    if execution_mode == "cuda_graph10" and (not is_http or image_encoding != "rgb8"
+            or diagnostic_num_inference_steps is not None or diagnostic_cuda_graph is not None):
+        raise ValueError("Production graph10 profiling requires HTTP/raw RGB without diagnostic overrides")
+    if not isinstance(task, str) or not task.strip() or len(task) > 2048:
+        raise ValueError("The benchmark task must contain 1–2048 characters")
     height, width = image_hw
     if not 1 <= height <= MAX_IMAGE_HEIGHT or not 1 <= width <= MAX_IMAGE_WIDTH:
         raise ValueError("Fixture dimensions exceed the unchanged protocol bounds")
@@ -347,6 +389,7 @@ def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
     metadata = None
     readiness_s = None
     readiness_transport_timing = {}
+    post_warmup_readiness_s = None
     session_id = uuid.uuid4().hex
     terminated = "request_limit"
     try:
@@ -382,10 +425,12 @@ def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
                        "model_revision": profile.revision, "session_id": session_id,
                        "sequence_id": sequence, "observation_time": observation_time,
                        "observation_age_s": time.monotonic() - observation_time,
-                       "timeout_s": min(120.0, remaining), "task": "pick up the red cube",
+                       "timeout_s": min(120.0, remaining), "task": task,
                        "state": [0.0] * len(profile.state_names), "state_names": list(profile.state_names),
                        "images": images, "mode": "native_fixture",
                        "crop": "center_16_9" if center_crop else "none", "continuation": None}
+            if is_http:
+                request["execution_mode"] = execution_mode
             if diagnostic_num_inference_steps is not None:
                 request["diagnostic_num_inference_steps"] = diagnostic_num_inference_steps
             if diagnostic_cuda_graph is not None:
@@ -405,6 +450,7 @@ def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
             if response.get("instance_id") != metadata.get("instance_id"):
                 raise ValueError("Container changed during benchmark; a mixed-container warm distribution is invalid")
             server_timing = response.get("timing", {})
+            transport_timing = dict(getattr(transport, "last_timing", {}))
             elapsed = returned_at - dispatched_at
             sample = {"sequence_id": sequence, "instance_id": response.get("instance_id"),
                       "round_trip_s": elapsed, "total_request_s": time.monotonic() - observation_time,
@@ -414,21 +460,43 @@ def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
                       "image_encoding": image_encoding, "jpeg_quality": jpeg_quality if image_encoding == "jpeg" else None,
                       "image_hw": [height, width], "per_camera": camera_timings,
                       "payload_bytes": sum(len(image["data"]) for image in images.values()),
-                      "wire_payload_bytes": None,
-                      "payload_size_basis": "encoded image bytes; SDK request framing size is unobservable",
+                      "wire_payload_bytes": transport_timing.get("wire_request_bytes") if is_http else None,
+                      "payload_size_basis": "exact binary HTTP request size; image bytes unchanged" if is_http else
+                      "encoded image bytes; SDK request framing size is unobservable",
                       "request_validation_s": request_validation_s,
                       "response_validation_s": response_validation_s,
-                      "transport_timing": dict(getattr(transport, "last_timing", {})),
+                      "transport_timing": transport_timing,
                       "server_timing": server_timing, "lifecycle": response.get("lifecycle"),
                       "model_execution": response.get("model_execution"),
+                      "execution_mode": response.get("execution_mode"),
+                      "execution_identity": response.get("execution_identity"),
+                      "graph_warmup": response.get("graph_warmup"), "task": task,
                       "diagnostic_num_inference_steps": diagnostic_num_inference_steps,
                       "diagnostic_cuda_graph": diagnostic_cuda_graph,
                       "rpc_minus_server_s": max(0.0, elapsed - server_timing["total_s"]),
-                      "rpc_residual_note": "Includes SDK serialization, dispatch, routing and network; not network-only",
+                      "rpc_residual_note": "Includes HTTP codec, routing and network; not network-only" if is_http else
+                      "Includes SDK serialization, dispatch, routing and network; not network-only",
                       "shape": [len(response["chunk"]), len(response["chunk"][0])]}
             samples.append(sample)
             if on_sample is not None:
                 on_sample(sample)
+            if sequence == 0 and is_http and execution_mode == "cuda_graph10":
+                # The first fixture may populate the graph cache. Qualification
+                # must bind the resulting task/shape/cache identity, not stale
+                # readiness from before that successful prediction.
+                refreshed_at = time.monotonic()
+                remaining = deadline - refreshed_at
+                if remaining <= 0:
+                    terminated = "wall_budget"
+                    break
+                warmed = transport.ready(min(120.0, remaining))
+                _validate_ready(warmed, profile)
+                if warmed.get("instance_id") != metadata["instance_id"]:
+                    raise ValueError("Container changed while refreshing graph readiness")
+                if warmed.get("execution_mode") != execution_mode:
+                    raise ValueError("Service execution mode changed after graph warm-up")
+                metadata = warmed
+                post_warmup_readiness_s = time.monotonic() - refreshed_at
     except Exception as exc:  # noqa: BLE001 — keep SDK exceptions and credentials out of artifacts
         # SDK exceptions can contain request data/credentials. Retain the type only.
         failures.append({"reason": type(exc).__name__, "elapsed_s": time.monotonic() - started,
@@ -438,11 +506,13 @@ def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
         terminated = "interrupted"
     finally:
         transport.cancel()
-    return {"measurement": "real Modal RPC; generated checkpoint-native fixtures; no action execution",
+    return {"measurement": "real Modal " + ("HTTP" if is_http else "RPC")
+            + "; generated checkpoint-native fixtures; no action execution",
             "measurement_host": host_identity(),
             "profile": profile.id, "revision": profile.revision, "image_hw": [height, width],
             "fixture_pattern": "seeded random RGB generated per request; zero native state",
             "call_mode": getattr(transport, "call_mode", None),
+            "execution_mode": execution_mode, "task": task,
             "image_encoding": image_encoding, "jpeg_quality": jpeg_quality if image_encoding == "jpeg" else None,
             "crop": "center_16_9" if center_crop else "none",
             "diagnostic_num_inference_steps": diagnostic_num_inference_steps,
@@ -450,6 +520,7 @@ def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
             "experiment_only": diagnostic_num_inference_steps is not None or diagnostic_cuda_graph is True,
             "requested_warm_samples": warm_samples, "max_wall_s": max_wall_s,
             "readiness_s": readiness_s, "readiness": metadata,
+            "post_warmup_readiness_s": post_warmup_readiness_s,
             "readiness_transport_timing": readiness_transport_timing,
             "readiness_cold_start_verified": False,
             "cold_start_note": "Readiness can reuse a warm pool. Model load telemetry is server-local, not measured cold RPC.",
@@ -770,7 +841,9 @@ def main():
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--image-encoding", choices=("jpeg", "rgb8"), default="rgb8")
     parser.add_argument("--jpeg-quality", type=int, default=85)
-    parser.add_argument("--call-mode", choices=("remote", "spawn"), default="remote")
+    parser.add_argument("--call-mode", choices=("remote", "spawn", "http"), default="remote")
+    parser.add_argument("--execution-mode", choices=("eager", "cuda_graph10"), default="eager")
+    parser.add_argument("--task", default="pick up the red cube")
     parser.add_argument("--center-crop", action="store_true")
     parser.add_argument("--encoding-pairs", type=int, default=0,
                         help="optional 1–6 seeded raw/JPEG pairs before warm profiling")
@@ -792,12 +865,19 @@ def main():
     if not args.modal_app and any((args.integrated_modal, args.integrated_only,
                                    args.uncached_handles, args.sdk_profile, args.encoding_pairs,
                                    args.quality_pairs, args.denoising_pairs, args.denoising_graphs,
-                                   args.diagnostic_num_inference_steps, args.diagnostic_cuda_graph)):
+                                   args.diagnostic_num_inference_steps, args.diagnostic_cuda_graph,
+                                   args.call_mode != "remote", args.execution_mode != "eager")):
         parser.error("Modal options require an explicit --modal-app")
     if not 0 <= args.quality_pairs <= 25 or not 0 <= args.denoising_pairs <= 25:
         parser.error("--quality-pairs and --denoising-pairs must be 0–25")
     if args.denoising_graphs and not args.denoising_pairs:
         parser.error("--denoising-graphs requires --denoising-pairs")
+    if args.call_mode == "http" and (args.sdk_profile or args.uncached_handles):
+        parser.error("HTTP does not use SDK serialization or service handles")
+    if args.execution_mode == "cuda_graph10" and (args.call_mode != "http" or args.image_encoding != "rgb8"
+            or args.diagnostic_num_inference_steps is not None or args.diagnostic_cuda_graph is not None
+            or args.encoding_pairs or args.quality_pairs or args.denoising_pairs):
+        parser.error("Production graph10 requires HTTP/raw RGB without experimental model or image overrides")
     if (args.integrated_modal or args.integrated_only) and (
             args.diagnostic_num_inference_steps is not None or args.diagnostic_cuda_graph is not None):
         parser.error("Model overrides are restricted to native-fixture profiling; use a separate integrated run")
@@ -838,7 +918,8 @@ def main():
                                        on_sample=progress, image_encoding=args.image_encoding,
                                        jpeg_quality=args.jpeg_quality, center_crop=args.center_crop,
                                        diagnostic_num_inference_steps=args.diagnostic_num_inference_steps,
-                                       diagnostic_cuda_graph=args.diagnostic_cuda_graph)
+                                       diagnostic_cuda_graph=args.diagnostic_cuda_graph,
+                                       execution_mode=args.execution_mode, task=args.task)
             if comparison is not None:
                 report["encoding_comparison"] = comparison
             if quality_comparison is not None:
@@ -849,12 +930,14 @@ def main():
                 report["integrated_scenario"] = run_scenario(
                     "real_modal_fake_hardware", [0], duration=args.duration,
                     image_hw=(args.height, args.width), transport_factory=transport_factory,
-                    target_warm_samples=args.warm_samples,
+                    target_warm_samples=args.warm_samples, task=args.task,
                     policy_options={"image_encoding": args.image_encoding, "jpeg_quality": args.jpeg_quality,
-                                    "call_mode": args.call_mode, "center_crop": args.center_crop})
+                                    "call_mode": args.call_mode, "center_crop": args.center_crop,
+                                    "execution_mode": args.execution_mode,
+                                    **({"modal_app": args.modal_app} if args.call_mode == "http" else {})})
             report.update(measured_on=datetime.now(UTC).isoformat(), modal_app=args.modal_app,
                           uncached_handles=args.uncached_handles, sdk_profile=args.sdk_profile,
-                          call_mode=args.call_mode,
+                          call_mode=args.call_mode, execution_mode=args.execution_mode, task=args.task,
                           physical_modal_rollout_allowed=False)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2) + "\n")

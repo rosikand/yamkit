@@ -127,6 +127,8 @@ def validate_request(request: dict, profile: ModelProfile) -> None:
     mode = request.get("mode", "robot")
     if mode not in ("robot", "saved_probe", "live_probe", "native_fixture"):
         raise ProtocolError("Unknown inference mode")
+    if request.get("execution_mode", "eager") not in ("eager", "cuda_graph10"):
+        raise ProtocolError("Unknown model execution mode")
     if mode != "native_fixture":
         profile.require_robot_mapping()
     _number(request.get("observation_time"), "observation_time")
@@ -176,6 +178,8 @@ def validate_request(request: dict, profile: ModelProfile) -> None:
 def validate_response(response: dict, request: dict, profile: ModelProfile) -> None:
     if not isinstance(response, dict):
         raise ProtocolError("Response must be a dictionary")
+    if "execution_mode" in request and response.get("execution_mode") != request["execution_mode"]:
+        raise ProtocolError("Response execution mode mismatch")
     for key in ("protocol_version", "profile", "model_revision", "session_id", "sequence_id", "observation_time"):
         if response.get(key) != request[key]:
             raise ProtocolError(f"Response {key} mismatch")

@@ -66,9 +66,11 @@ def qualification_settings(profile, *, modal_app: str, call_mode: str = "remote"
                            image_hw=(480, 640), crop: str = "none", requested_region: str = "us-west",
                            observed_region: str, routing_region: str = "us-west",
                            prediction_queue_threshold: int | None = None,
-                           max_observation_age_s: float = 2.0) -> dict:
+                           max_observation_age_s: float = 2.0, execution_mode: str = "eager",
+                           task: str | None = None, metadata: dict | None = None,
+                           endpoint_url: str | None = None) -> dict:
     profile = get_profile(profile)
-    if not modal_app or call_mode not in ("remote", "spawn") or image_encoding not in ("rgb8", "jpeg"):
+    if not modal_app or call_mode not in ("remote", "spawn", "http") or image_encoding not in ("rgb8", "jpeg"):
         raise QualificationError("Explicit Modal app, supported call path and image encoding are required")
     if (type(jpeg_quality) is not int or not 1 <= jpeg_quality <= 100 or len(image_hw) != 2
             or any(type(value) is not int or value <= 0 for value in image_hw)):
@@ -83,7 +85,7 @@ def qualification_settings(profile, *, modal_app: str, call_mode: str = "remote"
         raise QualificationError("Invalid prediction queue threshold")
     if type(max_observation_age_s) not in (int, float) or not 0 < max_observation_age_s <= 2.0:
         raise QualificationError("Qualification must retain the production observation-age guard")
-    return {"profile": profile.id, "model_revision": profile.revision,
+    result = {"profile": profile.id, "model_revision": profile.revision,
             "dependency_revision": profile.dependency_revision, "modal_app": modal_app,
             "call_mode": call_mode, "image_encoding": image_encoding,
             "jpeg_quality": jpeg_quality if image_encoding == "jpeg" else None,
@@ -94,6 +96,20 @@ def qualification_settings(profile, *, modal_app: str, call_mode: str = "remote"
             "protocol_version": 1, "lerobot_version": LEROBOT_VERSION,
             "jpeg_subsampling": 2 if image_encoding == "jpeg" else None,
             "image_boundary_version": "saved-policy-transform-v1"}
+    if call_mode == "http":
+        from .http_transport import validate_endpoint_url
+        from .identity import http_runtime_binding
+
+        try:
+            result.update(http_runtime_binding(profile, metadata or {}, execution_mode=execution_mode,
+                                               task=task, image_hw=image_hw, crop=crop,
+                                               image_encoding=image_encoding, jpeg_quality=jpeg_quality))
+            result["http_endpoint"] = validate_endpoint_url(endpoint_url)
+        except (ValueError, TypeError) as exc:
+            raise QualificationError(str(exc)) from None
+    elif execution_mode != "eager":
+        raise QualificationError("Production CUDA graphs require the reviewed HTTP path")
+    return result
 
 
 def current_settings(config, *, image_hw, metadata=None) -> dict:
@@ -110,6 +126,10 @@ def current_settings(config, *, image_hw, metadata=None) -> dict:
     if (metadata.get("requested_compute_region") != receipt.get("region")
             or metadata.get("routing_region") != receipt.get("routing_region")):
         raise QualificationError("Current service placement differs from its ownership receipt")
+    if config.call_mode == "http" and (
+            receipt.get("transport") != "http"
+            or receipt.get("execution_mode") != getattr(config, "execution_mode", "eager")):
+        raise QualificationError("Current HTTP execution differs from the owned service")
     return qualification_settings(
         profile, modal_app=receipt["app_name"], call_mode=config.call_mode,
         image_encoding=config.image_encoding, jpeg_quality=config.jpeg_quality,
@@ -117,7 +137,9 @@ def current_settings(config, *, image_hw, metadata=None) -> dict:
         requested_region=metadata.get("requested_compute_region"),
         observed_region=metadata.get("compute_region"), routing_region=metadata.get("routing_region"),
         prediction_queue_threshold=config.prediction_queue_threshold,
-        max_observation_age_s=getattr(config, "max_observation_age_s", 2.0))
+        max_observation_age_s=getattr(config, "max_observation_age_s", 2.0),
+        execution_mode=getattr(config, "execution_mode", "eager"), task=getattr(config, "task", None),
+        metadata=metadata, endpoint_url=receipt.get("http_endpoint"))
 
 
 def settings_from_policy(config, metadata=None) -> dict:
@@ -141,39 +163,168 @@ def settings_from_rig(options) -> dict:
 
 
 def _number(value, field):
-    if type(value) not in (float, int) or not math.isfinite(value) or value < 0:
+    try:
+        valid = type(value) in (float, int) and math.isfinite(value) and value >= 0
+    except OverflowError:
+        valid = False
+    if not valid:
         raise QualificationError(f"Missing or invalid {field}")
     return value
 
 
-def _has_inference_experiment(value, profile):
+def _same_value(actual, expected):
+    """JSON identity comparison without Python's True == 1 == 1.0 coercion."""
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(_same_value(actual[key], value)
+                                                       for key, value in expected.items())
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(_same_value(a, b) for a, b in zip(actual, expected, strict=True))
+    return actual == expected
+
+
+def _mapping(value, label, reasons):
+    if not isinstance(value, dict):
+        reasons.append(f"Missing or malformed {label}")
+        return {}
+    return value
+
+
+def _rows(value, label, reasons):
+    if not isinstance(value, list):
+        reasons.append(f"Missing or malformed {label}")
+        return []
+    result = []
+    for row in value:
+        if not isinstance(row, dict):
+            reasons.append(f"Malformed {label} row")
+        else:
+            result.append(row)
+    return result
+
+
+def _has_inference_experiment(value, profile, *, production_graph=False):
     """Reject diagnostic overrides wherever the collector preserved their evidence."""
     if isinstance(value, list):
-        return any(_has_inference_experiment(item, profile) for item in value)
+        return any(_has_inference_experiment(item, profile, production_graph=production_graph) for item in value)
     if not isinstance(value, dict):
         return False
     if any(value.get(key) is not None for key in ("diagnostic_num_inference_steps", "diagnostic_cuda_graph")):
         return True
     if any(value.get(key) not in (None, False) for key in ("experiment_only", "experimental")):
         return True
-    # Graphs remain disabled in the qualified production runtime. A diagnostic
-    # request can leave its graph cache populated, which alone does not mean use.
-    if any(value.get(key) not in (None, False) for key in ("cuda_graph_enabled", "cuda_graph_used")):
+    # Only the explicitly bound HTTP graph runtime may use production graphs.
+    # Per-request diagnostic overrides above are always rejected.
+    if not production_graph and any(value.get(key) not in (None, False)
+                                    for key in ("cuda_graph_enabled", "cuda_graph_used")):
         return True
     effective = value.get("effective_num_inference_steps")
     if effective is not None:
         expected = 10 if profile == "molmoact2" else value.get("default_num_inference_steps")
         if type(effective) is not int or effective != expected:
             return True
-    return any(_has_inference_experiment(item, profile) for item in value.values())
+    return any(_has_inference_experiment(item, profile, production_graph=production_graph) for item in value.values())
+
+
+def _check_http_evidence(settings, direct, integrated, reasons, requested):
+    """Independently validate every new execution binding, including raw samples."""
+    from .http_wire import MAX_MESSAGE_BYTES, WIRE_CODEC, WIRE_VERSION
+    from .identity import http_runtime_binding
+
+    graph = settings.get("execution_mode") == "cuda_graph10"
+    expected_execution = {
+        "execution_mode": settings.get("execution_mode"), "execution_identity": settings.get("execution_identity"),
+        "configured_model_dtype": "bfloat16", "parameter_dtype_numel": {"torch.bfloat16": 5442196208},
+        "default_num_inference_steps": 10, "effective_num_inference_steps": 10,
+        "production_cuda_graph_configured": graph, "cuda_graph_enabled": graph, "cuda_graph_used": graph,
+    }
+
+    def readiness_binding(metadata):
+        return http_runtime_binding(settings["profile"], metadata,
+                                    execution_mode=settings.get("execution_mode"), task=settings.get("task"),
+                                    image_hw=settings["image_hw"], crop=settings["crop"],
+                                    image_encoding=settings["image_encoding"])
+
+    for report in (direct, integrated):
+        try:
+            metadata = _mapping(report.get("readiness"), "HTTP readiness", reasons)
+            binding = readiness_binding(metadata)
+            if any(not _same_value(settings.get(key), value) for key, value in binding.items()):
+                reasons.append("HTTP readiness execution, warmup or container binding changed")
+            execution = _mapping(metadata.get("model_execution"), "HTTP readiness model execution", reasons)
+            if (metadata.get("ready") is not True or any(
+                    not _same_value(execution.get(key), expected_execution[key])
+                    for key in ("configured_model_dtype", "parameter_dtype_numel", "default_num_inference_steps",
+                                "production_cuda_graph_configured", "cuda_graph_enabled"))):
+                reasons.append("HTTP readiness did not prove the bound execution configuration")
+        except (ValueError, TypeError, KeyError, AttributeError, IndexError):
+            reasons.append("HTTP readiness lacks the current reviewed runtime and exact task warmup")
+    if direct.get("execution_mode") != settings.get("execution_mode") or direct.get("task") != settings.get("task"):
+        reasons.append("Direct HTTP task or execution mode differs from qualification")
+    options = _mapping(integrated.get("policy_options"), "integrated policy options", reasons)
+    if options.get("execution_mode") != settings.get("execution_mode") or options.get("task") != settings.get("task"):
+        reasons.append("Integrated HTTP task or execution mode differs from qualification")
+    raw_image_bytes = len(get_profile(settings["profile"]).image_keys) * math.prod(settings["image_hw"]) * 3
+    ready = _mapping(direct.get("readiness"), "direct HTTP readiness", reasons)
+    expected_warm = _mapping(ready.get("graph_warmup"), "direct graph warmup", reasons) if graph else {}
+    for label, rows in (("direct", direct.get("samples")), ("integrated", integrated.get("samples"))):
+        if not isinstance(rows, list) or len(rows) < requested + 1:
+            reasons.append(f"Missing raw {label} HTTP execution evidence")
+            continue
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                reasons.append(f"Malformed raw {label} HTTP execution evidence")
+                continue
+            if any(not _same_value(row.get(key), settings.get(key))
+                   for key in ("instance_id", "task", "execution_mode", "execution_identity")):
+                reasons.append(f"A {label} HTTP response changed execution identity")
+                break
+            execution = _mapping(row.get("model_execution"), f"{label} model execution", reasons)
+            if any(not _same_value(execution.get(key), value) for key, value in expected_execution.items()):
+                reasons.append(f"A {label} HTTP response did not use its bound execution mode")
+                break
+            if graph:
+                warm = _mapping(row.get("graph_warmup"), f"{label} graph warmup", reasons)
+                if (warm.get("ready") is not True
+                        or not _same_value(warm.get("signature"), expected_warm.get("signature"))
+                        or warm.get("signature_sha256") != settings.get("graph_signature_sha256")
+                        or warm.get("cache_key_sha256") != settings.get("graph_cache_key_sha256")
+                        or execution.get("graph_cache_key_sha256") != settings.get("graph_cache_key_sha256")):
+                    reasons.append(f"A {label} HTTP response used another graph warmup")
+                    break
+                capture = execution.get("graph_capture_required")
+                if type(capture) is not bool or (capture and (label != "direct" or index != 0)):
+                    reasons.append(f"A warm {label} HTTP request captured another graph")
+                    break
+            timing = _mapping(row.get("transport_timing"), f"{label} HTTP transport timing", reasons)
+            size = row.get("wire_payload_bytes")
+            response_size = timing.get("wire_response_bytes")
+            if (type(size) is not int or not raw_image_bytes < size <= MAX_MESSAGE_BYTES
+                    or not _same_value(timing.get("wire_request_bytes"), size)
+                    or type(response_size) is not int or not 0 < response_size <= MAX_MESSAGE_BYTES
+                    or timing.get("call_mode") != "http" or timing.get("wire_codec") != WIRE_CODEC
+                    or not _same_value(timing.get("wire_version"), WIRE_VERSION)
+                    or timing.get("wire_compression") != "none"
+                    or row.get("image_encoding") != "rgb8"
+                    or not _same_value(row.get("payload_bytes"), raw_image_bytes)
+                    or (label == "direct" and not _same_value(row.get("image_hw"), settings["image_hw"]))):
+                reasons.append(f"A {label} HTTP response omitted its bounded raw RGB wire measurement")
+                break
 
 
 def _assess(settings, direct, integrated, requested):
     if type(requested) is not int or not MIN_WARM_SAMPLES <= requested <= 500:
         raise QualificationError("Qualification requires 50–500 warm requests")
     reasons = []
-    if any(_has_inference_experiment(report, settings["profile"]) for report in (direct, integrated)):
+    direct = _mapping(direct, "direct report", reasons)
+    integrated = _mapping(integrated, "integrated report", reasons)
+    production_graph = settings.get("call_mode") == "http" and settings.get("execution_mode") == "cuda_graph10"
+    if any(_has_inference_experiment(report, settings["profile"], production_graph=production_graph)
+           for report in (direct, integrated)):
         reasons.append("Diagnostic inference experiments cannot qualify the unchanged production policy")
+    if settings.get("call_mode") == "http":
+        _check_http_evidence(settings, direct, integrated, reasons, requested)
 
     def counter(value, name, *, minimum=0):
         if type(value) is not int or value < minimum:
@@ -186,7 +337,9 @@ def _assess(settings, direct, integrated, requested):
         samples = []
         reasons.append("Raw direct request samples are missing")
     durations = []
-    identity = (direct.get("readiness") or {}).get("instance_id")
+    direct_readiness = _mapping(direct.get("readiness"), "direct readiness", reasons)
+    integrated_readiness = _mapping(integrated.get("readiness"), "integrated readiness", reasons)
+    identity = direct_readiness.get("instance_id")
     for sequence, sample in enumerate(samples):
         if not isinstance(sample, dict):
             reasons.append("Malformed raw direct request sample")
@@ -200,16 +353,21 @@ def _assess(settings, direct, integrated, requested):
         except QualificationError as exc:
             reasons.append(str(exc))
     measured_rpc = percentile_summary(durations[1:])
+    reported_rpc = _mapping(direct.get("warm_round_trip_s"), "warm round trip summary", reasons)
     for key in ("p50", "p95", "p99"):
-        reported = direct.get("warm_round_trip_s", {}).get(key)
+        reported = reported_rpc.get(key)
         measured = measured_rpc.get(key)
-        if (type(reported) not in (float, int) or not math.isfinite(reported)
-                or measured is None or not math.isclose(reported, measured, rel_tol=1e-9, abs_tol=1e-9)):
+        try:
+            valid = measured is not None and math.isclose(_number(reported, f"warm {key}"), measured,
+                                                         rel_tol=1e-9, abs_tol=1e-9)
+        except QualificationError:
+            valid = False
+        if not valid:
             reasons.append(f"Reported warm {key} does not match raw request samples")
     if counter(direct.get("warm_sample_count"), "warm_sample_count") != max(0, len(samples) - 1):
         reasons.append("Reported warm count does not match raw request samples")
     completed = []
-    for event in integrated.get("prediction_samples", []):
+    for event in _rows(integrated.get("prediction_samples"), "integrated prediction samples", reasons):
         accepted = counter(event.get("accepted_steps"), "accepted_steps")
         if event.get("error") is None and accepted is not None and accepted > 0:
             completed.append(event)
@@ -230,12 +388,13 @@ def _assess(settings, direct, integrated, requested):
     # This also accounts for shorter returned chunks and postprocessing time.
     actual_horizon_p05 = -percentile_summary(-value for value in measured_horizons)["p95"] if measured_horizons else 0.0
     usable_horizon = min(usable_horizon, actual_horizon_p05)
-    if "real Modal" not in direct.get("measurement", "") or "real Modal" not in integrated.get("source", ""):
+    if (not isinstance(direct.get("measurement"), str) or "real Modal" not in direct["measurement"]
+            or not isinstance(integrated.get("source"), str) or "real Modal" not in integrated["source"]):
         reasons.append("Qualification requires real Modal measurements through the final integrated path")
     for report in (direct, integrated):
         if report.get("measurement_host") != host_identity():
             reasons.append("Measurements originated on another or unknown host")
-        metadata = report.get("readiness") or {}
+        metadata = direct_readiness if report is direct else integrated_readiness
         if (metadata.get("profile") != settings["profile"]
                 or metadata.get("model_revision") != settings["model_revision"]
                 or metadata.get("requested_compute_region") != settings["requested_region"]
@@ -243,15 +402,13 @@ def _assess(settings, direct, integrated, requested):
                 or metadata.get("routing_region") != settings["routing_region"]
                 or report.get("image_hw") != settings["image_hw"]):
             reasons.append("Measured model, image dimensions or placement do not match the requested qualification")
-    direct_readiness = direct.get("readiness") or {}
-    integrated_readiness = integrated.get("readiness") or {}
     if (direct_readiness.get("instance_id") is None
             or direct_readiness.get("instance_id") != integrated_readiness.get("instance_id")):
         reasons.append("Direct and integrated measurements used different or unknown containers")
     for key in ("image_encoding", "call_mode", "crop"):
         if direct.get(key) != settings[key]:
             reasons.append(f"Direct measurement {key} differs from the qualification settings")
-    policy_options = integrated.get("policy_options", {})
+    policy_options = _mapping(integrated.get("policy_options"), "integrated policy options", reasons)
     for key in ("image_encoding", "call_mode"):
         if policy_options.get(key) != settings[key]:
             reasons.append(f"Integrated measurement {key} differs from the qualification settings")
@@ -283,7 +440,8 @@ def _assess(settings, direct, integrated, requested):
     if (integrated.get("stop_requested_during_inflight_rpc") is not True
             or counter(integrated.get("commands_after_stop"), "commands_after_stop") != 0):
         reasons.append("Stop during in-flight inference did not prove zero late SDK commands")
-    if any(failure.get("reason") != "InvalidatedRequest" for failure in integrated.get("failures", [])):
+    if any(failure.get("reason") != "InvalidatedRequest"
+           for failure in _rows(integrated.get("failures"), "integrated failures", reasons)):
         reasons.append("A non-Stop request failure occurred during integrated execution")
     if p95 is None or not usable_horizon or p95 > usable_horizon * 0.8:
         reasons.append("Warm RPC p95 does not fit the effective usable horizon with 20% margin")

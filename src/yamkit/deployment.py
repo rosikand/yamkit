@@ -29,6 +29,7 @@ class InferenceOptions:
     image_encoding: str = "rgb8"
     jpeg_quality: int = 85
     call_mode: str = "remote"
+    execution_mode: str = "eager"
     prediction_queue_threshold: int | None = None
     supervised_confirmed: bool = False
     mapping_accepted: bool = False
@@ -55,8 +56,13 @@ class InferenceOptions:
             from .inference.profiles import get_profile
 
             profile = get_profile(self.policy)
-            if self.image_encoding not in ("jpeg", "rgb8") or self.call_mode not in ("remote", "spawn"):
-                raise ValueError("Choose jpeg/rgb8 encoding and remote/spawn call mode")
+            if self.image_encoding not in ("jpeg", "rgb8") or self.call_mode not in ("remote", "spawn", "http"):
+                raise ValueError("Choose jpeg/rgb8 encoding and remote/spawn/http call mode")
+            if self.execution_mode not in ("eager", "cuda_graph10"):
+                raise ValueError("Unknown remote execution mode")
+            if self.execution_mode == "cuda_graph10" and (
+                    self.call_mode != "http" or profile.id != "molmoact2" or self.image_encoding != "rgb8"):
+                raise ValueError("Production graph10 requires MolmoAct2 over HTTP with raw RGB")
             if type(self.jpeg_quality) is not int or not 1 <= self.jpeg_quality <= 100:
                 raise ValueError("JPEG quality must be an integer from 1 to 100")
             if self.prediction_queue_threshold is not None and (
@@ -65,8 +71,8 @@ class InferenceOptions:
                 raise ValueError("Prediction queue threshold must be between zero and the chunk size")
             if not 0 < self.duration <= 3600:
                 raise ValueError("Modal duration must be between 0 and 3600 seconds")
-            if self.gpu != "L40S":
-                raise ValueError("this release supports one L40S per model pool")
+            if self.gpu not in ("L40S", "H100!"):
+                raise ValueError("Use one L40S or an exact H100! per model pool")
             if self.rtc:
                 raise ValueError("remote RTC guidance is unverified; use unguided async")
             if not self.async_chunks:
@@ -85,6 +91,8 @@ class InferenceOptions:
                                                supervised_confirmed=self.supervised_confirmed,
                                                mapping_accepted=self.mapping_accepted)
         else:
+            if self.execution_mode != "eager":
+                raise ValueError("Production graph10 is only available through the reviewed Modal HTTP path")
             if self.center_crop:
                 raise ValueError("center crop is only available through the profiled Modal policy boundary")
             if motion:
@@ -115,6 +123,8 @@ class InferenceOptions:
             args += ["--gpu", self.gpu]
             args += ["--image-encoding", self.image_encoding, "--jpeg-quality", str(self.jpeg_quality),
                      "--call-mode", self.call_mode]
+            if self.execution_mode != "eager":
+                args += ["--execution-mode", self.execution_mode]
             if self.prediction_queue_threshold is not None:
                 args += ["--prediction-queue-threshold", str(self.prediction_queue_threshold)]
             if self.supervised_confirmed:

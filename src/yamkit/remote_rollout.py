@@ -432,6 +432,11 @@ class _StoppableRobot(ThreadSafeRobot):
 
 def run_remote_rollout(cfg, *, shutdown_event: Event | None = None):
     """Reuse upstream context, strategy and robot execution; remote-specific release only."""
+    # LeRobot builds the policy before connecting hardware. Give its warm-up the
+    # exact instruction the strategy will supply, including on a reused service.
+    if not isinstance(cfg.task, str) or not cfg.task.strip() or len(cfg.task) > 2048:
+        raise ValueError("Remote rollout requires one explicit bounded task instruction")
+    cfg.policy.task = cfg.task
     validate_remote_rollout(cfg)
     if shutdown_event is None:
         from lerobot.utils.process import ProcessSignalHandler

@@ -398,12 +398,13 @@ def test_modal_factory_bounds_and_no_parameterized_pool(monkeypatch):
     assert (cfg["min_containers"], cfg["max_containers"], cfg["buffer_containers"]) == (0, 1, 0)
     assert (cfg["scaledown_window"], cfg["startup_timeout"], cfg["timeout"], cfg["retries"]) == (15, 240, 90, 0)
     assert cfg["region"] == cfg["routing_region"] == "us-west"
-    assert cfg["memory"] == 65536
+    assert cfg["memory"] == (65536, 65536)
+    assert cfg["cpu"] == (4, 4)
     assert "__init__" not in captured["class"].__dict__
     assert captured["secret"] == {"HF_TOKEN": "private-test-hf-token"}
     assert not {"HF_TOKEN", "DATABASE_URL", "YAMKIT_OPENAI_API_KEY", "MODAL_TOKEN_SECRET"} & captured["env"].keys()
     create_app(development=True, memory_mib=49152)
-    assert captured["config"]["memory"] == 49152
+    assert captured["config"]["memory"] == (49152, 49152)
     for invalid in (32768, 65537, True):
         with pytest.raises(ValueError, match="Host memory"):
             create_app(memory_mib=invalid)

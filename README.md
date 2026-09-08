@@ -290,6 +290,10 @@ Modal defaults to raw RGB, cached `.remote` calls and `us-west` placement, with 
 requests through the same LeRobot async worker. JPEG qualities 85, 90 and 95 all exceeded
 the gripper-difference limit in paired H100 fixture tests; raw RGB preserves the image
 values. JPEG remains selectable for diagnostics. See [the H100 investigation](docs/MOLMO_H100.md).
+An opt-in persistent HTTP path with `cuda_graph10` preserves raw RGB and ten-step
+Molmo inference, warms the actual task before hardware connection, and requires fresh
+qualification of its exact source, task, graph and container. See the
+[HTTP preparation and qualification commands](docs/MODAL.md#transport-and-qualification).
 Collect evidence on the robot host without opening its arms or cameras:
 
 ```bash

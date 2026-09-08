@@ -143,13 +143,17 @@ class RemoteSession:
     clock is never subtracted from it. Timing samples are bounded in memory.
     """
 
-    def __init__(self, transport, profile, *, timeout_s: float = 10.0, max_observation_age_s: float = 2.0):
+    def __init__(self, transport, profile, *, timeout_s: float = 10.0, max_observation_age_s: float = 2.0,
+                 execution_mode: str = "eager"):
         if not 0 < timeout_s <= 120 or not 0 < max_observation_age_s <= 120:
             raise ValueError("Request and freshness deadlines must be positive and at most 120 seconds")
         self.transport = transport
         self.profile = profile
         self.timeout_s = timeout_s
         self.max_observation_age_s = max_observation_age_s
+        self.execution_mode = execution_mode
+        self.execution_identity = None
+        self.graph_warmup = None
         self._lock = threading.Lock()
         self._flight_lock = threading.Lock()
         self.instance_id = None
@@ -203,6 +207,8 @@ class RemoteSession:
                 "state_names": list(self.profile.state_names), "images": images,
                 "mode": mode, "crop": crop, "continuation": None,
             }
+            if self.execution_mode != "eager" or getattr(self.transport, "call_mode", None) == "http":
+                request["execution_mode"] = self.execution_mode
             validate_request(request, self.profile)
             request_validation_s = time.monotonic() - now
             start = time.monotonic()
@@ -219,6 +225,18 @@ class RemoteSession:
             response_validation_s = time.monotonic() - decode_started
             if self.instance_id is not None and response.get("instance_id") != self.instance_id:
                 raise RemoteFault("Remote container restarted; stop and prepare the selected profile again")
+            if self.execution_identity is not None and response.get("execution_identity") != self.execution_identity:
+                raise RemoteFault("Remote execution identity changed during the session")
+            if self.graph_warmup is not None:
+                actual = response.get("graph_warmup") or {}
+                if actual.get("ready") is not True or any(
+                        actual.get(key) != self.graph_warmup.get(key)
+                        for key in ("signature_sha256", "cache_key_sha256")):
+                    raise RemoteFault("Remote graph warmup changed during the session")
+                execution = response.get("model_execution") or {}
+                if (execution.get("cuda_graph_used") is not True
+                        or execution.get("effective_num_inference_steps") != 10):
+                    raise RemoteFault("Remote response did not use the prepared 10-step graph")
             self.samples.append({"round_trip_s": elapsed,
                                  "observation_timestamp_monotonic_s": observation_time,
                                  "observation_age_at_dispatch_s": start - observation_time,
@@ -226,13 +244,20 @@ class RemoteSession:
                                  "camera_exposure_timestamp_s": None,
                                  "timestamp_basis": "local observation receipt; camera exposure is unobservable",
                                  "payload_bytes": sum(len(im["data"]) for im in images.values()),
-                                 "wire_payload_bytes": None,
-                                 "payload_size_basis": "encoded image bytes; SDK framing size unobservable",
+                                 "wire_payload_bytes": getattr(self.transport, "last_timing", {}).get("wire_request_bytes"),
+                                 "payload_size_basis": "exact binary HTTP envelope" if getattr(
+                                     self.transport, "call_mode", None) == "http" else "encoded image bytes; SDK framing size unobservable",
                                  "image_encoding": next(iter(images.values()))["encoding"],
                                  "request_validation_s": request_validation_s,
                                  "response_validation_s": response_validation_s,
                                  "transport_timing": dict(getattr(self.transport, "last_timing", {})),
-                                 "server_timing": response.get("timing", {})})
+                                 "server_timing": response.get("timing", {}),
+                                 "instance_id": response.get("instance_id"),
+                                 "execution_mode": response.get("execution_mode"),
+                                 "task": task,
+                                 "execution_identity": response.get("execution_identity"),
+                                 "graph_warmup": response.get("graph_warmup"),
+                                 "model_execution": response.get("model_execution")})
             return response
         except Exception as exc:
             self.failed_request_count += 1
