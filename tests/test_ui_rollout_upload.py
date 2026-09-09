@@ -169,16 +169,16 @@ def test_invalid_destinations_are_rejected_before_child(attached_modal, repo_id)
     assert attached_modal.ui.manager._proc is None
 
 
-@pytest.mark.parametrize("duration", [31, 46, 60])
+@pytest.mark.parametrize("duration", [31, 46, 61])
 def test_upload_requires_supported_complete_capture(attached_modal, duration):
     attached_modal.expected_override["task"] = server.TRACE_TASK
     result = launch(attached_modal.ui, upload_repo_id="owner/private-rollouts", duration=duration)
     assert result.status_code == 422
-    assert "5, 10, 20, 30 or 45" in result.text
+    assert "5, 10, 20, 30, 45 or 60" in result.text
     assert attached_modal.ui.manager._proc is None
 
 
-@pytest.mark.parametrize("duration", [30, 45])
+@pytest.mark.parametrize("duration", [30, 45, 60])
 def test_upload_capture_keeps_supported_duration_in_trace_command(attached_modal, monkeypatch, duration):
     state = attached_modal
     state.expected_override["task"] = server.TRACE_TASK

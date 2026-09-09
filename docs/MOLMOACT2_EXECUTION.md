@@ -163,12 +163,31 @@ by 8.53 seconds of return home and release.
 
 Top and left-wrist video show a grasp, lift and retained transport toward the
 container at approximately 22–29 seconds. The cube was still gripped at the final
-observation: policy-controlled release and placement are unproven. A 45-second
-capture is supported for the next separately approved trial, using the same
-controller/model with a larger bounded recording allocation. The
+observation: policy-controlled release and placement are unproven. That stage added
+45-second capture using the same controller/model with a larger bounded recording allocation. The
 [original archive](https://huggingface.co/datasets/rohanlux/yamkit-rollouts/tree/41528fac2f660bacd38b3e740ee640da68328151/runs/20260909-050720-rollout-8c1d5dba)
 retains the full evidence. Its report's generic easing/hold paragraph is stale;
 the recorded literal contract, trace and bundle README describe the actual run.
+
+The open-start trial `20260909-055224-rollout-f1863c43` on `2738c18` completed all
+600 rows / 942 literal points without modification, followed by normal home/release.
+Startup's cached/model state used open=1; the left encoder reached 0.998 before closing.
+The policy approached and nudged the cube without a demonstrated grasp. Its final
+left-gripper target was 0.672 and last measured opening 0.679; return-home preserves
+the current opening. No post-home encoder measurement is recorded. The
+[recording and full trace](https://huggingface.co/datasets/rohanlux/yamkit-rollouts/tree/ec0c54aa38cffc08faccd66a0b4222bdd65d91e8/runs/20260909-055224-rollout-f1863c43)
+retain this evidence.
+
+A saved-frame comparison (four scenes, three unseeded predictions per scene and
+framing option) found no consistent stronger closure from a centered 16:9 crop.
+The final uncropped scene produced tighter-grip predictions in all three samples;
+these are hypothetical next chunks, not executed actions or a success result.
+Current RGB framing, checkpoint and controller remain unchanged. Capture supports
+5/10/20/30/45/60 seconds for separately approved supervised trials. The 60-second
+pool reserves 1,803 RGB triplets (4,984,934,400 bytes) plus 512 MiB headroom before
+hardware connects. Its 16,384-event cap and 2,048-point reference diagnostics remain
+bounded. The physical wall limit stays 120 seconds; the 160-second export limit
+applies only after release. Additional time does not guarantee a grasp or placement.
 
 ## First supervised validation after target braking
 
@@ -179,8 +198,8 @@ were not demonstrated. Both followers subsequently homed and released normally. 
 [complete private recording](https://huggingface.co/datasets/rohanlux/yamkit-rollouts/tree/02f7f45b99d81504431e6e5feefedb8a4fad34f9/runs/20260909-014413-rollout-1559398b)
 contains all three videos and 599 original RGB frames per camera.
 
-The next supported capture duration is 30 seconds, retaining the same controller/model and
-the existing 120-second rollout and 90-second export wall limits. Its 903-slot frame pool needs
+That stage added 30-second capture, retaining the same controller/model and
+the then-existing 120-second rollout and 90-second export wall limits. Its 903-slot frame pool needed
 2,496,614,400 bytes plus the existing 512 MiB headroom before hardware can connect. The report
 renderer accepts the collector's existing 8,192-event limit. A longer trial requires fresh
 supervised approval; it is an experiment, not a claim that additional time guarantees placement.

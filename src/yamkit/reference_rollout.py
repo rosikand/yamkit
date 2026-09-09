@@ -18,6 +18,7 @@ from lerobot.rollout.inference.base import InferenceEngine
 
 from yamkit.inference.client import InvalidatedRequest, RemoteFault
 from yamkit.inference.command_shaping import ACTION_NAMES
+from yamkit.inference.reference import MAX_REFERENCE_SAMPLES
 
 
 class ReferenceRemoteInferenceEngine(InferenceEngine):
@@ -57,7 +58,7 @@ class ReferenceRemoteInferenceEngine(InferenceEngine):
         self.home_abort_reason = None
         self.home_started_at = self.home_finished_at = self.home_stop_detected_at = None
         self.predictions = deque(maxlen=1000)
-        self.dispatch_samples = deque(maxlen=1000)
+        self.dispatch_samples = deque(maxlen=MAX_REFERENCE_SAMPLES)
         self.chunk_samples = deque(maxlen=128)
         policy.on_fault = self._fault
 

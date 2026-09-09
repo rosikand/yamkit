@@ -47,12 +47,12 @@ def test_series_preserves_missing_samples_and_failed_sends():
     assert merges == pytest.approx([.3]) and errors == pytest.approx([.4])
 
 
-@pytest.mark.parametrize("count", [8192, 10802, 12288, 12289])
+@pytest.mark.parametrize("count", [8192, 10802, 12288, 14530, 16384, 16385])
 def test_renderer_accepts_collector_event_capacity_but_rejects_overflow(count):
     summary, trace = fixture()
-    trace["events"] = [{"kind": "observation", "monotonic_s": 100 + index / count * 45,
+    trace["events"] = [{"kind": "observation", "monotonic_s": 100 + index / count * 60,
                         "positions": [0.0] * 14} for index in range(count)]
-    if count > 12288:
+    if count > 16384:
         with pytest.raises(ValueError, match="event count"):
             module.series(summary, trace)
     else:

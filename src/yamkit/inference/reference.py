@@ -13,10 +13,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from yamkit.inference.command_shaping import ACTION_NAMES, FIRST_DT, JOINT_NAMES, MAX_SAMPLES, TOLERANCE
+from yamkit.inference.command_shaping import ACTION_NAMES, FIRST_DT, JOINT_NAMES, TOLERANCE
 from yamkit.validation import finite_scalar
 
 GRIPPER_NAMES = tuple(name for name in ACTION_NAMES if name not in JOINT_NAMES)
+MAX_REFERENCE_SAMPLES = 2048
 
 
 class ReferenceInterpolationFault(ValueError):
@@ -139,7 +140,7 @@ class ReferenceCommandGuard:
         self.valid, self.generation, self.anchor_initialized = True, 0, False
         self.last_at, self._pending, self._pending_target = None, None, None
         self._wait_deadline, self._wait_record, self._clock_floor = None, None, None
-        self.samples, self.inference_waits = deque(maxlen=MAX_SAMPLES), deque(maxlen=128)
+        self.samples, self.inference_waits = deque(maxlen=MAX_REFERENCE_SAMPLES), deque(maxlen=128)
         self.postclamp_modified_count = 0
         self.maximum_command_velocity_rad_s = self.maximum_command_acceleration_rad_s2 = 0.0
         self._velocity_known = False
