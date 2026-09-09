@@ -280,7 +280,9 @@ def test_session_expiring_while_executor_is_queued_never_calls_runtime(monkeypat
 
 @pytest.mark.parametrize("min_containers", [None, 1])
 def test_factory_adds_opt_in_endpoint_to_same_class_without_forwarding_account_secrets(monkeypatch, min_containers):
+    from yamkit.inference.identity import FOLLOWER_SOURCE_RELATIVE
     from yamkit.inference.modal_service import create_app
+    from yamkit.paths import ROOT
 
     captured = {"secrets": [], "classes": [], "files": []}
 
@@ -325,7 +327,8 @@ def test_factory_adds_opt_in_endpoint_to_same_class_without_forwarding_account_s
         asgi_app=lambda: lambda f: f,
     )
     monkeypatch.setitem(sys.modules, "modal", fake)
-    monkeypatch.setitem(sys.modules, "yamkit.inference.identity", SimpleNamespace(inference_build_id=lambda: "build-hash"))
+    monkeypatch.setitem(sys.modules, "yamkit.inference.identity", SimpleNamespace(
+        inference_build_id=lambda: "build-hash", FOLLOWER_SOURCE_RELATIVE=FOLLOWER_SOURCE_RELATIVE))
     runtime = Runtime()
 
     def load(profile, *, device, execution_mode):
@@ -351,7 +354,11 @@ def test_factory_adds_opt_in_endpoint_to_same_class_without_forwarding_account_s
     assert captured["config"]["min_containers"] == (min_containers or 0)
     assert captured["secrets"] == [{"HF_TOKEN": "test-hf-secret"}, {HTTP_TOKEN_ENV: TOKEN}]
     assert not {"MODAL_TOKEN_SECRET", "HF_TOKEN", HTTP_TOKEN_ENV} & captured["env"].keys()
-    assert captured["files"][0][1] == "/opt/yamkit/configs/modal-requirements.txt"
+    assert captured["files"] == [
+        (str(ROOT / "configs/modal-requirements.txt"), "/opt/yamkit/configs/modal-requirements.txt"),
+        (str(ROOT / FOLLOWER_SOURCE_RELATIVE), f"/opt/yamkit/{FOLLOWER_SOURCE_RELATIVE}"),
+    ]
+    assert captured["env"]["PYTHONPATH"] == "/opt/yamkit/src"  # Plugin source is data, not an import path.
     service = cls()
     service.load()
     sdk = service.ready()

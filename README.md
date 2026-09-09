@@ -283,7 +283,10 @@ policy dispatches at about 29.9 Hz after the first action, with zero queue under
 returned home in 3.3 seconds before release; the operator confirmed homing and improved camera
 playback. Live previews, three 30 fps videos, joint plots and full metrics are available in
 **Runs → `20260908-184743-rollout-578b88cc`**. **The orange-lid manipulation task failed**, and
-the operator still reported abrupt, jittery motion. See the
+the operator still reported abrupt, jittery motion. A subsequent saved-input probe
+confirmed varying model plans; remote rollout now applies conservative joint
+acceleration shaping before the existing speed clamp. Physical smoothness and
+lid placement with this change are still unproven. See the
 [physical trial evidence and limits](docs/VLA_HTTP_ROLLOUT.md).
 
 **Physical Modal rollout requires a current passing qualification on the actual robot host**,

@@ -172,6 +172,13 @@ see `meta.json.task_success` and operator feedback when present.
   evidence, not a one-to-one join by chunk_index.
 - `metrics.json`: complete available inference/queue/control/cleanup metrics;
   `summary.json`: capture scope, phase boundaries, dropped data and export errors.
+  Newer remote runs include `command_shaping`: limits, counts and bounded samples
+  joining each `dispatch_index` and host monotonic timestamp to the original
+  14-key `requested` policy target, acceleration-limited `shaped` target, and
+  successfully returned post-clamp `sent` command. These are command targets,
+  not measured joint trajectories. In these runs, trace `send_start.requested`
+  is already shaped; use the metric sample's `requested` for model-chunk joins.
+  Any samples omitted by the bound are counted in `samples_dropped`.
 - `meta.json`: launcher task, times, return code and any operator feedback.
   `log.txt`: available child stdout/stderr; `plan.json`: saved capture plan if available.
   `run_metadata.json`: sanitized

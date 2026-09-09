@@ -8,11 +8,14 @@ import math
 import time
 from pathlib import Path
 
+FOLLOWER_SOURCE_RELATIVE = "plugins/lerobot_robot_yamkit/lerobot_robot_yamkit/yam_follower.py"
+
 
 def inference_build_id() -> str:
     """Bind evidence to source contents, including uncommitted development changes.
 
-    The Modal image contains the same package and pinned requirement file. Git
+    The HTTP Modal image contains the same package, pinned requirement file and
+    follower-plugin source as data for hashing; it never imports the robot driver. Git
     metadata, credentials, recordings and machine-specific configuration are not
     included. Reading this identity never imports a model or opens hardware.
     """
@@ -22,9 +25,10 @@ def inference_build_id() -> str:
     files = [*package.joinpath("inference").glob("*.py"),
              *package.joinpath("remote_policy").glob("*.py")]
     files += [package / name for name in (
-        "remote_rollout.py", "deployment.py", "modal_ops.py", "modal_qualification.py")]
+        "remote_rollout.py", "deployment.py", "modal_ops.py", "modal_qualification.py", "arm.py")]
     entries = [(str(path.relative_to(package)), path) for path in files]
     entries.append(("configs/modal-requirements.txt", Path(ROOT) / "configs/modal-requirements.txt"))
+    entries.append((FOLLOWER_SOURCE_RELATIVE, Path(ROOT) / FOLLOWER_SOURCE_RELATIVE))
     digest = hashlib.sha256(b"yamkit-inference-build-v1\0")
     for name, path in sorted(entries):
         content = path.read_bytes()

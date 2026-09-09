@@ -1,6 +1,52 @@
 # HTTP rollout validation — 2026-09-09
 
-## Latest trial: 30 fps capture and return home
+## Smooth-motion investigation and pending physical validation
+
+The automatic-upload trial `20260908-195737-rollout-1c73c0d4` at commit
+`1e4e580` completed five seconds, normal home and release, and uploaded its
+[full private archive](https://huggingface.co/datasets/rohanlux/yamkit-rollouts/tree/63cedc21cb330d5d0426ea8e90e08508946d44e5/runs/20260908-195737-rollout-1c73c0d4).
+Its 150 observations and three videos have no capture drops. Neither this
+successful recording nor its zero exit code establishes manipulation success.
+All predicted grippers remained above 0.98 open; no grasp closure was requested.
+
+A hardware-free probe then repeated each of four exact saved observation triplets
+and measured states five times, using the same pinned bfloat16/ten-step graph,
+raw RGB, task and saved processors. These were labeled `saved_probe`, unseeded,
+and never dispatched to a robot. Identical-input predictions differed by as much
+as **1.094 radians**; both sampling variation and changed observations contribute
+to the inconsistent plans. Observation 63 mostly predicted near-home targets,
+while observations 36, 45 and 54 mostly predicted a substantial reach. Five draws
+per input cannot isolate the causal contribution of images versus joint state.
+
+Offline replay exactly reconstructed both earlier runs' 132 requested and sent
+commands. Replacing the queued tail reduced observation age but did not reliably
+reduce abrupt reversals across both recordings. A joint command shaper limited
+to **0.6 rad/s and 2 rad/s²** removed immediate reversals over 0.1 rad/s in both
+saved command sequences (74 and 67 events). It increased lag behind the model's
+requested targets; neither replay nor those limits establish physical smoothness,
+Cartesian clearance or task success.
+
+The pending remote-rollout change applies joint shaping before the existing
+hardware speed clamp. Original model targets are validated before shaping;
+all action deadlines, session expiry, Stop and fault release remain enforced.
+Gripper targets, normal home behavior, teleop and recording are unchanged.
+`metrics.json.command_shaping` retains limits and timestamped original, shaped
+and sent commands so filtering cannot be mistaken for a model prediction.
+The change still requires a fresh qualified service and supervised physical trial.
+
+Visual review found no supported reason to swap cameras or invert joint/gripper
+values. The objects changed sides between the two archived runs. The overhead
+view currently clips the grippers at its horizontal edges; the reference sample
+shows both clearly. This is a possible scene improvement, not a proven cause.
+Camera exposure timestamps remain unavailable, and one selected wrist frame is
+visibly blurred. The initial smoothing trial keeps the scene and camera settings
+fixed to isolate the execution change.
+
+Local diagnostic evidence is under `.context/validation/smooth-rollout/`:
+`consistency-results.json`, `consistency-findings.md`, `execution-replay.md`, and
+`visual-audit.md`. No motor was activated for these diagnostics.
+
+## Earlier trial: 30 fps capture and return home
 
 **Run `20260908-184743-rollout-578b88cc` validated capture and normal return home;
 the orange-lid task still failed.** The operator confirmed improved camera playback
@@ -41,7 +87,7 @@ All 132 requests match saved prediction indices and nominal deadlines; adjacent
 predictions also disagree at closely matched future times. Sent joint steps remain
 limited to 0.030 rad, but repeated direction reversals persist. This points toward
 prediction continuity as an investigation target; it does not establish why the
-predictions differ or justify changing safety clamps. No smoothing change has
+predictions differ or justify changing safety clamps. At that point no smoothing change had
 been deployed or physically tested.
 
 The pinned Ai2 YAM example also uses different execution semantics: its

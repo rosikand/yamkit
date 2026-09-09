@@ -146,7 +146,7 @@ def render(directory):
     from matplotlib import pyplot as plt
 
     colors = {'measured': '#111827', 'requested': '#d97706', 'sent': '#2563eb'}
-    labels = {'measured': 'Measured position', 'requested': 'Policy target', 'sent': 'Target after yamkit clamp'}
+    labels = {'measured': 'Measured position', 'requested': 'Requested arm target', 'sent': 'Target after yamkit clamp'}
     for side in SIDES:
         fig, axes = plt.subplots(7, 1, figsize=(12, 15), sharex=True, constrained_layout=True)
         try:
@@ -187,6 +187,7 @@ def render(directory):
 <title>{title}</title><style>body{{font:16px system-ui;max-width:1100px;margin:32px auto;padding:0 20px;color:#111827}}img{{width:100%}}video{{width:100%;max-width:640px}}figure{{margin:16px 0}}code{{overflow-wrap:anywhere}}</style>
 <h1>{title}</h1><p>{'Generated test data only. No arms were connected; this is not evidence of a physical rollout.' if summary.get('synthetic_fixture') is True else ''}</p><p>{html.escape(str(summary.get('task', '')))}</p>
 <p>Gray vertical lines mark chunk merges; red dashed lines mark failed sends. Targets after the yamkit clamp are commands, not proof of movement. SDK gripper force limiting may modify the gripper target further.</p>
+<p>Requested arm targets include joint smoothing when enabled. In newer runs, <code>metrics.json → command_shaping.samples</code> joins each original policy request to its shaped and sent commands; model predictions remain in <code>trace.json → chunks</code>.</p>
 <p>Points show recorded samples only. Camera exposure timestamps are unavailable. These plots do not establish the cause of jitter or task success.</p>
 <p>Nominal video capture rate: {video_fps} fps. {video_timing} {video_quality} {capture_scope}</p>
 <p>Resources released: {html.escape(str(summary.get('resources_released')))}. Overflow: {html.escape(str(summary.get('overflow')))}. Trace counters: <code>{counts}</code>.</p>

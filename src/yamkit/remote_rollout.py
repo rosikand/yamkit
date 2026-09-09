@@ -275,6 +275,8 @@ class UnguidedRemoteInferenceEngine(RTCInferenceEngine):
             self._obs_holder.timestamp = time.monotonic()
 
     def _fault(self):
+        if invalidate := getattr(self._robot, "invalidate_shaping", None):
+            invalidate()
         if self.stop_detected_at is None:
             self.stop_detected_at = time.monotonic()
         self._rtc_error.set()
@@ -314,6 +316,8 @@ class UnguidedRemoteInferenceEngine(RTCInferenceEngine):
             raise
 
     def pause(self):
+        if invalidate := getattr(self._robot, "invalidate_shaping", None):
+            invalidate()
         super().pause()
         if self._action_queue is not None:
             self._action_queue.invalidate()
@@ -326,6 +330,8 @@ class UnguidedRemoteInferenceEngine(RTCInferenceEngine):
         super().resume()
 
     def reset(self):
+        if reset := getattr(self._robot, "reset_shaping", None):
+            reset()
         # The worker may hold the old queue while RPC is in flight. Permanently
         # invalidating that object prevents a late merge after reset/resume.
         if self._action_queue is not None:
@@ -336,6 +342,8 @@ class UnguidedRemoteInferenceEngine(RTCInferenceEngine):
         self._started_at = time.monotonic()
 
     def invalidate(self):
+        if invalidate := getattr(self._robot, "invalidate_shaping", None):
+            invalidate()
         if self.stop_detected_at is None:
             self.stop_detected_at = time.monotonic()
         self._shutdown_event.set()
@@ -419,7 +427,7 @@ def validate_remote_rollout(cfg):
 class _StoppableRobot(ThreadSafeRobot):
     """The upstream dispatch loop also checks Stop immediately before sending."""
 
-    def __init__(self, robot, shutdown_event):
+    def __init__(self, robot, shutdown_event, *, command_shaper=None):
         super().__init__(robot)
         self.shutdown_event = shutdown_event
         self.on_action = None
@@ -427,34 +435,63 @@ class _StoppableRobot(ThreadSafeRobot):
         self.on_fault = None
         self.on_dispatch = None
         self.session_check = None
+        self.command_shaper = command_shaper
+
+    def invalidate_shaping(self):
+        if self.command_shaper is not None:
+            self.command_shaper.invalidate()
+
+    def reset_shaping(self):
+        # LeRobot resets inference once during initial setup, before any action.
+        # Subsequent resets cannot retain an old command velocity or restart an
+        # invalidated rollout; a new context must capture a fresh initial pose.
+        if self.command_shaper is not None and self.command_shaper.generation:
+            self.command_shaper.invalidate()
+
+    def _check_dispatch(self):
+        if self.shutdown_event.is_set():
+            raise RemoteFault("Local execution stopped before action dispatch")
+        if self.session_check is not None:
+            self.session_check()
+        # A session check or target preparation may race with Stop/expiry.
+        if self.shutdown_event.is_set():
+            raise RemoteFault("Local execution stopped before action dispatch")
+        if self.command_shaper is not None and not self.command_shaper.valid:
+            raise RemoteFault("Remote command shaper invalidated before hardware dispatch")
+        deadline = self.action_deadline() if self.action_deadline is not None else None
+        margin_s = deadline - time.monotonic() if deadline is not None else None
+        if margin_s is not None and margin_s <= 0:
+            if self.on_dispatch is not None:
+                self.on_dispatch(margin_s)
+            raise RemoteFault("Remote action expired before hardware dispatch")
+        return deadline, margin_s
 
     def send_action(self, action):
         with self._lock:
-            if self.shutdown_event.is_set():
-                raise RemoteFault("Local execution stopped before action dispatch")
-            deadline = self.action_deadline() if self.action_deadline is not None else None
-            margin_s = deadline - time.monotonic() if deadline is not None else None
-            if margin_s is not None and margin_s <= 0:
+            try:
+                deadline, margin_s = self._check_dispatch()
+                step = None
+                if self.command_shaper is not None:
+                    # Check both original arms before shaping can hide an invalid
+                    # policy target. These checks never acquire another observation.
+                    self.inner.validate_action_target(action)
+                    step = self.command_shaper.prepare(action, now=time.monotonic())
+                    self.inner.validate_action_target(step.shaped)
+                    deadline, margin_s = self._check_dispatch()
+                result = self.inner.send_action(step.shaped if step is not None else action)
                 if self.on_dispatch is not None:
                     self.on_dispatch(margin_s)
+                if self.on_action is not None:
+                    self.on_action()  # A successful hardware send counts even if its feedback faults below.
+                if step is not None:
+                    self.command_shaper.commit(step, result, deadline_monotonic_s=deadline)
+                return result
+            except BaseException:
+                self.invalidate_shaping()
+                self.shutdown_event.set()
                 if self.on_fault is not None:
                     self.on_fault()
-                raise RemoteFault("Remote action expired before hardware dispatch")
-            # A buffered action can remain fresh after its cloud session ends.
-            # Check again at dispatch so expiry never waits for another RPC.
-            if self.session_check is not None:
-                try:
-                    self.session_check()
-                except RemoteFault:
-                    if self.on_fault is not None:
-                        self.on_fault()
-                    raise
-            result = self.inner.send_action(action)
-            if self.on_dispatch is not None:
-                self.on_dispatch(margin_s)
-            if self.on_action is not None:
-                self.on_action()
-            return result
+                raise
 
 
 class _HomeStop:
@@ -566,7 +603,12 @@ def run_remote_rollout(cfg, *, shutdown_event: Event | None = None):
 
         with validated_runner_context():
             ctx = build_rollout_context(cfg, shutdown_event)
-        ctx.hardware.robot_wrapper = _StoppableRobot(ctx.hardware.robot_wrapper.inner, shutdown_event)
+        from yamkit.inference.command_shaping import JointCommandShaper
+
+        robot = ctx.hardware.robot_wrapper.inner
+        robot.validate_action_target(ctx.hardware.initial_position)
+        shaper = JointCommandShaper(ctx.hardware.initial_position, robot.joint_command_limits())
+        ctx.hardware.robot_wrapper = _StoppableRobot(robot, shutdown_event, command_shaper=shaper)
         engine = UnguidedRemoteInferenceEngine(
             policy=ctx.policy.policy, preprocessor=ctx.policy.preprocessor, postprocessor=ctx.policy.postprocessor,
             robot_wrapper=ctx.hardware.robot_wrapper, hw_features=ctx.data.hw_features,
@@ -597,6 +639,8 @@ def run_remote_rollout(cfg, *, shutdown_event: Event | None = None):
         raise
     finally:
         shutdown_event.set()
+        if ctx is not None and isinstance(ctx.hardware.robot_wrapper, _StoppableRobot):
+            ctx.hardware.robot_wrapper.invalidate_shaping()
         try:
             if engine is not None:
                 engine.invalidate()
@@ -632,6 +676,8 @@ def _rollout_metrics(ctx, engine):
                          if engine.robot_released_at is not None and release_stop_at is not None else None)
     failed = engine.failed or (engine.home_aborted and engine.home_abort_reason != "operator_stop")
     return {"inference": "unguided_async", "failed": failed, "underruns": engine.underruns,
+            "command_shaping": ctx.hardware.robot_wrapper.command_shaper.metrics()
+            if getattr(ctx.hardware.robot_wrapper, "command_shaper", None) is not None else None,
             "queue_depth": queue.qsize() if queue is not None else 0, "peak_queue_depth": engine.peak_queue_depth,
             "last_queue_depth_before_stop": engine.last_queue_depth_before_stop,
             "executed_actions": engine.executed_actions,

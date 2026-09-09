@@ -134,8 +134,14 @@ def create_app(profile_id: str = "smolvla", *, gpu: str = DEFAULT_GPU, developme
     }).add_local_dir(str(root / "src" / "yamkit"), f"{REMOTE_ROOT}/src/yamkit",
                     ignore=lambda path: Path(path).suffix != ".py")
     if transport == "http":
+        from .identity import FOLLOWER_SOURCE_RELATIVE
+
         image = image.add_local_file(str(root / "configs" / "modal-requirements.txt"),
                                      f"{REMOTE_ROOT}/configs/modal-requirements.txt")
+        # Hardware validation/command limits participate in source identity. Ship this
+        # single source file as hash input, without installing or importing the plugin/SDK.
+        image = image.add_local_file(str(root / FOLLOWER_SOURCE_RELATIVE),
+                                     f"{REMOTE_ROOT}/{FOLLOWER_SOURCE_RELATIVE}")
     volume = modal.Volume.from_name(cache_volume_name, create_if_missing=True)
     secrets = [modal.Secret.from_dict({"HF_TOKEN": os.environ["HF_TOKEN"]})] if os.environ.get("HF_TOKEN") else []
     if transport == "http":

@@ -224,6 +224,20 @@ class YamArm:
             gripper = self._last_cmd[-1] if self._last_cmd is not None else measured[-1]
         return np.concatenate([q, [gripper]])
 
+    def validate_target(self, q, gripper: float | None = None) -> np.ndarray:
+        """Pure complete-target validation; no observations, gains or motor writes."""
+        target = finite_vector(q, N_JOINTS, f"{self.name}: joint target")
+        if self.spec.has_motor_gripper:
+            target = np.concatenate([target, [finite_scalar(gripper, f"{self.name}: gripper target")]])
+        return self._check_target(target, "original target")
+
+    def target_bounds(self) -> np.ndarray:
+        """Copy robot-coordinate bounds for pure trajectory preflight."""
+        bounds = self._raw_limits.copy()
+        if self._offsets is not None:
+            bounds += self._offsets[:, None]
+        return bounds
+
     def _prepare_command(self, q, gripper, limit_speed):
         self._ensure_open()
         if not isinstance(limit_speed, bool):

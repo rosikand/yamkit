@@ -20,7 +20,7 @@ from lerobot.robots.robot import Robot
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
 from lerobot.utils.errors import DeviceNotConnectedError
 
-from yamkit.arm import YamArm, go_home_all, resolve_channel
+from yamkit.arm import MAX_COMMAND_DT, YamArm, go_home_all, resolve_channel
 from yamkit.camera_ownership import claim_from_env, retain_camera_readers
 from yamkit.cameras import camera_configs_from_dicts
 from yamkit.config import N_JOINTS, RigConfig
@@ -383,6 +383,27 @@ class BiYamFollower(_CameraPreview, Robot):
     @cached_property
     def action_features(self) -> dict:
         return self._motors_ft
+
+    def validate_action_target(self, action: RobotAction) -> None:
+        """Check original policy targets without a hardware read or command."""
+        _validate_action_keys(action, self.action_features)
+        for side, handle in self._sides.items():
+            if handle.arm is None:
+                raise DeviceNotConnectedError("Follower must be connected before target validation")
+            q, gripper = handle.target({key: action[f"{side}_{key}"] for key in handle.features})
+            handle.arm.validate_target(q, gripper)
+
+    def joint_command_limits(self) -> dict:
+        """Read configured joint bounds and the existing per-command speed cap."""
+        limits = {}
+        for side, handle in self._sides.items():
+            if handle.arm is None:
+                raise DeviceNotConnectedError("Follower must be connected before reading command limits")
+            bounds = handle.arm.target_bounds()
+            for index, name in enumerate(JOINT_NAMES):
+                limits[f"{side}_{name}.pos"] = {"lower": float(bounds[index, 0]), "upper": float(bounds[index, 1]),
+                                               "max_step": handle.arm.max_joint_speed * MAX_COMMAND_DT}
+        return limits
 
     @property
     def is_connected(self) -> bool:
