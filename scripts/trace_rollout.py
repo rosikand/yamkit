@@ -63,13 +63,21 @@ def parse_args(argv=None):
     mode.add_argument("--run", action="store_true")
     parser.add_argument("--duration", type=int, choices=(5, 10), default=5)
     parser.add_argument("--modal-app")
+    parser.add_argument("--backend", choices=("modal", "external"), default="modal")
+    parser.add_argument("--external-service")
     parser.add_argument("--confirm-supervised", action="store_true")
     parser.add_argument("--rig", type=Path, help="Selected rig inside this repository; normal CLI validation still applies")
     parser.add_argument("--output-dir", type=Path, help="New directory inside this repository's .context/rollout-traces")
     args = parser.parse_args(argv)
-    if args.run and (not args.confirm_supervised or not args.modal_app
-                     or re.fullmatch(r"yamkit-vla-[a-z0-9-]{1,80}", args.modal_app) is None):
-        parser.error("--run requires an exact owned --modal-app and --confirm-supervised")
+    if args.backend == "external":
+        if (args.modal_app or not args.external_service
+                or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", args.external_service) is None):
+            parser.error("external backend requires an exact --external-service without --modal-app")
+    elif args.external_service:
+        parser.error("--external-service requires --backend external")
+    if args.run and (not args.confirm_supervised or (args.backend == "modal" and (
+            not args.modal_app or re.fullmatch(r"yamkit-vla-[a-z0-9-]{1,80}", args.modal_app) is None))):
+        parser.error("--run requires an exact owned service and --confirm-supervised")
     return args
 
 
@@ -487,10 +495,14 @@ def render_report(outdir):
 
 
 def rollout_arguments(args):
-    result = ["rollout", "--policy", "molmoact2", "--backend", "modal", "--call-mode", "http",
+    result = ["rollout", "--policy", "molmoact2", "--backend", args.backend, "--call-mode", "http",
             "--execution-mode", "cuda_graph10", "--task", TASK, "--arms", "left_follower",
-            "--arms", "right_follower", "--duration", str(args.duration), "--modal-app", args.modal_app,
+            "--arms", "right_follower", "--duration", str(args.duration),
             "--accept-mapping", "--confirm-supervised"]
+    if args.backend == "external":
+        result.extend(["--external-service", args.external_service])
+    else:
+        result.extend(["--modal-app", args.modal_app])
     if args.rig is not None:
         result.extend(["--rig", str(args.rig)])
     return result

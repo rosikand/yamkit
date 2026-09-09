@@ -16,10 +16,16 @@ def make_transport(config):
     """Dependency seam for hardware/cloud-free factory and context tests."""
     if config.call_mode == "http":
         from yamkit.inference.http_transport import HttpTransport
-        from yamkit.modal_ops import http_credentials
+        if config.backend == "external":
+            from yamkit.external_ops import http_credentials
 
-        auth = http_credentials(config.modal_app)
-        return HttpTransport(config.modal_app, config.profile, endpoint_url=auth["endpoint_url"], token=auth["token"],
+            service = config.external_service
+        else:
+            from yamkit.modal_ops import http_credentials
+
+            service = config.modal_app
+        auth = http_credentials(service)
+        return HttpTransport(service, config.profile, endpoint_url=auth["endpoint_url"], token=auth["token"],
                              http_ingress=auth.get("http_ingress", "asgi"),
                              http_session_expires_at=auth.get("http_session_expires_at"),
                              shutdown_event=getattr(config, "_session_shutdown_event", None))

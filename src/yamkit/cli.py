@@ -750,6 +750,7 @@ def rollout(
     backend: str = "local",
     gpu: str = "L40S",
     modal_app: str | None = None,
+    external_service: str | None = None,
     center_crop: bool = False,
     async_chunks: Annotated[bool, typer.Option("--async/--no-async", help="unguided background chunks (Modal)")] = True,
     image_encoding: str = "rgb8",
@@ -764,7 +765,7 @@ def rollout(
     from .deployment import InferenceOptions
 
     options = InferenceOptions(policy=policy, task=task, backend=backend, device=device or "cpu", gpu=gpu,
-                               modal_app=modal_app, center_crop=center_crop, rtc=rtc,
+                               modal_app=modal_app, external_service=external_service, center_crop=center_crop, rtc=rtc,
                                async_chunks=async_chunks, duration=duration, fps=fps, arms=tuple(arms or ()),
                                image_encoding=image_encoding, jpeg_quality=jpeg_quality, call_mode=call_mode,
                                execution_mode=execution_mode,
@@ -776,17 +777,23 @@ def rollout(
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from None
     rig_config, pairs = _rig_arms(rig, arms)
-    if backend == "modal":
+    if backend in ("modal", "external"):
         if ctx.args or strategy != "base" or display:
-            raise typer.BadParameter("Modal supports base strategy without display or extra LeRobot flags")
-        from .modal_ops import owned_service
+            raise typer.BadParameter("Remote inference supports base strategy without display or extra LeRobot flags")
+        if backend == "external":
+            from .external_ops import owned_service
 
-        receipt = owned_service()
-        app_name = modal_app or (receipt or {}).get("app_name")
+            receipt = owned_service(external_service)
+            app_name = external_service if receipt else None
+        else:
+            from .modal_ops import owned_service
+
+            receipt = owned_service()
+            app_name = modal_app or (receipt or {}).get("app_name")
         if not app_name:
-            raise typer.BadParameter("run yamkit modal-prepare first, or specify --modal-app")
+            raise typer.BadParameter("attach the external service or prepare the selected Modal app first")
         if dry_run:
-            console.print(f"Modal unguided async via LeRobot context: {policy}, {app_name}, {fps:g} Hz")
+            console.print(f"{backend} unguided async via LeRobot context: {policy}, {app_name}, {fps:g} Hz")
             return
         from lerobot.rollout.configs import RolloutConfig
         from lerobot_robot_yamkit import BiYamFollowerConfig
@@ -797,10 +804,12 @@ def rollout(
 
         by_side = {rig_config.arm(p.follower).side: p.follower for p in pairs}
         if set(by_side) != {"left", "right"}:
-            raise typer.BadParameter("Modal YAM mapping requires distinct left and right follower arms")
+            raise typer.BadParameter("Remote YAM mapping requires distinct left and right follower arms")
         config = RolloutConfig(
             robot=BiYamFollowerConfig(rig=str(rig), left=by_side["left"], right=by_side["right"], id="yam"),
-            policy=YamkitRemoteConfig(profile=get_profile(policy).id, modal_app=app_name,
+            policy=YamkitRemoteConfig(profile=get_profile(policy).id, backend=backend,
+                                     modal_app=app_name if backend == "modal" else "",
+                                     external_service=external_service,
                                      center_crop=center_crop, image_encoding=image_encoding,
                                      jpeg_quality=jpeg_quality, call_mode=call_mode,
                                      execution_mode=execution_mode, task=task,
@@ -1074,6 +1083,63 @@ def modal_qualify(policy: str = "molmoact2", requests: int = 50, modal_app: str 
         result = collect_qualification(policy, requests=requests, modal_app=modal_app, rig_path=rig,
                                        image_encoding=image_encoding, jpeg_quality=jpeg_quality,
                                        call_mode=call_mode, center_crop=center_crop,
+                                       prediction_queue_threshold=prediction_queue_threshold,
+                                       execution_mode=execution_mode, task=task)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    _print_inference_result(result)
+
+
+@app.command("external-attach")
+def external_attach(name: Annotated[str, typer.Option()], endpoint: Annotated[str, typer.Option()],
+                    token_file: Annotated[Path, typer.Option()], provider: str = "lambda") -> None:
+    """Attach a running user-owned GPU service through SSH; never activate hardware."""
+    from .external_ops import attach_service
+
+    try:
+        result = attach_service(name, endpoint, token_file, provider=provider)
+    except (ValueError, OSError) as exc:
+        raise typer.BadParameter(str(exc)) from None
+    _print_inference_result(result)
+
+
+@app.command("external-status")
+def external_status(service: Annotated[str, typer.Option()]) -> None:
+    """Read the local attachment receipt; never activate hardware or contact the VM."""
+    from .external_ops import owned_service
+
+    try:
+        result = owned_service(service)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    _print_inference_result(result or {"status": "not_attached", "service_id": service})
+
+
+@app.command("external-detach")
+def external_detach(service: Annotated[str, typer.Option()]) -> None:
+    """Forget local service credentials. This never shuts down a user-owned GPU VM."""
+    from .external_ops import detach_service
+
+    try:
+        result = detach_service(service)
+    except (ValueError, OSError) as exc:
+        raise typer.BadParameter(str(exc)) from None
+    _print_inference_result(result)
+
+
+@app.command("external-qualify")
+def external_qualify(service: Annotated[str, typer.Option()], task: Annotated[str, typer.Option()],
+                     policy: str = "molmoact2", requests: int = 50, rig: RigOpt = DEFAULT_RIG,
+                     image_encoding: str = "rgb8", jpeg_quality: int = 85,
+                     center_crop: bool = False, prediction_queue_threshold: int | None = None,
+                     execution_mode: str = "cuda_graph10") -> None:
+    """Measure an attached GPU service through this host using generated frames and fake arms."""
+    from .modal_qualification import collect_qualification
+
+    try:
+        result = collect_qualification(policy, requests=requests, rig_path=rig, backend="external",
+                                       external_service=service, image_encoding=image_encoding,
+                                       jpeg_quality=jpeg_quality, call_mode="http", center_crop=center_crop,
                                        prediction_queue_threshold=prediction_queue_threshold,
                                        execution_mode=execution_mode, task=task)
     except ValueError as exc:

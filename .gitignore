@@ -1,5 +1,6 @@
 # environment (all project-local)
 .venv/
+.venv-inference/
 .uv-python/
 .uv-cache/
 .tools/

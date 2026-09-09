@@ -142,6 +142,8 @@ def create_app(profile_id: str = "smolvla", *, gpu: str = DEFAULT_GPU, developme
         # single source file as hash input, without installing or importing the plugin/SDK.
         image = image.add_local_file(str(root / FOLLOWER_SOURCE_RELATIVE),
                                      f"{REMOTE_ROOT}/{FOLLOWER_SOURCE_RELATIVE}")
+        for relative in ("scripts/benchmark_remote.py", "scripts/setup_inference.sh"):
+            image = image.add_local_file(str(root / relative), f"{REMOTE_ROOT}/{relative}")
     volume = modal.Volume.from_name(cache_volume_name, create_if_missing=True)
     secrets = [modal.Secret.from_dict({"HF_TOKEN": os.environ["HF_TOKEN"]})] if os.environ.get("HF_TOKEN") else []
     if transport == "http":

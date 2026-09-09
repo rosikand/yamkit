@@ -50,7 +50,7 @@ def _rollout_metadata(options, rig: RigConfig) -> dict:
 
     arm_fields = {"role", "side", "arm_type", "gripper", "gripper_limits", "rest_pose", "joint_offsets"}
     camera_fields = {"type", "width", "height", "fps", "color_mode", "rotation"}
-    option_fields = {"policy", "task", "backend", "device", "gpu", "call_mode", "execution_mode",
+    option_fields = {"policy", "task", "backend", "device", "gpu", "external_service", "call_mode", "execution_mode",
                      "image_encoding", "jpeg_quality", "prediction_queue_threshold", "center_crop",
                      "async_chunks", "duration", "fps", "rtc", "arms"}
     try:
@@ -66,8 +66,18 @@ def _rollout_metadata(options, rig: RigConfig) -> dict:
             stderr=subprocess.DEVNULL, timeout=3, text=True).strip())
     except (OSError, subprocess.SubprocessError):
         software["git_commit"] = None
+    remote_runtime = {}
+    if options.backend == "external":
+        from ..external_ops import owned_service
+
+        metadata = (owned_service(options.external_service) or {}).get("metadata", {})
+        remote_runtime = {key: metadata[key] for key in (
+            "external_service", "runtime_provenance", "instance_id", "inference_build_id",
+            "execution_identity", "graph_warmup", "http_ingress", "http_session_expires_at") if key in metadata}
+        option_fields.discard("gpu")  # Modal provisioning preference is not the external GPU's identity.
     return {"provenance": {"captured_at": time.time(), "kind": "before_managed_child_launch"},
-            "model": model, "software": software,
+            "model": model, "software": software, **({"remote_runtime": remote_runtime}
+                                                     if options.backend == "external" else {}),
             "configuration": {key: value for key, value in dataclasses.asdict(options).items()
                               if key in option_fields},
             "rig": {"arms": {name: {key: value for key, value in dataclasses.asdict(arm).items()
@@ -123,6 +133,7 @@ class InferenceBody(BaseModel):
     device: str = "cpu"
     gpu: str = "L40S"
     modal_app: str | None = None
+    external_service: str | None = None
     call_mode: str = "remote"
     execution_mode: str = "eager"
     image_encoding: str = "rgb8"
@@ -549,11 +560,18 @@ def create_app(
             settings_from_rig,
             validate_qualification,
         )
-        from ..modal_ops import http_credentials
+        if options.backend == "external":
+            from ..external_ops import http_credentials
+
+            service = options.external_service
+        else:
+            from ..modal_ops import http_credentials
+
+            service = options.modal_app
         from ..probes import preflight_live_probe
 
-        if (options.backend != "modal" or get_profile(options.policy).id != "molmoact2"
-                or not options.modal_app or options.call_mode != "http"
+        if (options.backend not in ("modal", "external") or get_profile(options.policy).id != "molmoact2"
+                or not service or options.call_mode != "http"
                 or options.execution_mode != "cuda_graph10" or options.image_encoding != "rgb8"):
             raise ValueError("Attach the exact Conductor-prepared MolmoAct2 HTTP cuda_graph10 session with raw RGB")
         if is_cloud_host():
@@ -569,17 +587,18 @@ def create_app(
         if options.fps != profile.fps:
             raise ValueError("The retained policy requires 30 Hz actions")
         settings = settings_from_rig(options)
-        if settings.get("http_ingress") != "tunnel":
+        if settings.get("http_ingress") != ("ssh" if options.backend == "external" else "tunnel"):
             raise ValueError("Browser attachment requires a bounded retained HTTP tunnel")
         record = validate_qualification(settings)
-        http_credentials(options.modal_app)  # Verify locally; never include this private object in the response.
+        http_credentials(service)  # Verify locally; never include this private object in the response.
         expires = min(settings["http_session_expires_at"], record["created_unix_s"] + MAX_AGE_S)
         checked = time.time()
         if checked + options.duration + 60 >= expires:
             raise ValueError("Retained session expires too soon for this duration, 30 seconds of startup and 30 seconds of return home; refresh it in Conductor")
         return {"ready": True, "reason": "Qualified for these settings; mapping acceptance and supervised Start are still required",
                 "selection_key": options.operation_key, "checked_at": checked,
-                "expires_at": expires, "modal_app": options.modal_app}
+                "expires_at": expires, "modal_app": options.modal_app,
+                "external_service": options.external_service}
 
     def validate_trace(body: InferenceBody) -> None:
         if body.upload_repo_id is not None:
@@ -590,7 +609,7 @@ def create_app(
                 raise ValueError("Upload destination must be a namespace/repository private dataset ID")
             body.capture_trace = True  # All camera frames and trace data must exist for the upload.
         if body.capture_trace and (
-                body.backend != "modal" or body.policy not in ("molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot")
+                body.backend not in ("modal", "external") or body.policy not in ("molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot")
                 or body.task != TRACE_TASK or body.duration not in (5, 10)
                 or body.call_mode != "http" or body.execution_mode != "cuda_graph10"
                 or body.image_encoding != "rgb8" or body.center_crop or body.rtc or not body.async_chunks
@@ -672,13 +691,13 @@ def create_app(
             validate_trace(body)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
-        if body.backend == "modal":
+        if body.backend in ("modal", "external"):
             try:
                 modal_attachment(options, rig)
             except (ValueError, KeyError, TypeError, OSError) as exc:
                 reason = str(exc) if isinstance(exc, ValueError) else "Retained session metadata or qualification is unavailable"
                 raise HTTPException(422, reason) from None
-        if body.backend == "modal" or body.policy in ("molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot"):
+        if body.backend in ("modal", "external") or body.policy in ("molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot"):
             from ..inference.profiles import get_profile
             from ..probes import preflight_live_probe
 
@@ -696,8 +715,10 @@ def create_app(
         if body.capture_trace:
             trace_dir = ROOT / ".context" / "rollout-traces" / uuid.uuid4().hex
             trace_args = [sys.executable, str(ROOT / "scripts" / "trace_rollout.py"), "--run",
-                          "--duration", str(int(body.duration)), "--modal-app", str(body.modal_app),
+                          "--duration", str(int(body.duration)), "--backend", body.backend,
                           "--rig", str(rig_path), "--output-dir", str(trace_dir), "--confirm-supervised"]
+            trace_args += (["--external-service", body.external_service] if body.backend == "external"
+                           else ["--modal-app", body.modal_app])
             return inference_start("rollout", args, options, argv_override=trace_args,
                                    extra_meta={"capture_trace": True, "debug_trace_dir": str(trace_dir),
                                                "upload_repo_id": body.upload_repo_id})

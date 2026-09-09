@@ -9,7 +9,9 @@ from lerobot.configs import FeatureType, PolicyFeature, PreTrainedConfig
 @dataclass
 class YamkitRemoteConfig(PreTrainedConfig):
     profile: str = "molmoact2"
+    backend: str = "modal"
     modal_app: str = ""
+    external_service: str | None = None
     request_timeout_s: float = 10.0
     readiness_timeout_s: float = 120.0
     max_observation_age_s: float = 2.0
@@ -27,9 +29,20 @@ class YamkitRemoteConfig(PreTrainedConfig):
     action_feature_names: list[str] = field(default_factory=list)
 
     def __post_init__(self):
+        import re
+
         from yamkit.inference.profiles import get_profile
 
         super().__post_init__()
+        if self.backend not in ("modal", "external"):
+            raise ValueError("Remote backend must be modal or external")
+        if self.backend == "external":
+            if (not self.external_service
+                    or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", self.external_service)
+                    or self.modal_app or self.call_mode != "http"):
+                raise ValueError("External inference requires an exact service name and HTTP, without a Modal app")
+        elif self.external_service is not None:
+            raise ValueError("External service requires the external backend")
         if self.device != "cpu" or self.use_amp or self.use_peft:
             raise ValueError("The remote RPC proxy requires CPU, no AMP and no PEFT")
         if self.pretrained_path is not None:

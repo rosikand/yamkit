@@ -357,6 +357,8 @@ def test_factory_adds_opt_in_endpoint_to_same_class_without_forwarding_account_s
     assert captured["files"] == [
         (str(ROOT / "configs/modal-requirements.txt"), "/opt/yamkit/configs/modal-requirements.txt"),
         (str(ROOT / FOLLOWER_SOURCE_RELATIVE), f"/opt/yamkit/{FOLLOWER_SOURCE_RELATIVE}"),
+        (str(ROOT / "scripts/benchmark_remote.py"), "/opt/yamkit/scripts/benchmark_remote.py"),
+        (str(ROOT / "scripts/setup_inference.sh"), "/opt/yamkit/scripts/setup_inference.sh"),
     ]
     assert captured["env"]["PYTHONPATH"] == "/opt/yamkit/src"  # Plugin source is data, not an import path.
     service = cls()

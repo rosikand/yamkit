@@ -23,6 +23,7 @@ class InferenceOptions:
     async_chunks: bool = True
     center_crop: bool = False
     modal_app: str | None = None
+    external_service: str | None = None
     duration: float = 60.0
     fps: float = 30.0
     arms: tuple[str, ...] = ()
@@ -40,8 +41,8 @@ class InferenceOptions:
             raise ValueError("provide a checkpoint path or a supported model preset")
         if not self.task.strip() or len(self.task) > 2048:
             raise ValueError("task must contain 1–2048 characters")
-        if self.backend not in ("local", "modal"):
-            raise ValueError("backend must be local or modal")
+        if self.backend not in ("local", "modal", "external"):
+            raise ValueError("backend must be local, modal or external")
         if not re.fullmatch(r"(?:cpu|mps|cuda(?::[0-9]+)?)", self.device):
             raise ValueError("device must be cpu, mps, cuda or cuda:N")
         if not math.isfinite(self.duration) or self.duration < 0:
@@ -52,7 +53,14 @@ class InferenceOptions:
             raise ValueError("select one or two distinct follower arms")
         if self.modal_app is not None and not re.fullmatch(r"yamkit-vla-[a-z0-9-]{1,80}", self.modal_app):
             raise ValueError("Modal app must be a dedicated yamkit-vla-… app name")
-        if self.backend == "modal":
+        if self.external_service is not None and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", self.external_service):
+            raise ValueError("External service must be a short lowercase name containing letters, digits or hyphens")
+        if self.backend == "external":
+            if not self.external_service or self.modal_app or self.call_mode != "http":
+                raise ValueError("External inference requires --external-service and HTTP, without --modal-app")
+        elif self.external_service is not None:
+            raise ValueError("External service requires the external backend")
+        if self.backend in ("modal", "external"):
             from .inference.profiles import get_profile
 
             profile = get_profile(self.policy)
@@ -70,13 +78,13 @@ class InferenceOptions:
                     or not 0 <= self.prediction_queue_threshold <= profile.chunk_size):
                 raise ValueError("Prediction queue threshold must be between zero and the chunk size")
             if not 0 < self.duration <= 3600:
-                raise ValueError("Modal duration must be between 0 and 3600 seconds")
-            if self.gpu not in ("L40S", "H100!"):
+                raise ValueError("Remote duration must be between 0 and 3600 seconds")
+            if self.backend == "modal" and self.gpu not in ("L40S", "H100!"):
                 raise ValueError("Use one L40S or an exact H100! per model pool")
             if self.rtc:
                 raise ValueError("remote RTC guidance is unverified; use unguided async")
             if not self.async_chunks:
-                raise ValueError("Modal rollout requires unguided async; synchronous RPC execution is disabled")
+                raise ValueError("Remote rollout requires unguided async; synchronous RPC execution is disabled")
             if motion:
                 if not profile.mapping_verified:
                     raise ValueError("physical YAM mapping is not validated: " + profile.mapping_note)
@@ -92,9 +100,9 @@ class InferenceOptions:
                                                mapping_accepted=self.mapping_accepted)
         else:
             if self.execution_mode != "eager":
-                raise ValueError("Production graph10 is only available through the reviewed Modal HTTP path")
+                raise ValueError("Production graph10 is only available through the reviewed remote HTTP path")
             if self.center_crop:
-                raise ValueError("center crop is only available through the profiled Modal policy boundary")
+                raise ValueError("center crop is only available through the profiled remote policy boundary")
             if motion:
                 from .inference.profiles import get_profile
 
@@ -119,8 +127,11 @@ class InferenceOptions:
     def cli_args(self) -> list[str]:
         args = ["--policy", self.policy, "--task", self.task, "--backend", self.backend,
                 "--device", self.device]
-        if self.backend == "modal":
-            args += ["--gpu", self.gpu]
+        if self.backend in ("modal", "external"):
+            if self.backend == "modal":
+                args += ["--gpu", self.gpu]
+            else:
+                args += ["--external-service", self.external_service]
             args += ["--image-encoding", self.image_encoding, "--jpeg-quality", str(self.jpeg_quality),
                      "--call-mode", self.call_mode]
             if self.execution_mode != "eager":

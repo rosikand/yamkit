@@ -83,12 +83,17 @@ def modal_sdk_measurements():
 
 
 def make_benchmark_transport(app_name, profile_name="molmoact2", *, shutdown_event=None,
-                             uncached_handles=False, sdk_metrics=None, call_mode="remote"):
+                             uncached_handles=False, sdk_metrics=None, call_mode="remote", backend="modal"):
     from yamkit.inference.client import ModalTransport
 
+    if backend not in ("modal", "external") or (backend == "external" and call_mode != "http"):
+        raise ValueError("External benchmarks require their attached HTTP service")
     if call_mode == "http":
         from yamkit.inference.http_transport import HttpTransport
-        from yamkit.modal_ops import http_credentials
+        if backend == "external":
+            from yamkit.external_ops import http_credentials
+        else:
+            from yamkit.modal_ops import http_credentials
 
         if uncached_handles or sdk_metrics is not None:
             raise ValueError("SDK handle/serialization diagnostics do not apply to HTTP")
@@ -221,6 +226,13 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
         def cancel(self):
             self.inner.cancel()
 
+        def ensure_session_active(self):
+            # Qualification must exercise the same immediate expiry/Stop check
+            # as dispatch through the unwrapped production HTTP transport.
+            guard = getattr(self.inner, "ensure_session_active", None)
+            if guard is not None:
+                guard()
+
         def close(self):
             close = getattr(self.inner, "close", None)
             if close is not None:
@@ -316,8 +328,13 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
     # Independent check against successful FakeRobot SDK commands, not queue pops.
     overlap = [sum(event["started"] < at < event["returned"] for at in execution_times) // 2
                for event in transport.requests if "returned" in event]
+    external = getattr(cfg.policy, "backend", "modal") == "external"
     return {"name": name, "source": "final LeRobot worker/strategy; fake RGB cameras and fake YAM; "
-            + ("real Modal RPC" if transport_factory else "fake RPC"),
+            + ("real external HTTP" if external and transport_factory else "real Modal RPC"
+               if transport_factory else "fake RPC"),
+            **({"service_provenance": {"backend": "external", "transport": "http",
+                                       "external_service": transport.readiness.get("external_service")}}
+               if external and transport_factory else {}),
             "measurement_host": host_identity(),
             "injected_delay_cycle_s": None if transport_factory else delays, "fps": 30, "chunk_steps": 30,
             "image_hw": list(image_hw), "elapsed_s": wall_s, "error": error, "task": task,
@@ -326,6 +343,8 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
                                "call_mode": cfg.policy.call_mode, "center_crop": cfg.policy.center_crop,
                                "execution_mode": cfg.policy.execution_mode, "task": cfg.policy.task,
                                "modal_app": cfg.policy.modal_app,
+                               **({"backend": "external", "external_service": cfg.policy.external_service}
+                                  if external else {}),
                                "prediction_queue_threshold": cfg.policy.prediction_queue_threshold
                                if cfg.policy.prediction_queue_threshold is not None else profile.chunk_size},
             "readiness_s": transport.readiness_s, "readiness": transport.readiness,
@@ -344,7 +363,7 @@ def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
                   max_wall_s=600.0, image_hw=(480, 640), on_sample=None,
                   image_encoding="rgb8", jpeg_quality=85, center_crop=False,
                   diagnostic_num_inference_steps=None, diagnostic_cuda_graph=None,
-                  execution_mode="eager", task="pick up the red cube") -> dict:
+                  execution_mode="eager", task="pick up the red cube", backend="modal") -> dict:
     """Bounded direct protocol profiling; generated fixture results never enter a queue.
 
     In contrast to rollout, non-executable native fixtures can be measured after
@@ -375,6 +394,8 @@ def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
     if execution_mode not in ("eager", "cuda_graph10"):
         raise ValueError("Unknown execution mode")
     is_http = getattr(transport, "call_mode", None) == "http"
+    if backend not in ("modal", "external") or (backend == "external" and not is_http):
+        raise ValueError("External benchmarks require HTTP")
     if execution_mode == "cuda_graph10" and (not is_http or image_encoding != "rgb8"
             or diagnostic_num_inference_steps is not None or diagnostic_cuda_graph is not None):
         raise ValueError("Production graph10 profiling requires HTTP/raw RGB without diagnostic overrides")
@@ -508,8 +529,12 @@ def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
         terminated = "interrupted"
     finally:
         transport.cancel()
-    return {"measurement": "real Modal " + ("HTTP" if is_http else "RPC")
+    return {"measurement": ("real external " if backend == "external" else "real Modal ")
+            + ("HTTP" if is_http else "RPC")
             + "; generated checkpoint-native fixtures; no action execution",
+            **({"service_provenance": {"backend": "external", "transport": "http",
+                                       "external_service": (metadata or {}).get("external_service")}}
+               if backend == "external" else {}),
             "measurement_host": host_identity(),
             "profile": profile.id, "revision": profile.revision, "image_hw": [height, width],
             "fixture_pattern": "seeded random RGB generated per request; zero native state",

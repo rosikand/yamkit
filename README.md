@@ -277,6 +277,9 @@ Measure end-to-end latency before relying on chunk buffering. The same speed cla
 as in teleop bound every commanded step.
 
 For optional Modal GPU inference and browser deployment, see [docs/MODAL.md](docs/MODAL.md).
+For an existing Lambda GPU with a direct, private Lenovo SSH tunnel, use
+[docs/LAMBDA.md](docs/LAMBDA.md). Its separate inference setup keeps CUDA dependencies inside
+the GPU checkout and retains host qualification before any supervised robot rollout.
 Local remains the default. MolmoAct2-YAM has a reviewed source mapping and a local synchronous
 path. Supervised five-second run `20260908-220559-rollout-81cf2f4d` completed 131 bimanual policy dispatches at
 29.9 Hz, with zero queue underruns, all three 30 fps recordings intact, and return home

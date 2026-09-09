@@ -736,7 +736,7 @@ pages.inference = {
       <div class="sect"><div class="sect-head">Policy deployment</div><div class="panel pad">
         <div class="form-grid">
           <label class="field">preset<select id="inf-preset"><option value="smolvla">SmolVLA base · forward check</option><option value="molmoact2">MolmoAct2 · bimanual YAM</option><option value="pi05">pi05 base · forward check</option><option value="custom">Custom compatible local checkpoint</option></select></label>
-          <label class="field">backend<select id="inf-backend"><option value="local">Local (default)</option><option value="modal">Modal · retained MolmoAct2 session</option></select></label>
+          <label class="field">backend<select id="inf-backend"><option value="local">Local (default)</option><option value="modal">Modal · retained MolmoAct2 session</option><option value="external">Lambda / own GPU host · SSH</option></select></label>
           <label class="field">checkpoint<input type="text" id="inf-policy" value="smolvla" list="policy-list" /></label>
           <label class="field">task<input type="text" id="inf-task" value="pick up the object" /></label>
           <label class="field">followers<select id="inf-arms"><option value="">Both arms</option><option value="left">Left only (compatible local model)</option><option value="right">Right only (compatible local model)</option></select></label>
@@ -744,6 +744,7 @@ pages.inference = {
           <label class="field">local device<select id="inf-device"><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="mps">MPS</option></select></label>
           <label class="field">Modal GPU<select id="inf-gpu"><option value="L40S">L40S · one container</option><option value="H100!">H100 · one retained container</option></select></label>
           <label class="field">Retained session<input type="text" id="inf-modal-app" placeholder="yamkit-vla-session-…" /></label>
+          <label class="field">External service<input type="text" id="inf-external-service" placeholder="lambda-georgia" /></label>
         </div>
         <div class="toolbar"><button id="btn-attach-owned">Use owned MolmoAct2 session</button></div>
         <div id="inf-attach-controls">
@@ -759,9 +760,9 @@ pages.inference = {
         </div>
         <datalist id="policy-list"></datalist>
         <div class="toolbar"><label class="check"><input type="checkbox" id="inf-rtc" /> Local RTC (policy must support guidance)</label>
-          <label class="check"><input type="checkbox" id="inf-crop" /> Optional center crop to 16:9 at Modal policy boundary</label></div>
+          <label class="check"><input type="checkbox" id="inf-crop" /> Optional center crop to 16:9 at remote policy boundary</label></div>
         <div id="inf-profile-note" class="hint"></div>
-        <div class="hint">Modal uses unguided background chunks. Crop stays off by default and does not restore training camera geometry. Recording camera settings stay unchanged.</div>
+        <div class="hint">Remote inference uses unguided background chunks. Crop stays off by default and does not restore training camera geometry. Recording camera settings stay unchanged.</div>
         <div class="toolbar" style="margin-top:12px">
           <button id="btn-pc">Check (no hardware)</button><button id="btn-prepare">Prepare Modal</button>
           <button id="btn-ro" class="danger">Start rollout</button><button id="btn-inf-stop" class="danger">Stop local execution</button>
@@ -790,7 +791,7 @@ pages.inference = {
       if (dl) dl.innerHTML = list.map((m) => `<option value="${esc(m.where === "cloud" ? m.repo_id : "outputs/" + m.path)}">${esc(m.policy_type ?? "")}</option>`).join("");
     }).catch(() => {});
     $("#inf-preset").onchange = () => { $("#inf-policy").value = $("#inf-preset").value === "custom" ? "" : $("#inf-preset").value; this.syncForm(); };
-    ["inf-backend", "inf-policy", "inf-task", "inf-arms", "inf-duration", "inf-device", "inf-gpu", "inf-rtc", "inf-crop", "inf-saved", "inf-modal-app", "inf-mapping", "inf-trace", "inf-upload", "inf-upload-repo"].forEach((id) => {
+    ["inf-backend", "inf-policy", "inf-task", "inf-arms", "inf-duration", "inf-device", "inf-gpu", "inf-rtc", "inf-crop", "inf-saved", "inf-modal-app", "inf-external-service", "inf-mapping", "inf-trace", "inf-upload", "inf-upload-repo"].forEach((id) => {
       document.getElementById(id).addEventListener("input", () => this.syncForm());
     });
     $("#btn-pc").onclick = (e) => this.launch("/session/policy-check", {}, e.target);
@@ -840,15 +841,17 @@ pages.inference = {
   },
   selection() {
     const modal = $("#inf-backend").value === "modal";
+    const external = $("#inf-backend").value === "external", remote = modal || external;
     return { policy: $("#inf-policy").value.trim(), task: $("#inf-task").value.trim(),
       backend: $("#inf-backend").value, device: $("#inf-device").value, gpu: $("#inf-gpu").value,
       duration: Number($("#inf-duration").value), fps: 30, rtc: $("#inf-rtc").checked,
       center_crop: $("#inf-crop").checked, async_chunks: true,
       modal_app: modal ? $("#inf-modal-app").value.trim() || null : null,
-      call_mode: modal ? "http" : "remote", execution_mode: modal ? "cuda_graph10" : "eager",
-      mapping_accepted: modal && $("#inf-mapping").checked,
-      capture_trace: modal && ($("#inf-trace").checked || $("#inf-upload").checked),
-      upload_repo_id: modal && $("#inf-upload").checked ? $("#inf-upload-repo").value.trim() : null,
+      external_service: external ? $("#inf-external-service").value.trim() || null : null,
+      call_mode: remote ? "http" : "remote", execution_mode: remote ? "cuda_graph10" : "eager",
+      mapping_accepted: remote && $("#inf-mapping").checked,
+      capture_trace: remote && ($("#inf-trace").checked || $("#inf-upload").checked),
+      upload_repo_id: remote && $("#inf-upload").checked ? $("#inf-upload-repo").value.trim() : null,
       arms: $("#inf-arms").value ? [$("#inf-arms").value] : null };
   },
   async checkAttachment() {
@@ -873,10 +876,12 @@ pages.inference = {
   },
   syncForm() {
     if (!$("#inf-policy")) return;
-    const modal = $("#inf-backend").value === "modal";
+    const external = $("#inf-backend").value === "external";
+    const modal = ["modal", "external"].includes($("#inf-backend").value);
     $("#inf-device").disabled = modal;
-    $("#inf-gpu").disabled = !modal;
-    $("#inf-modal-app").disabled = !modal;
+    $("#inf-gpu").disabled = !modal || external;
+    $("#inf-modal-app").disabled = !modal || external;
+    $("#inf-external-service").disabled = !external;
     $("#inf-attach-controls").hidden = !modal;
     $("#btn-attach-owned").disabled = session.active || this._launching;
     $("#inf-rtc").disabled = modal;
@@ -897,7 +902,7 @@ pages.inference = {
       : qualification?.reason || "Check this exact session and task before Start. No hardware or cloud call is made by this check.";
     const profileNote = profile ? `Revision ${profile.revision}. ${profile.mapping_note}` : "Custom checkpoints use the existing local LeRobot path; verify their rig compatibility before motion.";
     const blockedReason = qualified ? "Accept the verified YAM mapping before supervised Start."
-      : qualification?.reason || "Physical Modal rollout BLOCKED until this exact retained session passes the local check.";
+      : qualification?.reason || "Physical remote rollout BLOCKED until this exact retained session passes the local check.";
     $("#inf-profile-note").textContent = profileNote + (modalBlocked ? ` ${blockedReason}` : "");
     ["btn-pc", "btn-prepare", "btn-ro", "btn-probe-saved", "btn-probe-live", "btn-cloud-stop"].forEach((id) => { document.getElementById(id).disabled = session.active || this._launching; });
     $("#btn-pc").hidden = modal;
@@ -905,6 +910,8 @@ pages.inference = {
     $("#btn-cloud-stop").hidden = modal;
     $("#btn-prepare").disabled = true;
     $("#btn-cloud-stop").disabled = true;
+    $("#btn-probe-saved").disabled ||= external;
+    $("#btn-probe-live").disabled ||= external;
     $("#btn-inf-preflight").disabled = session.active || this._checking || this._launching || !modal;
     $("#btn-ro").disabled ||= modalBlocked || !!profile && (!profile.mapping_verified || (profile.id === "molmoact2" && selected.rtc));
     $("#btn-inf-stop").disabled = !session.active;

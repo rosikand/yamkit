@@ -5,10 +5,13 @@ from __future__ import annotations
 import copy
 import hashlib
 import math
+import re
 import time
 from pathlib import Path
 
 FOLLOWER_SOURCE_RELATIVE = "plugins/lerobot_robot_yamkit/lerobot_robot_yamkit/yam_follower.py"
+SSH_DEFAULT_SESSION_S = 28800
+SSH_MAX_SESSION_S = 86400
 
 
 def inference_build_id() -> str:
@@ -25,10 +28,11 @@ def inference_build_id() -> str:
     files = [*package.joinpath("inference").glob("*.py"),
              *package.joinpath("remote_policy").glob("*.py")]
     files += [package / name for name in (
-        "remote_rollout.py", "deployment.py", "modal_ops.py", "modal_qualification.py", "arm.py")]
+        "remote_rollout.py", "deployment.py", "modal_ops.py", "modal_qualification.py", "external_ops.py", "arm.py")]
     entries = [(str(path.relative_to(package)), path) for path in files]
     entries.append(("configs/modal-requirements.txt", Path(ROOT) / "configs/modal-requirements.txt"))
     entries.append((FOLLOWER_SOURCE_RELATIVE, Path(ROOT) / FOLLOWER_SOURCE_RELATIVE))
+    entries += [(name, Path(ROOT) / name) for name in ("scripts/benchmark_remote.py", "scripts/setup_inference.sh")]
     digest = hashlib.sha256(b"yamkit-inference-build-v1\0")
     for name, path in sorted(entries):
         content = path.read_bytes()
@@ -47,17 +51,19 @@ def http_ingress_binding(metadata: dict, *, endpoint_url: str | None = None) -> 
     if not isinstance(metadata, dict):
         raise ValueError("HTTP ingress readiness must be a mapping")  # noqa: TRY004 — uniform validation error
     ingress = metadata.get("http_ingress", "asgi")
-    if ingress not in ("asgi", "tunnel"):
+    if ingress not in ("asgi", "tunnel", "ssh"):
         raise ValueError("Unsupported HTTP ingress")
     expires = metadata.get("http_session_expires_at")
-    if ingress == "tunnel":
+    if ingress in ("tunnel", "ssh"):
         now = time.time()
+        maximum = 900 if ingress == "tunnel" else SSH_MAX_SESSION_S
         try:
-            valid_expiry = type(expires) in (int, float) and math.isfinite(expires) and now < expires <= now + 900
+            valid_expiry = type(expires) in (int, float) and math.isfinite(expires) and now < expires <= now + maximum
         except OverflowError:
             valid_expiry = False
         if not valid_expiry or not metadata.get("http_endpoint"):
-            raise ValueError("HTTP tunnel requires an unexpired bounded session and explicit endpoint")
+            label = "HTTP tunnel" if ingress == "tunnel" else "SSH ingress"
+            raise ValueError(f"{label} requires an unexpired bounded session and explicit endpoint")
     elif expires is not None:
         raise ValueError("ASGI readiness cannot inherit a tunnel session expiry")
     advertised = metadata.get("http_endpoint")
@@ -71,6 +77,22 @@ def http_ingress_binding(metadata: dict, *, endpoint_url: str | None = None) -> 
     if endpoint is not None:
         result["http_endpoint"] = validate_endpoint_url(endpoint, http_ingress=ingress)
     return result
+
+
+def external_service_binding(metadata: dict) -> dict:
+    """Bind the declared provider to a concrete host, without inventing placement proof."""
+    external = metadata.get("external_service")
+    keys = {"provider", "service_id", "host_id", "region", "region_source"}
+    if (type(external) is not dict or set(external) != keys
+            or external.get("provider") != "lambda" or external.get("region_source") != "operator_declared"
+            or type(external.get("service_id")) is not str
+            or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", external["service_id"]) is None
+            or type(external.get("host_id")) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", external["host_id"]) is None
+            or type(external.get("region")) is not str
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_. -]{0,99}", external["region"]) is None):
+        raise ValueError("SSH readiness requires an explicit Lambda service, host identity and declared region")
+    return copy.deepcopy(external)
 
 
 def http_runtime_binding(profile, metadata: dict, *, execution_mode: str, task: str,
@@ -115,6 +137,22 @@ def http_runtime_binding(profile, metadata: dict, *, execution_mode: str, task: 
               "inference_build_id": metadata["inference_build_id"], "http_wire_version": WIRE_VERSION,
               "http_wire_codec": WIRE_CODEC, "instance_id": instance, "task": task}
     result.update(http_ingress_binding(metadata, endpoint_url=endpoint_url))
+    if result["http_ingress"] == "ssh":
+        result["external_service"] = external_service_binding(metadata)
+        provenance = metadata.get("runtime_provenance")
+        if (type(provenance) is not dict or type(provenance.get("packages")) is not dict
+                or provenance["packages"].get("lerobot") != "0.6.1"
+                or provenance["packages"].get("torch") != "2.11.0+cu128"
+                or provenance["packages"].get("transformers") != "5.5.4"
+                or type(provenance.get("python")) is not str or not provenance["python"].startswith("3.12.")
+                or provenance.get("torch_cuda") != "12.8"
+                or type(provenance.get("gpu")) is not dict
+                or not isinstance(provenance["gpu"].get("name"), str)
+                or not provenance["gpu"]["name"]):
+            raise ValueError("SSH readiness requires the actual pinned runtime and GPU provenance")
+        result["runtime_provenance"] = copy.deepcopy(provenance)
+    elif "external_service" in metadata:
+        raise ValueError("An external service cannot advertise Modal HTTP ingress")
     execution = metadata.get("model_execution") or {}
     graph_enabled = execution_mode == "cuda_graph10"
     if (not isinstance(execution, dict) or execution.get("configured_model_dtype") != "bfloat16"

@@ -20,7 +20,14 @@ from .http_wire import MAX_MESSAGE_BYTES, WIRE_CODEC, WIRE_VERSION, decode_messa
 
 
 def validate_endpoint_url(value: str, *, http_ingress: str = "asgi") -> str:
-    """Return a canonical HTTPS Modal origin; never include invalid input in errors."""
+    """Return an approved origin without echoing invalid input or credentials."""
+    if http_ingress == "ssh":
+        # Plain HTTP is confined to an explicit local SSH forward. In particular,
+        # localhost/DNS names, other loopback spellings and public IPs are not aliases.
+        match = re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})", value) if type(value) is str else None
+        if match is None or not 1 <= int(match[1]) <= 65535:
+            raise ValueError("SSH inference requires a bare http://127.0.0.1 origin with an explicit port")
+        return value
     if (http_ingress not in ("asgi", "tunnel") or type(value) is not str
             or not 1 <= len(value) <= 512 or not value.isascii() or value != value.strip()):
         raise ValueError("HTTP inference requires a valid HTTPS Modal endpoint")

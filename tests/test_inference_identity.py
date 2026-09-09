@@ -20,7 +20,8 @@ def mirrored_http_source(tmp_path, monkeypatch):
         target = package / source.relative_to(original)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
-    for relative in ("configs/modal-requirements.txt", identity.FOLLOWER_SOURCE_RELATIVE):
+    for relative in ("configs/modal-requirements.txt", "scripts/benchmark_remote.py",
+                     "scripts/setup_inference.sh", identity.FOLLOWER_SOURCE_RELATIVE):
         target = tmp_path / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(root / relative, target)
@@ -30,7 +31,9 @@ def mirrored_http_source(tmp_path, monkeypatch):
     return tmp_path, before
 
 
-@pytest.mark.parametrize("relative", ["src/yamkit/arm.py", identity.FOLLOWER_SOURCE_RELATIVE])
+@pytest.mark.parametrize("relative", ["src/yamkit/arm.py", "src/yamkit/external_ops.py",
+                                     "scripts/benchmark_remote.py", "scripts/setup_inference.sh",
+                                     identity.FOLLOWER_SOURCE_RELATIVE])
 def test_hardware_command_validation_source_changes_invalidate_identity(mirrored_http_source, relative):
     root, before = mirrored_http_source
     source = root / relative

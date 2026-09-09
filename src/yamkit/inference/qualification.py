@@ -61,23 +61,37 @@ def is_cloud_host() -> bool:
         os.environ.get(key) for key in ("CONDUCTOR_WORKSPACE_ID", "VERCEL_SANDBOX_ID"))
 
 
-def qualification_settings(profile, *, modal_app: str, call_mode: str = "remote",
+def qualification_settings(profile, *, modal_app: str | None = None, call_mode: str = "remote",
                            image_encoding: str = "rgb8", jpeg_quality: int = 85,
                            image_hw=(480, 640), crop: str = "none", requested_region: str = "us-west",
-                           observed_region: str, routing_region: str = "us-west",
+                           observed_region: str | None = None, routing_region: str = "us-west",
                            prediction_queue_threshold: int | None = None,
                            max_observation_age_s: float = 2.0, execution_mode: str = "eager",
                            task: str | None = None, metadata: dict | None = None,
-                           endpoint_url: str | None = None) -> dict:
+                           endpoint_url: str | None = None, backend: str = "modal",
+                           external_service: str | None = None) -> dict:
     profile = get_profile(profile)
-    if not modal_app or call_mode not in ("remote", "spawn", "http") or image_encoding not in ("rgb8", "jpeg"):
+    if backend not in ("modal", "external"):
+        raise QualificationError("Unknown remote inference backend")
+    if backend == "external":
+        from yamkit.external_ops import _name
+
+        from .identity import external_service_binding
+
+        _name(external_service)
+        external = external_service_binding(metadata or {})
+        if external["service_id"] != external_service or call_mode != "http" or modal_app:
+            raise QualificationError("External qualification requires its explicit service and HTTP path")
+    if ((backend == "modal" and not modal_app) or call_mode not in ("remote", "spawn", "http")
+            or image_encoding not in ("rgb8", "jpeg")):
         raise QualificationError("Explicit Modal app, supported call path and image encoding are required")
     if (type(jpeg_quality) is not int or not 1 <= jpeg_quality <= 100 or len(image_hw) != 2
             or any(type(value) is not int or value <= 0 for value in image_hw)):
         raise QualificationError("Invalid image dimensions or JPEG quality")
     if crop not in ("none", "center_16_9"):
         raise QualificationError("Unknown image crop")
-    if (any(not isinstance(region, str) or not region for region in (requested_region, observed_region, routing_region))
+    if backend == "modal" and (
+            any(not isinstance(region, str) or not region for region in (requested_region, observed_region, routing_region))
             or observed_region == "unknown"):
         raise QualificationError("Requested compute/routing and reliably observed compute placement are required")
     threshold = profile.chunk_size if prediction_queue_threshold is None else prediction_queue_threshold
@@ -96,6 +110,10 @@ def qualification_settings(profile, *, modal_app: str, call_mode: str = "remote"
             "protocol_version": 1, "lerobot_version": LEROBOT_VERSION,
             "jpeg_subsampling": 2 if image_encoding == "jpeg" else None,
             "image_boundary_version": "saved-policy-transform-v1"}
+    if backend == "external":
+        for key in ("modal_app", "requested_region", "observed_region", "routing_region"):
+            result.pop(key)
+        result.update(backend="external", external_service_name=external_service, external_service=external)
     if call_mode == "http":
         from .identity import http_runtime_binding
 
@@ -108,6 +126,8 @@ def qualification_settings(profile, *, modal_app: str, call_mode: str = "remote"
                                                endpoint_url=endpoint_url))
             if not result.get("http_endpoint"):
                 raise ValueError("HTTP qualification requires the measured endpoint")
+            if (result.get("http_ingress") == "ssh") != (backend == "external"):
+                raise ValueError("HTTP ingress does not match the selected remote provider")
         except (ValueError, TypeError) as exc:
             raise QualificationError(str(exc)) from None
     elif execution_mode != "eager":
@@ -117,16 +137,30 @@ def qualification_settings(profile, *, modal_app: str, call_mode: str = "remote"
 
 def current_settings(config, *, image_hw, metadata=None) -> dict:
     """Resolve placement from the owned service and fresh readiness when supplied."""
-    from yamkit.modal_ops import owned_service
-
     profile = get_profile(getattr(config, "profile", None) or config.policy)
-    receipt = owned_service() or {}
+    backend = getattr(config, "backend", "modal")
+    if backend == "external":
+        from yamkit.external_ops import http_credentials, owned_service
+
+        name = getattr(config, "external_service", None)
+        receipt = owned_service(name) or {}
+        http_credentials(name)
+    elif backend == "modal":
+        from yamkit.modal_ops import owned_service
+
+        receipt = owned_service() or {}
+    else:
+        raise QualificationError("Unknown remote inference backend")
     if (receipt.get("status") != "ready" or receipt.get("profile_id") != profile.id
             or receipt.get("revision") != profile.revision
-            or (getattr(config, "modal_app", None) and receipt.get("app_name") != config.modal_app)):
-        raise QualificationError("Prepare the matching owned Modal service before qualifying or rolling out")
+            or (backend == "modal" and getattr(config, "modal_app", None)
+                and receipt.get("app_name") != config.modal_app)):
+        raise QualificationError("Attach or prepare the matching remote service before qualifying or rolling out")
     metadata = receipt.get("metadata", {}) if metadata is None else metadata
-    if (metadata.get("requested_compute_region") != receipt.get("region")
+    if backend == "external" and any(metadata.get(key) != receipt.get("metadata", {}).get(key)
+                                     for key in ("external_service", "runtime_provenance")):
+        raise QualificationError("Current external host or runtime differs from its attachment")
+    if backend == "modal" and (metadata.get("requested_compute_region") != receipt.get("region")
             or metadata.get("routing_region") != receipt.get("routing_region")):
         raise QualificationError("Current service placement differs from its ownership receipt")
     if config.call_mode == "http" and (
@@ -147,7 +181,7 @@ def current_settings(config, *, image_hw, metadata=None) -> dict:
         except (ValueError, TypeError) as exc:
             raise QualificationError(str(exc)) from None
     return qualification_settings(
-        profile, modal_app=receipt["app_name"], call_mode=config.call_mode,
+        profile, modal_app=receipt.get("app_name") if backend == "modal" else None, call_mode=config.call_mode,
         image_encoding=config.image_encoding, jpeg_quality=config.jpeg_quality,
         image_hw=image_hw, crop="center_16_9" if config.center_crop else "none",
         requested_region=metadata.get("requested_compute_region"),
@@ -155,7 +189,8 @@ def current_settings(config, *, image_hw, metadata=None) -> dict:
         prediction_queue_threshold=config.prediction_queue_threshold,
         max_observation_age_s=getattr(config, "max_observation_age_s", 2.0),
         execution_mode=getattr(config, "execution_mode", "eager"), task=getattr(config, "task", None),
-        metadata=metadata, endpoint_url=receipt.get("http_endpoint"))
+        metadata=metadata, endpoint_url=receipt.get("http_endpoint"),
+        **({"backend": backend, "external_service": name} if backend == "external" else {}))
 
 
 def settings_from_policy(config, metadata=None) -> dict:
@@ -318,7 +353,7 @@ def _check_http_evidence(settings, direct, integrated, reasons, requested):
                               "http_session_expires_at": settings.get("http_session_expires_at"),
                               "http_endpoint_sha256": hashlib.sha256(settings["http_endpoint"].encode()).hexdigest()}
             if any(not _same_value(timing.get(key), value) for key, value in expected_route.items()
-                   if settings.get("http_ingress") == "tunnel" or key in timing):
+                   if settings.get("http_ingress") in ("tunnel", "ssh") or key in timing):
                 reasons.append(f"A {label} HTTP request used another ingress, endpoint or session expiry")
                 break
             size = row.get("wire_payload_bytes")
@@ -411,7 +446,18 @@ def _assess(settings, direct, integrated, requested):
     # This also accounts for shorter returned chunks and postprocessing time.
     actual_horizon_p05 = -percentile_summary(-value for value in measured_horizons)["p95"] if measured_horizons else 0.0
     usable_horizon = min(usable_horizon, actual_horizon_p05)
-    if (not isinstance(direct.get("measurement"), str) or "real Modal" not in direct["measurement"]
+    external = settings.get("backend") == "external"
+    if external:
+        expected_provenance = {"backend": "external", "external_service": settings.get("external_service"),
+                               "transport": "http"}
+        for report in (direct, integrated):
+            if not _same_value(report.get("service_provenance"), expected_provenance):
+                reasons.append("External qualification requires measured provider, service and host provenance")
+        options = _mapping(integrated.get("policy_options"), "integrated external policy options", reasons)
+        if (options.get("backend") != "external"
+                or options.get("external_service") != settings.get("external_service_name")):
+            reasons.append("Integrated execution selected another external service")
+    elif (not isinstance(direct.get("measurement"), str) or "real Modal" not in direct["measurement"]
             or not isinstance(integrated.get("source"), str) or "real Modal" not in integrated["source"]):
         reasons.append("Qualification requires real Modal measurements through the final integrated path")
     for report in (direct, integrated):
@@ -420,9 +466,11 @@ def _assess(settings, direct, integrated, requested):
         metadata = direct_readiness if report is direct else integrated_readiness
         if (metadata.get("profile") != settings["profile"]
                 or metadata.get("model_revision") != settings["model_revision"]
-                or metadata.get("requested_compute_region") != settings["requested_region"]
-                or metadata.get("compute_region") != settings["observed_region"]
-                or metadata.get("routing_region") != settings["routing_region"]
+                or (not external and (
+                    metadata.get("requested_compute_region") != settings["requested_region"]
+                    or metadata.get("compute_region") != settings["observed_region"]
+                    or metadata.get("routing_region") != settings["routing_region"]))
+                or (external and not _same_value(metadata.get("external_service"), settings.get("external_service")))
                 or report.get("image_hw") != settings["image_hw"]):
             reasons.append("Measured model, image dimensions or placement do not match the requested qualification")
     if (direct_readiness.get("instance_id") is None
@@ -492,12 +540,23 @@ def build_qualification(settings: dict, *, direct: dict, integrated: dict,
             "direct": direct, "integrated": integrated}
 
 
-def _path(profile: str) -> Path:
+def _path(profile: str, *, backend="modal", external_service=None) -> Path:
+    if backend == "external":
+        from yamkit.external_ops import _name
+
+        return DATA_DIR / "qualifications" / f"external-{_name(external_service)}-{get_profile(profile).id}.json"
+    if backend != "modal":
+        raise QualificationError("Unknown qualification backend")
     return DATA_DIR / "qualifications" / f"modal-{get_profile(profile).id}.json"
 
 
+def _settings_path(settings: dict) -> Path:
+    return _path(settings["profile"], backend=settings.get("backend", "modal"),
+                 external_service=settings.get("external_service_name"))
+
+
 def save_qualification(record: dict, path: Path | None = None) -> Path:
-    path = _path(record["settings"]["profile"]) if path is None else Path(path)
+    path = _settings_path(record["settings"]) if path is None else Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(record, indent=2, allow_nan=False) + "\n")
@@ -507,7 +566,7 @@ def save_qualification(record: dict, path: Path | None = None) -> Path:
 
 def validate_qualification(settings: dict, *, path: Path | None = None, now: float | None = None) -> dict:
     """Validate current-host evidence; callers must still enforce hardware guards."""
-    path = _path(settings["profile"]) if path is None else Path(path)
+    path = _settings_path(settings) if path is None else Path(path)
     try:
         if path.stat().st_size > 10_000_000:
             raise QualificationError("Qualification record exceeds its bounded size")
@@ -531,4 +590,5 @@ def validate_qualification(settings: dict, *, path: Path | None = None, now: flo
         record["assessment"] = assessment
         return record
     except (OSError, KeyError, TypeError, AttributeError, json.JSONDecodeError) as exc:
-        raise QualificationError("No valid local qualification record; run yamkit modal-qualify on this host") from exc
+        command = "external-qualify" if settings.get("backend") == "external" else "modal-qualify"
+        raise QualificationError(f"No valid local qualification record; run yamkit {command} on this host") from exc
