@@ -279,21 +279,21 @@ as in teleop bound every commanded step.
 For optional Modal GPU inference and browser deployment, see [docs/MODAL.md](docs/MODAL.md).
 Local remains the default. MolmoAct2-YAM has a reviewed source mapping and a local synchronous
 path. The latest supervised five-second trial ran through the Lenovo UI and completed 132 bimanual
-policy dispatches at about 29.9 Hz after the first action, with zero queue underruns and normal
-arm release. Live previews, three saved videos, joint plots and full metrics are available in
-**Runs → `20260908-181138-rollout-deefc67a`**. **The orange-lid manipulation task failed**;
-this demonstrates the managed control and debugging path, not useful task behavior. See the
+policy dispatches at about 29.9 Hz after the first action, with zero queue underruns. Both followers
+returned home in 3.3 seconds before release; the operator confirmed homing and improved camera
+playback. Live previews, three 30 fps videos, joint plots and full metrics are available in
+**Runs → `20260908-184743-rollout-578b88cc`**. **The orange-lid manipulation task failed**, and
+the operator still reported abrupt, jittery motion. See the
 [physical trial evidence and limits](docs/VLA_HTTP_ROLLOUT.md).
 
 **Physical Modal rollout requires a current passing qualification on the actual robot host**,
 separate mapping acceptance and explicit supervised confirmation. The trial's retained session
 was retired; each new session must qualify again. The Inference page can now attach the exact
 qualified retained session and launch a managed trial with optional debug video and joint traces.
-The supervised UI trial saved 25 frames per camera at 5 fps with no capture drops or trace/export
-errors; policy control remained at 30 Hz. The subsequent update captures every 30 Hz observation
-with its playback timestamp and returns the followers home slowly after normal completion.
-Stop, faults and expiry retain prompt release. These two changes still need supervised hardware
-validation. The previous trial's GPU shutdown was verified. Expired, stale or
+The latest supervised UI trial saved all 150 frames per camera at nominal 30 fps, preserving
+observation timestamps, with no capture drops or trace/export errors. Normal completion returns
+the followers home slowly; Stop, faults and expiry retain prompt release. Warm physical inference
+requests measured 299 ms p95. The trial's GPU shutdown was verified. Expired, stale or
 mismatched sessions remain blocked; readiness or confirmation alone cannot enable motion. See the
 [managed trial and debugging workflow](docs/VLA_DEBUGGING.md). Checks and probes remain available. SmolVLA
 and pi05 base profiles support native checks and are blocked from physical rollout because they

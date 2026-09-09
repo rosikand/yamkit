@@ -10,8 +10,10 @@ direct raw LeRobot rollout cannot bypass that runner. Cloud workspaces cannot ac
 physical Modal rollout. The Lenovo browser can attach an exact qualified retained
 session; expired or mismatched sessions remain blocked. Normal completion now
 returns the followers home slowly, with Stop and faults retaining prompt release.
-The 30 fps timestamped debug capture and return-home update still needs supervised
-hardware validation. See the current [debugging workflow](VLA_DEBUGGING.md).
+The latest supervised trial saved all 150 frames per camera at nominal 30 fps and
+completed return home in 3.3 seconds; the operator confirmed both improvements.
+Task completion and abrupt policy motion remain unresolved. See the current
+[debugging workflow](VLA_DEBUGGING.md).
 See [the H100 and image-fidelity investigation](MOLMO_H100.md),
 [the earlier latency investigation](MODAL_LATENCY.md),
 [the performance gate](REMOTE_PERFORMANCE.md) and [staged acceptance](acceptance-test.md).

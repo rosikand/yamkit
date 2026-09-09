@@ -8,18 +8,31 @@ enable motors.
 ## Live view and existing logs
 
 Click **Show camera previews** on Inference. Open the latest debug trial under
-**Runs → `20260908-181138-rollout-deefc67a`** for all three videos, joint plots,
+**Runs → `20260908-184743-rollout-578b88cc`** for all three videos, joint plots,
 the HTML report, full metrics and console log. The operator confirmed that the
-UI and camera view seemed fine; the orange-lid manipulation task failed.
+camera feed and return home now work; the orange-lid manipulation task failed,
+and the arm motion remained abrupt and jittery.
 
 That five-second trial acquired 150 observations and completed 132 bimanual
 dispatches at about 29.9 Hz after the first action, with zero queue underruns.
-The followers released normally about 473 ms after Stop detection. Debug video
-contains 25 frames per camera at 5 fps, with no dropped samples, overflow or
-trace/export errors. Five fps is the video sampling rate, not the control rate.
-Its 13 warm physical requests had a 399 ms p95; the separate qualification before
-motion measured 50 integrated warm requests at 312 ms p95. The GPU was stopped
+The followers returned home concurrently in 3.306 seconds, then released about
+475 ms later. Debug video contains 150 frames per camera at nominal 30 fps,
+with original observation timestamps and no dropped samples, overflow or
+trace/export errors. Its 14 warm physical requests had a 299 ms p95; the
+separate qualification before motion measured 50 integrated warm requests
+at 318 ms p95. The GPU was stopped
 with zero remaining containers verified. A fresh session is needed for another trial.
+
+The trial's console log omitted INFO phase messages because a LeRobot import
+configured logging before the CLI. The helper now initializes logging before those
+imports; fresh hardware-free subprocess tests verify all four phase messages.
+That follow-up logging fix has not been used in a new physical run. The trial's
+home metrics and the operator's confirmation establish the completed home move.
+
+The preceding **`20260908-181138-rollout-deefc67a`** run retains its original
+25-frame, 5 fps videos and release-only completion. Its 399 ms warm-request p95
+was higher than the latest run's; that comparison does not establish the cause
+of either run's jitter.
 
 The earlier **`20260909-002337-rollout-first-live`** run retains its partial console
 log and metric summary. It has no video or joint trajectory recording, and its
@@ -70,9 +83,8 @@ It does not open a second camera or robot reader. Every existing camera observat
 is copied into bounded memory at the policy's nominal 30 Hz cadence. The helper
 checks available memory before hardware startup. Video encoding, JSON export and
 plotting happen after return home and hardware release, so saving may continue
-after motion has stopped. This 30 fps capture and normal-completion homing update
-still needs its first supervised hardware validation; the saved trial above used
-the earlier 5 fps capture and release-only completion.
+after motion has stopped. The saved trial above exercised 30 fps capture and
+normal-completion homing on the rig, and the operator confirmed both improvements.
 
 - **Video:** top and both wrist cameras during the policy phase, at nominal 30 fps.
   Playback timestamps preserve observation timing and gaps rather than speeding

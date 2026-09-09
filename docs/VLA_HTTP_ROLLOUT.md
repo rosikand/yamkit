@@ -1,7 +1,58 @@
 # HTTP rollout validation — 2026-09-09
 
+## Latest trial: 30 fps capture and return home
+
+**Run `20260908-184743-rollout-578b88cc` validated capture and normal return home;
+the orange-lid task still failed.** The operator confirmed improved camera playback
+and the expected home pose, while reporting abrupt, jittery policy motion.
+This run used commit `97b78061d6b9ccc1c04f22f9524026c1104f3c0d`.
+
+The 5.018-second policy phase acquired 150 observations and completed 132 bimanual
+dispatches at 29.910 Hz after the first action. Dispatch interval p95 was 36.529 ms,
+maximum 39.786 ms. There were zero queue underruns, expired dispatches or send
+errors. The first dispatch arrived 605 ms after the policy phase started.
+Fifteen RPCs completed: the first took 521 ms; the 14 warm requests measured
+286 ms median and 299 ms p95. The separate pre-motion qualification measured
+50 integrated warm requests at 318 ms p95. One in-flight request was invalidated
+at normal shutdown; its closed-transport log message did not indicate a control fault.
+
+Normal return home began 2 ms after policy Stop and completed in 3.306 seconds.
+Release followed 475 ms later, for 3.783 seconds from policy Stop to release.
+That total includes the commanded home trajectory and is not emergency Stop latency.
+The operator confirmed that both arms reached the expected home pose.
+
+All three videos decode to 150 frames over 5.017350 seconds, retaining original
+observation presentation timestamps at nominal 30 fps. There were no missing
+observations, capture drops, overflow, trace errors or export errors. Frame-copy
+p95 was 1.332 ms, maximum 1.871 ms. The UI serves the videos with working partial
+content requests. Original RGB PNGs remain under the trace directory. Video covers
+the policy phase; live previews cover the home move. Full local evidence is under
+`.context/validation/fps-home-validation/actual-run/` (git-ignored).
+
+The helper's INFO phase messages were suppressed by import-time logging setup.
+The follow-up fix initializes normal CLI logging before the LeRobot hook imports;
+fresh hardware-free subprocess tests verify running, home, release and saving
+phase markers while preserving inherited handlers and quiet vendor logging.
+This logging fix was not part of the physical trial above.
+
+Offline trace review found requested joint changes over 0.1 rad at 12 of 13
+prediction boundaries, including a 1.503-rad left J3 change around 2.811 seconds.
+All 132 requests match saved prediction indices and nominal deadlines; adjacent
+predictions also disagree at closely matched future times. Sent joint steps remain
+limited to 0.030 rad, but repeated direction reversals persist. This points toward
+prediction continuity as an investigation target; it does not establish why the
+predictions differ or justify changing safety clamps. No smoothing change has
+been deployed or physically tested.
+
+After completion, the UI was idle and both follower CAN transmit counters were
+unchanged during a two-second read-only check. The retained GPU was stopped with
+zero containers verified. No additional physical run was performed. The improved
+latency and zero underruns do not establish smooth motion or successful manipulation.
+
+## Previous trial: initial managed debug capture
+
 **The managed UI/debug rollout completed; the orange-lid manipulation task still failed.**
-The latest Lenovo run is **`20260908-181138-rollout-deefc67a`** in the dashboard's
+The preceding Lenovo run is **`20260908-181138-rollout-deefc67a`** in the dashboard's
 Runs list. Its five-second policy phase acquired 150 observations and completed
 132 bimanual action dispatches, about 29.925 Hz from the first to last completed
 dispatch. There were zero queue underruns or expired dispatches. Both followers
@@ -31,8 +82,8 @@ original scope.
 The subsequent software update keeps the stock 30 Hz action cadence, records every
 observation with its video presentation timestamp, and adds a bounded slow return
 home after successful duration completion. Operator Stop, faults and expiry retain
-release without an additional home move. These changes are not validated by the
-earlier physical run; their supervised test is pending. The model's pinned
+release without an additional home move. The earlier physical run did not validate
+these changes; the latest trial above now does. The model's pinned
 [dataset metadata](https://huggingface.co/datasets/allenai/MolmoAct2-BimanualYAM-Dataset/blob/e9f21ae15074330839f2ac25ed4b49d76dfa1f9c/meta/info.json)
 specifies 30 fps. In the recorded trial, the policy requested approximately
 1.3-radian joint changes at a chunk transition while the configured clamps limited

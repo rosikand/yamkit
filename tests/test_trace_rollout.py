@@ -1,6 +1,10 @@
 """All execution uses fake objects/stubbed runtime methods; no device or cloud calls."""
 import importlib.util
 import json
+import logging
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,6 +35,9 @@ def forbid_hardware(monkeypatch):
     # Fake CLI tests need no full-size allocation. Dedicated reservation tests
     # exercise the real method against a tiny pool and synthetic Linux limits.
     monkeypatch.setattr(module.Collector, "reserve_frames", lambda *_: None)
+    level = logging.getLogger().level
+    yield
+    logging.getLogger().setLevel(level)
 
 
 def test_default_plan_does_not_execute(monkeypatch, capsys):
@@ -441,4 +448,68 @@ def test_insufficient_memory_stops_before_canonical_cli_can_open_hardware(tmp_pa
     result = json.loads(capsys.readouterr().out)
     assert result["rollout_error_type"] == "MemoryError"
     summary = json.loads((Path(result["trace_directory"]) / "summary.json").read_text())
+    assert summary["resources_released"] is True and summary["frame_count"] == 0
+
+
+@pytest.mark.parametrize("preconfigured_warning_handler", [False, True])
+def test_fresh_process_hooks_and_reservation_preserve_ui_phase_logs(tmp_path, preconfigured_warning_handler):
+    # Import order matters: pytest has already imported LeRobot and configured
+    # logging. Only a fresh interpreter reproduces its import-time basicConfig.
+    program = textwrap.dedent('''
+        import importlib.util
+        import logging
+        import sys
+        from pathlib import Path
+
+        root = Path(sys.argv[1])
+        spec = importlib.util.spec_from_file_location('trace_rollout', root / 'scripts/trace_rollout.py')
+        trace = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(trace)
+        from yamkit import cli, paths
+
+        if sys.argv[3] == 'True':
+            logging.basicConfig(level=logging.WARNING)
+        original_handlers = tuple(logging.getLogger().handlers)
+        original_collector = trace.Collector
+
+        class TinyCollector(original_collector):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.frame_capacity = 1
+
+        trace.Collector = TinyCollector
+        trace.available_memory_bytes = lambda: trace.MEMORY_HEADROOM_BYTES + trace.FRAME_TRIPLET_BYTES
+        trace.render_report = lambda *_: None
+
+        def fake_physical_cli(*, args, standalone_mode):
+            # execute has installed the real hooks and prefaulted a tiny real
+            # frame pool, but only this stub can run instead of the hardware CLI.
+            assert args[0] == 'rollout' and standalone_mode is False
+            cli._main(verbose=False)
+            logger = logging.getLogger('yamkit.remote_rollout')
+            for phase in ('running', 'returning_home', 'releasing', 'released'):
+                logger.info('[yamkit-rollout] ' + phase)
+            logging.getLogger().handle(logging.LogRecord('root', logging.INFO,
+                str(paths.ROOT / 'third_party/i2rt/fake_vendor.py'), 1,
+                'SYNTHETIC_VENDOR_INFO_MUST_STAY_QUIET', (), None))
+            cli._print_inference_result({'synthetic_fixture': True, 'hardware_opened': False})
+
+        cli.app = fake_physical_cli
+        paths.ROOT = Path(sys.argv[2])
+        args = trace.parse_args(['--run', '--modal-app', 'yamkit-vla-fake-only', '--confirm-supervised'])
+        assert trace.execute(args) == 0
+        assert logging.getLogger().level == logging.INFO
+        if original_handlers:
+            assert tuple(logging.getLogger().handlers) == original_handlers
+    ''')
+    result = subprocess.run([sys.executable, "-c", program, str(Path(__file__).resolve().parents[1]),
+                             str(tmp_path), str(preconfigured_warning_handler)],
+                            capture_output=True, text=True, timeout=40, check=False)
+    assert result.returncode == 0, result.stderr
+    for phase in ("running", "returning_home", "releasing", "released"):
+        assert sum(line.endswith(f"[yamkit-rollout] {phase}") for line in result.stderr.splitlines()) == 1
+    assert "SYNTHETIC_VENDOR_INFO_MUST_STAY_QUIET" not in result.stderr
+    final = json.loads(result.stdout.splitlines()[-1])
+    summary = json.loads((Path(final["trace_directory"]) / "summary.json").read_text())
+    assert summary["memory_preflight"]["frame_bytes"] == module.FRAME_TRIPLET_BYTES
     assert summary["resources_released"] is True and summary["frame_count"] == 0

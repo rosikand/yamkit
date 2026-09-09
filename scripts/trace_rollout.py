@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 import os
 import re
@@ -505,6 +506,13 @@ def artifact_directory(root, requested, stamp):
 def execute(args):
     from yamkit import cli
     from yamkit.paths import ROOT
+
+    # LeRobot's import-time logging.debug can install a default WARNING handler
+    # before Typer's callback, making its later basicConfig(INFO) a no-op. Set up
+    # the normal CLI filters before hook imports and explicitly select this
+    # helper's normal INFO verbosity without replacing inherited handlers.
+    cli._setup_logging(verbose=False)
+    logging.getLogger().setLevel(logging.INFO)
 
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     outdir = artifact_directory(ROOT, args.output_dir, stamp)
