@@ -101,11 +101,21 @@ planner, for the same 2,190 model rows. Every literal point and original row end
 the pinned formula. These frozen predictions establish implementation agreement, not a physical
 trajectory or successful placement.
 
-The initial model state and interpolation anchor use the first measured observation before
-inference. Thereafter both use the last committed 14D command, matching the linked runner.
+Before inference, reference startup moves both followers to their configured home joints with
+both grippers fully open. The move uses the existing bounded home routine and requires enabled
+homing on both arms. Only its successful completion publishes the cached 14D start command;
+Stop or startup failure prevents inference. That command seeds the first model state and
+interpolation anchor. Subsequent requests use the last committed 14D command. This matches the
+upstream reset's full-vector command cache. Empty the grippers before an approved reference run.
+Ordinary and completion homing still preserve the current gripper opening.
+
+The recorded contract identifies this startup with
+`reference_contract.startup=configured_home_open_grippers_then_cached_start`. Earlier literal
+runs without that field preserved the previous gripper opening and seeded from measured state.
 Measured encoders remain in monitoring and hardware guards. RGB comes from the initial or latest
 post-step observation. The extra observation read at each model row matches upstream's row-anchor
-read; its images are not selected for inference.
+read; its images are not selected for inference. Startup and return-home are outside policy video
+and trace capture.
 
 Response validation and plan admission must finish within the configured observation freshness
 budget, at most two seconds, and the finite RPC timeout. Once admitted, the plan is bounded by
@@ -119,8 +129,10 @@ Reference qualification uses the same real model with generated images and fake 
 direct samples and 50 warm, fully consumed integrated chunks, with the first sample excluded.
 The integrated diagnostic allows at most 1,800 seconds with the same literal rate algorithm;
 incomplete evidence fails. It checks exact row counts, full chunk consumption, direct sends and
-zero SDK sends during RPC against the versioned literal contract, so older reference evidence
-cannot qualify this implementation.
+zero SDK sends during RPC against the versioned literal contract. It separately checks actual
+fake-arm startup sends, the completed startup cache and the first policy request state. Startup
+and cleanup sends do not count as policy points. Older reference evidence cannot qualify this
+implementation.
 Its latency margin uses the synchronous admission budget, while async uses the remaining queue
 horizon. The diagnostic limit does not extend physical rollout or capture limits.
 

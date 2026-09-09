@@ -433,6 +433,9 @@ def validate_remote_rollout(cfg):
         if str(getattr(color, "value", color)).lower() != "rgb":
             raise ValueError("Remote inference requires RGB camera configuration")
     handles = [robot._h] if hasattr(robot, "_h") else list(robot._sides.values())
+    if getattr(cfg.policy, "controller_mode", "async") == "reference" and any(
+            handle.home_speed <= 0 for handle in handles):
+        raise ValueError("Reference startup requires enabled home motion before inference")
     for side, handle in getattr(robot, "_sides", {}).items():
         if handle.spec.side != side:
             raise ValueError("The configured arm side must match its physically verified rig side")
@@ -639,6 +642,8 @@ def run_remote_rollout(cfg, *, shutdown_event: Event | None = None):
         raise ValueError("Remote rollout requires one explicit bounded task instruction")
     cfg.policy.task = cfg.task
     validate_remote_rollout(cfg)
+    reference = getattr(cfg.policy, "controller_mode", "async") == "reference"
+    cfg.robot._reference_startup = reference
     if shutdown_event is None:
         from lerobot.utils.process import ProcessSignalHandler
 
@@ -656,7 +661,6 @@ def run_remote_rollout(cfg, *, shutdown_event: Event | None = None):
             ctx = build_rollout_context(cfg, shutdown_event)
         robot = ctx.hardware.robot_wrapper.inner
         robot.validate_action_target(ctx.hardware.initial_position)
-        reference = getattr(cfg.policy, "controller_mode", "async") == "reference"
         if reference:
             from yamkit.arm import MAX_COMMAND_DT
             from yamkit.inference.reference import ReferenceCommandGuard

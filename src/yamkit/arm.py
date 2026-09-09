@@ -327,11 +327,14 @@ class YamArm:
         state = self.read()
         self.command(state.q, state.gripper if self.spec.has_motor_gripper else None, limit_speed=False)
 
-    def go_home(self, speed: float = 0.5, *, compliant: bool = False, release: bool = False, stop: threading.Event | None = None) -> float:
-        """Move home at no more than configured target speed; release on cancellation/error."""
+    def go_home(self, speed: float = 0.5, *, compliant: bool = False, release: bool = False,
+                stop: threading.Event | None = None, gripper: float | None = None) -> float:
+        """Move home within configured speeds; preserve the gripper unless explicitly requested."""
         speed = finite_scalar(speed, "home speed", positive=True)
         state = self.read()
-        target, measured = self._prepare_command(self.home_pose, state.gripper if self.spec.has_motor_gripper else None, False)
+        if gripper is None:
+            gripper = state.gripper if self.spec.has_motor_gripper else None
+        target, measured = self._prepare_command(self.home_pose, gripper, False)
         dist = float(np.max(np.abs(measured[:N_JOINTS] - target[:N_JOINTS])))
         duration = max(dist / min(speed, self.max_joint_speed), HOME_MIN_S)
         if stop is not None and stop.is_set():
@@ -464,7 +467,7 @@ def go_home_all(jobs: list[tuple[YamArm, dict[str, Any]]], *, stop: threading.Ev
     # Check every home target before any thread changes gains or sends a command.
     for arm, kw in jobs:
         finite_scalar(kw.get("speed", 0.5), "home speed", positive=True)
-        arm.validate_command(arm.home_pose, limit_speed=False)
+        arm.validate_command(arm.home_pose, kw.get("gripper"), limit_speed=False)
     stop = stop if stop is not None else threading.Event()
     begin = threading.Event()
     errors: list[BaseException] = []

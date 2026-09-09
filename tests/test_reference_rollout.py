@@ -15,6 +15,11 @@ TASK = "put the red cube into the black container"
 
 @pytest.fixture
 def reference_config(rollout_config):
+    from yamkit.config import RigConfig
+
+    rig = RigConfig.load(rollout_config.robot.rig)
+    rig.control.home_speed = .5
+    rig.save()
     rollout_config.task = rollout_config.policy.task = TASK
     rollout_config.policy.controller_mode = "reference"
     rollout_config.duration = 8
@@ -107,7 +112,7 @@ def test_postclamp_gripper_intervention_faults_instead_of_breaking_coordination(
 
     def changed(robot, action, **kwargs):
         sent = original(robot, action, **kwargs)
-        sent["left_gripper.pos"] += .001
+        sent["left_gripper.pos"] -= .001  # The startup point is now fully open; keep the injected mismatch in bounds.
         return sent
 
     monkeypatch.setattr(BiYamFollower, "send_reference_action", changed)

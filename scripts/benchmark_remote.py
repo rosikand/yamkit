@@ -148,6 +148,10 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
     stop = ObservedStop()
     robots = []
     execution_times = []
+    sdk_sends = []
+    reference = (policy_options or {}).get("controller_mode", "async") == "reference"
+    sdk_phase = "startup" if reference else "policy"
+    startup_evidence = {}
     transport = None
 
     if (not np.isfinite(duration) or not 0 < duration <= 1800 or not delays
@@ -244,6 +248,8 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
         def predict_chunk(self, request, timeout_s):
             event = {"started": time.monotonic(), "mode": request.get("mode", "robot"),
                      "task": request["task"], "execution_mode": request.get("execution_mode", "eager")}
+            if reference and event["mode"] == "robot" and "first_policy_state" not in startup_evidence:
+                startup_evidence["first_policy_state"] = list(request.get("state", []))
             self.requests.append(event)
             response = self.inner.predict_chunk(request, timeout_s)
             event["returned"] = time.monotonic()
@@ -258,7 +264,10 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
 
         def command(value):
             original(value)
-            execution_times.append(time.monotonic())
+            at = time.monotonic()
+            execution_times.append(at)
+            sdk_sends.append({"at": at, "phase": sdk_phase, "arm": spec.name,
+                              "target": np.asarray(value).tolist()})
 
         robot.command_joint_pos = command
         robots.append(robot)
@@ -276,7 +285,8 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
                       gripper="yam_teaching_handle", can_serial=f"FAKE-LEADER-{side}")
                      for side in ("left", "right")})
         rig = RigConfig(arms=arms, pairs=[PairSpec(f"{side}_leader", f"{side}_follower")
-                                         for side in ("left", "right")], control=ControlSpec(home_speed=0))
+                                         for side in ("left", "right")],
+                        control=ControlSpec(home_speed=0.5 if reference else 0))
         rig.cameras = {key: {"type": "opencv", "index_or_path": i, "width": image_hw[1],
                             "height": image_hw[0], "fps": 30} for i, key in enumerate(profile.image_keys)}
         rig.save(Path(temporary) / "rig.yaml")
@@ -291,6 +301,42 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
         stack.enter_context(patch("lerobot_robot_yamkit.yam_follower.claim_from_env",
                                   lambda names: CameraLease()))
         stack.enter_context(patch("lerobot_robot_yamkit.yam_follower.start_from_env", lambda *a, **k: NullPreview()))
+        if reference:
+            from yamkit.reference_strategy import ReferenceStrategy
+
+            original_run = ReferenceStrategy.run
+
+            def observed_policy_phase(strategy, ctx):
+                # This boundary is after real plugin connect/startup home and
+                # before the caller's normal completion home. Do not replace
+                # either home operation or infer the phase from SDK target values.
+                nonlocal sdk_phase
+                cached = getattr(ctx.hardware.robot_wrapper.inner, "_reference_start_action", None)
+                names = list(profile.action_names)
+                expected = [value for side in ("left", "right")
+                            for value in [*rig.arms[f"{side}_follower"].home_pose, 1.0]]
+                latest = {side: next((row for row in reversed(sdk_sends)
+                                    if row["arm"] == f"{side}_follower"), None)
+                          for side in ("left", "right")}
+                startup_evidence.update(
+                    home_speed=rig.control.home_speed,
+                    configured_start_action=dict(zip(names, expected, strict=True)),
+                    cached_start_action=dict(cached) if isinstance(cached, dict) else None,
+                    last_startup_sdk_action=(dict(zip(names, [value for side in ("left", "right")
+                                                             for value in latest[side]["target"]], strict=True))
+                                             if all(latest.values()) else None),
+                    last_startup_sdk_send_monotonic_s={side: row["at"] if row else None
+                                                     for side, row in latest.items()},
+                    phase_boundary="ReferenceStrategy.run",
+                    policy_phase_started_monotonic_s=time.monotonic())
+                sdk_phase = "policy"
+                try:
+                    return original_run(strategy, ctx)
+                finally:
+                    sdk_phase = "cleanup"
+                    startup_evidence["policy_phase_ended_monotonic_s"] = time.monotonic()
+
+            stack.enter_context(patch.object(ReferenceStrategy, "run", observed_policy_phase))
         options = {"modal_app": "fake-benchmark", **(policy_options or {}), "task": task}
         cfg = RolloutConfig(robot=BiYamFollowerConfig(rig=str(rig.path)),
                             policy=YamkitRemoteConfig(**options), device="cpu",
@@ -331,6 +377,11 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
     sdk_overlap = [sum(event["started"] < at < event["returned"] for at in execution_times)
                    for event in transport.requests if "returned" in event]
     overlap = [count // 2 for count in sdk_overlap]
+    if reference:
+        startup_evidence["sdk_sends_by_phase"] = {
+            phase: {side: sum(row["phase"] == phase and row["arm"] == f"{side}_follower" for row in sdk_sends)
+                    for side in ("left", "right")} for phase in ("startup", "policy", "cleanup")}
+        startup_evidence["sdk_total_sends"] = len(sdk_sends)
     external = getattr(cfg.policy, "backend", "modal") == "external"
     return {"name": name, "source": "final LeRobot worker/strategy; fake RGB cameras and fake YAM; "
             + ("real external HTTP" if external and transport_factory else "real Modal RPC"
@@ -360,6 +411,7 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
                 event["started"] < stop.requested_at < event.get("returned", float("inf"))
                 for event in transport.requests),
             "all_fake_robots_released": all(robot.closed for robot in robots),
+            **({"reference_startup": startup_evidence} if reference else {}),
             "sdk_commands_during_completed_rpc": overlap,
             "sdk_sends_during_completed_rpc": sdk_overlap, **metrics}
 

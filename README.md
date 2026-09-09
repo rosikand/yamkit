@@ -283,7 +283,9 @@ the GPU checkout and retains host qualification before any supervised robot roll
 
 Remote MolmoAct2 also supports `--controller-mode reference`: complete 30-row chunks run
 sequentially using the linked YAM runner's literal 14D linear interpolation and post-send rate
-waits. This mode sends targets directly with `limit_speed=False`; it bypasses yamkit's command
+waits. Before inference, both followers move to their configured home poses with both grippers
+fully open, then the completed startup command seeds the model state. Start with empty grippers.
+This mode sends targets directly with `limit_speed=False`; it bypasses yamkit's command
 speed/acceleration shaping, per-step clamps and stale ramp reset. It adds no easing, extra ticks
 or commands during inference. Joint/gripper bounds, measured-state validation, Stop, finite
 request and session deadlines, and the 400 ms firmware timeout remain enabled.
@@ -305,7 +307,8 @@ yamkit rollout --policy molmoact2 --backend external --external-service lambda-g
   --arms left_follower --arms right_follower --accept-mapping --confirm-supervised
 ```
 
-This energizes both followers, runs the policy and homes after healthy completion before release.
+This energizes both followers, homes and opens both grippers, then runs the policy. Healthy
+completion homes before release, preserving the final gripper opening during return-home.
 Stop or a fault releases the followers without homing.
 See the [reference execution contract and trace schema](docs/MOLMOACT2_EXECUTION.md#reference-controller-mode)
 for timing differences from the upstream runner and the experimental validation scope.

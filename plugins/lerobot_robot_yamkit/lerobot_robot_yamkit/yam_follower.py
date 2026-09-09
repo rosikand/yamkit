@@ -121,9 +121,11 @@ class _FollowerHandle:
                     self.arm = None
 
 
-def _home_together(handles, stop=None) -> None:
+def _home_together(handles, stop=None, *, gripper=None) -> None:
     """Park several arms at the same time (used by the bimanual robot/teleoperator)."""
     jobs = [h.home_job for h in handles if h.home_job]
+    if gripper is not None:
+        jobs = [(arm, {**kwargs, "gripper": gripper}) for arm, kwargs in jobs]
     if jobs:
         logger.info("[yamkit-operator] homing")
         go_home_all(jobs, stop=stop)
@@ -367,6 +369,7 @@ class BiYamFollower(_CameraPreview, Robot):
         self.camera_configs = _rig_cameras(self.rig, config)
         self.cameras = make_cameras_from_configs(self.camera_configs)
         self._init_preview()
+        self._reference_start_action = None
         config._runtime_robot = self
 
     @property
@@ -415,6 +418,11 @@ class BiYamFollower(_CameraPreview, Robot):
         _validate_rig(self.rig)
         if any(h.arm is not None for h in self._sides.values()) or self._opened_cameras or self._camera_lease is not None:
             raise RuntimeError("previous resources remain open; call disconnect(home=False) before reconnecting")
+        self._reference_start_action = None
+        reference_startup = getattr(self.config, "_reference_startup", False)
+        if reference_startup and any(h.home_speed <= 0 or not h.spec.has_motor_gripper
+                                     for h in self._sides.values()):
+            raise ValueError("Reference startup requires enabled home motion and two motorized grippers")
         _check_session_stop(self.config)
         try:
             # Hold every required camera before either follower can be energized.
@@ -423,9 +431,20 @@ class BiYamFollower(_CameraPreview, Robot):
                 _check_session_stop(self.config)
                 h.connect(home=False)
             _check_session_stop(self.config)
-            _home_together(self._sides.values(), stop=getattr(self.config, "_session_shutdown_event", None))
+            _home_together(self._sides.values(), stop=getattr(self.config, "_session_shutdown_event", None),
+                           gripper=1.0 if reference_startup else None)
             _check_session_stop(self.config)
+            if reference_startup:
+                # These targets have just completed the bounded startup move.
+                # They are commands, not a claim that measured tracking is exact.
+                start_action = {f"{side}_{name}.pos": float(value)
+                                for side, handle in self._sides.items()
+                                for name, value in zip(handle.names, [*handle.spec.home_pose, 1.0], strict=True)}
+                self.validate_action_target(start_action)
+                _check_session_stop(self.config)
+                self._reference_start_action = start_action
         except BaseException:
+            self._reference_start_action = None
             try:
                 self.disconnect(home=False)
             except BaseException:

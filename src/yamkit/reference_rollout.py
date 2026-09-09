@@ -114,12 +114,11 @@ class ReferenceRemoteInferenceEngine(InferenceEngine):
                  "completed_steps_at_start": self.completed_steps,
                  "completed_chunks_at_start": self.completed_chunks,
                  "accepted_steps": 0, "expired_prefix_dropped": 0, "overlap_prefix_dropped": 0,
-                 "observation_state_basis": "last committed full action; measured state before first chunk"}
+                 "observation_state_basis": "last committed full action; completed startup-reset command before first chunk"}
         self.predictions.append(event)
         observation = copy(obs_frame)
-        if guard.generation:
-            observation["observation.state"] = np.array(
-                [guard.last_action[name] for name in ACTION_NAMES], dtype=np.float32)
+        observation["observation.state"] = np.array(
+            [guard.last_action[name] for name in ACTION_NAMES], dtype=np.float32)
         self._policy._observation_time = self._observation_time
         self._policy._observation_selected_time = now
         self._policy._request_deadline_monotonic_s = wait_deadline
@@ -297,7 +296,7 @@ class ReferenceRemoteInferenceEngine(InferenceEngine):
                 "partial_chunk_at_stop": self.predicted_steps != self.completed_steps,
                 "coherence_violations": self._robot.command_shaper.postclamp_modified_count,
                 "next_observation_after_full_chunk": True,
-                "policy_state_basis": "last committed 14D command; actual state remains in monitoring and hardware guards",
+                "policy_state_basis": "completed startup reset, then last committed 14D command; actual state remains in monitoring and hardware guards",
                 "deadline_basis": "fixed RPC freshness/timeout admission; approved phase and session during execution",
                 "chunks": list(self.chunk_samples), "dispatch_samples": list(self.dispatch_samples),
                 "dispatch_samples_dropped": max(0, self.executed_actions - len(self.dispatch_samples))}

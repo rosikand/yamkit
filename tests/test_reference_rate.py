@@ -59,7 +59,8 @@ def run_case(monkeypatch):
         stop = FakeStop(clock)
         events, reads, sends, notifications, rpc_inputs, seeds, telemetry = [], [], [], [], [], [], []
         monkeypatch.setattr(reference_strategy, "time", SimpleNamespace(monotonic=lambda: clock[0]))
-        inner = SimpleNamespace()
+        start_action = {name: 1.0 if "gripper" in name else .07 for name in ACTION_NAMES}
+        inner = SimpleNamespace(_reference_start_action=start_action)
         previous_observer = lambda: None
         engine = SimpleNamespace(observe_row=previous_observer, phase_deadline=None, index=0,
                                  rate_steps=0, multipoint_extra_sleep_calls=0,
@@ -150,12 +151,22 @@ def test_strategy_preserves_post_rpc_short_pair_and_post_step_policy_inputs(run_
                                                  "ordinary", "row_anchor", "ordinary"]
     assert case.notifications == [.01, .03, .04, .06]
     np.testing.assert_allclose(case.rpc_inputs, [[.01] * 14, [.04] * 14])
-    assert len(case.seeds) == 1 and case.seeds[0] == case.reads[0][2]
-    assert case.events.index(("seed", .01)) < case.events.index(("rpc", 0))
+    assert len(case.seeds) == 1 and case.seeds[0] == case.inner._reference_start_action
+    assert case.seeds[0] != case.reads[0][2]  # Measured monitoring remains separate from reset-command state.
+    assert case.events.index(("seed", .07)) < case.events.index(("rpc", 0))
     assert case.events.index(("send", 0)) < case.events.index(("read", "ordinary", 3))
     assert len(case.telemetry) == 3
     assert case.engine.observe_row is case.previous_observer
     assert not hasattr(case.inner, "_reference_observation_role")
+
+
+def test_missing_completed_startup_cache_prevents_first_policy_request(run_case):
+    case = run_case()
+    del case.inner._reference_start_action
+    with pytest.raises(RemoteFault, match="startup reset did not complete"):
+        case.strategy.run(case.ctx)
+    assert not case.rpc_inputs and not case.sends and not case.seeds
+    assert case.engine.observe_row is case.previous_observer
 
 
 @pytest.mark.parametrize("during_extra_sleep", [False, True])

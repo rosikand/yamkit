@@ -12,6 +12,7 @@ import time
 from lerobot.rollout.strategies.base import BaseStrategy
 from lerobot.rollout.strategies.core import send_next_action
 
+from yamkit.inference.client import RemoteFault
 from yamkit.inference.command_shaping import ACTION_NAMES
 from yamkit.validation import finite_scalar
 
@@ -91,7 +92,13 @@ class ReferenceStrategy(BaseStrategy):
                 return
             obs_raw = robot.get_observation()
             obs_processed = self._process_observation_and_notify(ctx.processors, obs_raw)
-            robot.command_shaper.initialize_position({name: obs_raw[name] for name in ACTION_NAMES})
+            start = getattr(robot.inner, "_reference_start_action", None)
+            if start is None:
+                raise RemoteFault("Reference startup reset did not complete before inference")
+            # The upstream reset commands both full start vectors, including
+            # open grippers, and caches that command before its first policy
+            # observation. Keep actual encoders in monitoring, not this cache.
+            robot.command_shaper.initialize_position({name: start[name] for name in ACTION_NAMES})
             logger.info("Reference strategy control loop started")
             while keep_running():
                 action = send_next_action(obs_processed, obs_raw, ctx, self._interpolator)

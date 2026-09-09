@@ -49,6 +49,18 @@ def reference_evidence(http_evidence):
           for index in range(51)], {"mode": "robot", "started": 253.02}]
     integrated["sdk_commands_during_completed_rpc"] = [0] * 52
     integrated["sdk_sends_during_completed_rpc"] = [0] * 52
+    start = {name: 1.0 if "gripper" in name else 0.0 for name in q.get_profile("molmoact2").action_names}
+    integrated["reference_startup"] = {
+        "home_speed": .5, "configured_start_action": dict(start), "cached_start_action": dict(start),
+        "last_startup_sdk_action": dict(start), "first_policy_state": list(start.values()),
+        "last_startup_sdk_send_monotonic_s": {"left": 99.1, "right": 99.2},
+        "phase_boundary": "ReferenceStrategy.run", "policy_phase_started_monotonic_s": 99.5,
+        "policy_phase_ended_monotonic_s": 253.36,
+        "sdk_sends_by_phase": {"startup": {"left": 35, "right": 35},
+                               "policy": {"left": 3060, "right": 3060},
+                               "cleanup": {"left": 0, "right": 0}},
+        "sdk_total_sends": 6190,
+    }
     return settings, direct, integrated
 
 
@@ -94,6 +106,46 @@ def test_missing_literal_contract_cannot_reuse_prior_reference_evidence(referenc
     assert not assessment(reference_evidence)["qualified"]
 
 
+@pytest.mark.parametrize("field,value", [
+    ("home_speed", 0), ("home_speed", False), ("home_speed", float("nan")),
+    ("cached_start_action", None), ("configured_start_action", {}), ("last_startup_sdk_action", {}),
+    ("first_policy_state", []), ("first_policy_state", [0.0] * 14),
+    ("phase_boundary", "before_startup"), ("policy_phase_started_monotonic_s", 101),
+    ("policy_phase_ended_monotonic_s", 250), ("last_startup_sdk_send_monotonic_s", {"left": 100, "right": 99}),
+    ("sdk_sends_by_phase", {}), ("sdk_total_sends", 0),
+])
+def test_reference_requires_real_open_home_before_the_counted_policy_phase(reference_evidence, field, value):
+    reference_evidence[2]["reference_startup"][field] = value
+    assert not assessment(reference_evidence)["qualified"]
+
+
+def test_reference_without_startup_evidence_cannot_reuse_pre_reset_qualification(reference_evidence):
+    reference_evidence[2].pop("reference_startup")
+    assert not assessment(reference_evidence)["qualified"]
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize("pose", ["configured_start_action", "cached_start_action", "last_startup_sdk_action"])
+def test_either_partially_closed_start_gripper_fails_reference_qualification(reference_evidence, side, pose):
+    reference_evidence[2]["reference_startup"][pose][f"{side}_gripper.pos"] = .365
+    assert not assessment(reference_evidence)["qualified"]
+
+
+def test_reference_startup_and_home_sends_cannot_be_counted_as_policy_points(reference_evidence):
+    startup = reference_evidence[2]["reference_startup"]
+    startup["sdk_sends_by_phase"]["startup"]["left"] -= 1
+    startup["sdk_sends_by_phase"]["policy"]["left"] += 1
+    # Total writes stay unchanged: the phase partition itself must be checked.
+    assert not assessment(reference_evidence)["qualified"]
+
+
+def test_reference_startup_cannot_only_populate_cache_without_sdk_home_commands(reference_evidence):
+    startup = reference_evidence[2]["reference_startup"]
+    startup["sdk_total_sends"] -= startup["sdk_sends_by_phase"]["startup"]["right"]
+    startup["sdk_sends_by_phase"]["startup"]["right"] = 0
+    assert not assessment(reference_evidence)["qualified"]
+
+
 @pytest.mark.parametrize("delta,count", [
     (0.0, 1), (0.009, 1), (0.019, 1), (0.02, 2), (0.029, 2), (0.9999, 99), (1.0, 100), (9.0, 100),
 ])
@@ -109,6 +161,9 @@ def test_literal_row_floor_cap_and_single_target_branch(reference_evidence, delt
     proof["rate_steps"] += count - 2
     proof["multipoint_extra_sleep_calls"] += (count if count > 1 else 0) - 2
     integrated["executed_actions"] += count - 2
+    for side in ("left", "right"):
+        integrated["reference_startup"]["sdk_sends_by_phase"]["policy"][side] += count - 2
+    integrated["reference_startup"]["sdk_total_sends"] += 2 * (count - 2)
     assert assessment(reference_evidence)["qualified"]
     # Matching aggregate counts cannot disguise one added interpolation point.
     event["reference_row_counts"][0] += 1
@@ -117,6 +172,9 @@ def test_literal_row_floor_cap_and_single_target_branch(reference_evidence, delt
     proof["interpolation_dispatches"] += 1
     proof["rate_steps"] += 1
     integrated["executed_actions"] += 1
+    for side in ("left", "right"):
+        integrated["reference_startup"]["sdk_sends_by_phase"]["policy"][side] += 1
+    integrated["reference_startup"]["sdk_total_sends"] += 2
     assert not assessment(reference_evidence)["qualified"]
 
 

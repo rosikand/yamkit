@@ -169,7 +169,9 @@ def test_next_chunk_uses_committed_state_or_stops_at_short_phase_boundary(monkey
         shutdown_event=threading.Event(), duration=duration, gripper_max_step=grips)
     engine.start()
     engine.resume()
-    observation = {"observation.state": np.zeros(14, dtype=np.float32),
+    # Encoders differ from the commanded reset. The first request must already
+    # use the reset cache, rather than waiting until a policy point is sent.
+    observation = {"observation.state": np.full(14, .7, dtype=np.float32),
                    **{f"observation.images.{name}": np.zeros((2, 2, 3), dtype=np.uint8)
                       for name in get_profile("molmoact2").image_keys}}
     deadline = None
@@ -210,4 +212,4 @@ def test_next_chunk_uses_committed_state_or_stops_at_short_phase_boundary(monkey
     assert len(batches) == 2
     assert torch.allclose(batches[1], torch.full((1, 14), .02))
     assert np.array_equal(observation["observation.state"], np.full(14, .5, dtype=np.float32))
-    assert measured_reads == []  # ReferenceStrategy captures the initial raw seed before the RPC.
+    assert measured_reads == []  # RPC uses the committed cache without reading or reseeding encoders.

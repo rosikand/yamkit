@@ -33,6 +33,7 @@ REFERENCE_CONTRACT = {
     "rate_clock": "monotonic_interruptible_100us",
     "dispatch": "send_reference_action_limit_speed_false",
     "state": "last_committed_14d_command",
+    "startup": "configured_home_open_grippers_then_cached_start",
 }
 _RUNNER_CONTEXT = ContextVar("yamkit_validated_remote_runner", default=False)
 
@@ -465,6 +466,47 @@ def _check_reference_evidence(settings, integrated, completed, reasons, counter)
     dispatches = counter(proof.get("interpolation_dispatches"), "reference interpolation dispatches", minimum=1)
     if dispatches != expected_dispatches or dispatches != integrated.get("executed_actions"):
         reasons.append("Reference executed commands do not exhaust exactly the literal interpolation points")
+    startup = _mapping(integrated.get("reference_startup"), "reference startup", reasons)
+    names = list(get_profile(settings["profile"]).action_names)
+    poses = [startup.get(key) for key in ("configured_start_action", "cached_start_action", "last_startup_sdk_action")]
+    valid_poses = all(isinstance(pose, dict) and set(pose) == set(names)
+                      and all(type(value) in (int, float) and math.isfinite(value) for value in pose.values())
+                      for pose in poses)
+    if (not valid_poses or poses[0] != poses[1] or poses[0] != poses[2]
+            or any(pose.get(f"{side}_gripper.pos") != 1.0 for pose in poses if isinstance(pose, dict)
+                   for side in ("left", "right"))):
+        reasons.append("Reference startup did not command and cache the configured home with open grippers")
+    state = startup.get("first_policy_state")
+    if (not valid_poses or not isinstance(state, list) or len(state) != len(names)
+            or any(type(value) not in (int, float) or not math.isfinite(value)
+                   or not math.isclose(value, poses[0][name], rel_tol=1e-6, abs_tol=1e-7)
+                   for name, value in zip(names, state, strict=False))):
+        reasons.append("The first reference policy state does not match the commanded startup cache")
+    try:
+        phase_started = _number(startup.get("policy_phase_started_monotonic_s"), "reference policy phase start")
+        phase_ended = _number(startup.get("policy_phase_ended_monotonic_s"), "reference policy phase end")
+        last_sends = _mapping(startup.get("last_startup_sdk_send_monotonic_s"), "reference startup SDK times", reasons)
+        if (startup.get("phase_boundary") != "ReferenceStrategy.run"
+                or _number(startup.get("home_speed"), "reference startup home speed") <= 0
+                or not phase_started < phase_ended
+                or any(_number(last_sends.get(side), "last startup SDK send") > phase_started
+                       for side in ("left", "right"))):
+            reasons.append("Reference startup lacks a completed home before the actual policy phase")
+    except QualificationError as exc:
+        reasons.append(str(exc))
+        phase_started = phase_ended = None
+    counts = _mapping(startup.get("sdk_sends_by_phase"), "reference SDK phase counts", reasons)
+    total = 0
+    for phase in ("startup", "policy", "cleanup"):
+        per_arm = _mapping(counts.get(phase), f"reference {phase} SDK counts", reasons)
+        for side in ("left", "right"):
+            count = counter(per_arm.get(side), f"reference {phase} {side} SDK sends",
+                            minimum=1 if phase == "startup" else 0)
+            if phase == "policy" and count != dispatches:
+                reasons.append("Reference policy SDK sends do not match executed points independently of startup/home")
+            total += count or 0
+    if counter(startup.get("sdk_total_sends"), "reference total SDK sends") != total:
+        reasons.append("Reference SDK phase counts omit or double count commands")
     if counter(proof.get("rate_steps"), "reference rate steps") != dispatches:
         reasons.append("Reference send/sleep/observe steps do not match completed commands")
     if counter(proof.get("multipoint_extra_sleep_calls"), "reference multi-point sleeps") != expected_extra_sleeps:
@@ -489,6 +531,11 @@ def _check_reference_evidence(settings, integrated, completed, reasons, counter)
                 or counter(observed_sends, "reference observed single-arm SDK overlap") != 0):
             reasons.append("SDK commands occurred during literal reference inference")
         if request.get("mode") == "native_fixture":
+            try:
+                if phase_started is not None and _number(request.get("returned"), "native warmup return") > phase_started:
+                    reasons.append("Reference native warmup overlapped the policy phase")
+            except QualificationError as exc:
+                reasons.append(str(exc))
             continue
         if request.get("mode") != "robot" or matched >= len(completed):
             reasons.append("Reference transport requests do not match admitted predictions")
@@ -500,7 +547,9 @@ def _check_reference_evidence(settings, integrated, completed, reasons, counter)
             end = _number(request.get("returned"), "reference HTTP request return")
             prediction_start = _number(event.get("prediction_started_monotonic_s"), "reference prediction start")
             elapsed = _number(event.get("prediction_s"), "reference prediction duration")
-            if not prediction_start <= start <= end <= prediction_start + elapsed + 1e-8:
+            if (not prediction_start <= start <= end <= prediction_start + elapsed + 1e-8
+                    or phase_started is None or phase_ended is None
+                    or not phase_started <= start <= end <= phase_ended):
                 reasons.append("Reference HTTP measurement belongs to another prediction interval")
         except QualificationError as exc:
             reasons.append(str(exc))

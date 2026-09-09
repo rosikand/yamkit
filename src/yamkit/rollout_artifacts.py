@@ -164,7 +164,10 @@ see `meta.json.task_success` and operator feedback when present.
 - `trace.json.events`: `observation` contains measured positions in the ordered
   14-element `summary.json.action_names`; `video_sample` joins frame_index and
   observation_index. These positions remain measured in reference mode, whose
-  model state instead uses the last committed 14D command after initialization.
+  model state instead uses the last committed 14D command. With the recorded
+  `reference_contract.startup=configured_home_open_grippers_then_cached_start`,
+  its first state is the completed home/open-grippers command; earlier literal
+  runs without this field seeded from measured state and preserved prior grip.
   In async mode, `action_dequeued` records queue deadlines. `send_start`
   contains requested arm targets, and `send_end.postclamp` contains the targets
   returned by dispatch; `speed_clamp_enabled` says whether the native clamp
@@ -180,7 +183,8 @@ see `meta.json.task_success` and operator feedback when present.
   precision. There is no exact request-to-observation ID in this schema.
   New chunks also store `policy_state`: the actual 14D robot-unit model-proxy
   input after client preprocessing. It is cached committed state in reference
-  mode after initialization; historical chunks may lack this field. Model input
+  mode, including the completed startup reset when identified by the contract;
+  historical chunks may lack this field. Model input
   image handling is unchanged.
   With `controller_mode=async`, `chunk_merge` events describe queue merges,
   discarded expired/overlap prefixes and accepted tails. Retained old queued
