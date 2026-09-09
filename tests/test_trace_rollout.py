@@ -425,6 +425,66 @@ def test_execute_uses_canonical_cli_and_preserves_full_metrics_after_fault(tmp_p
     assert json.loads(capsys.readouterr().out)["trace_directory"] == str(output)
 
 
+@pytest.mark.parametrize("released", [False, True])
+def test_shaping_fault_preserves_attached_metrics_and_release_gate(tmp_path, monkeypatch, capsys, released):
+    from lerobot_robot_yamkit.yam_follower import BiYamFollower
+
+    from yamkit import cli, paths
+    from yamkit.inference.command_shaping import (
+        ACTION_NAMES,
+        JOINT_NAMES,
+        CommandShapingFault,
+        JointCommandShaper,
+    )
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    output = tmp_path / ".context" / "rollout-traces" / "shaping-fault"
+    args = module.parse_args(["--run", "--modal-app", "yamkit-vla-test", "--confirm-supervised",
+                              "--output-dir", str(output)])
+    robot = SimpleNamespace(_sides={"left": SimpleNamespace(arm=object())},
+                            _opened_cameras=[object()], _camera_lease=object())
+    monkeypatch.setattr(BiYamFollower, "connect", lambda _robot: None)
+    initial = dict.fromkeys(ACTION_NAMES, 0.0)
+    bounds = {name: {"lower": -2, "upper": 2, "max_step": .03} for name in JOINT_NAMES}
+    shaper = JointCommandShaper(initial, bounds)
+    expected = {}
+    rendered = []
+
+    def fake_cli(**_kwargs):
+        BiYamFollower.connect(robot)  # Real tracing hook registers only this fake.
+        step = shaper.prepare(dict.fromkeys(ACTION_NAMES, .2), now=10.0)
+        sent = {**step.shaped, "left_joint_5.pos": step.shaped["left_joint_5.pos"] + .005}
+        try:
+            shaper.commit(step, sent, deadline_monotonic_s=10.03)
+        except CommandShapingFault as exc:
+            if released:
+                robot._sides["left"].arm = None
+                robot._opened_cameras.clear()
+                robot._camera_lease = None
+            # Match runner cleanup: attach without calling the CLI result printer.
+            expected.update(executed_actions=1, failed=True, command_shaping=shaper.metrics())
+            exc.metrics = expected
+            raise
+        pytest.fail("Synthetic postclamp intervention did not trigger the real shaper fault")
+
+    monkeypatch.setattr(cli, "app", fake_cli)
+    monkeypatch.setattr(module, "render_report", lambda directory: rendered.append(directory))
+    assert module.execute(args) == 1
+    metrics = json.loads((output / "metrics.json").read_text())
+    assert metrics == expected
+    assert metrics["command_shaping"]["samples"][0]["postclamp_bounds_exceeded"] is True
+    summary = json.loads((output / "summary.json").read_text())
+    assert summary["full_metrics_available"] is True
+    assert summary["resources_released"] is released
+    assert summary["rollout_error"] == {
+        "type": "CommandShapingFault", "message": "Postclamp command violated remote shaping bounds; stopping"}
+    assert summary["status"] == ("TRACE_SAVED" if released else "EXPORT_SKIPPED_RESOURCES_OPEN")
+    assert rendered == ([output] if released else [])
+    result = json.loads(capsys.readouterr().out)
+    assert result["exit_status"] == 1 and result["rollout_error_type"] == "CommandShapingFault"
+    assert result["resources_released"] is released
+
+
 @pytest.mark.parametrize("export_failure", [None, "before_summary", "after_summary"])
 def test_camera_timeout_keeps_sanitized_cause_after_cleanup_even_if_export_fails(
         tmp_path, monkeypatch, caplog, capsys, export_failure):

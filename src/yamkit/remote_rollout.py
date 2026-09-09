@@ -512,6 +512,11 @@ class _StoppableRobot(ThreadSafeRobot):
                     # Check both original arms before shaping can hide an invalid
                     # policy target. These checks never acquire another observation.
                     self.inner.validate_action_target(action)
+                    if self.command_shaper.generation == 0:
+                        # Homing may still settle during first-chunk admission.
+                        # Read current motor positions once, without camera I/O;
+                        # later commands retain the committed trajectory state.
+                        self.command_shaper.initialize_position(self.inner.get_joint_state())
                     step = self.command_shaper.prepare(action, now=time.monotonic())
                     self.inner.validate_action_target(step.shaped)
                     deadline, margin_s = self._check_dispatch()

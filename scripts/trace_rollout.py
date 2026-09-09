@@ -547,6 +547,11 @@ def execute(args):
     except BaseException as exc:  # noqa: BLE001 — preserve partial trace after normal runner cleanup.
         from yamkit.rollout_artifacts import sanitize_text
 
+        # The runner attaches complete metrics after fault cleanup. Exceptions
+        # other than RemoteFault do not pass through the CLI's result printer.
+        attached_metrics = getattr(exc, "metrics", None)
+        if isinstance(attached_metrics, dict) and (attached_metrics or collector.metrics is None):
+            collector.metrics = attached_metrics
         status, error_type = 1, type(exc).__name__
         collector.rollout_error = {"type": error_type, "message": sanitize_text(str(exc))[:2048]}
         logging.getLogger(__name__).error(

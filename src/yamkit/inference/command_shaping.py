@@ -67,6 +67,7 @@ class JointCommandShaper:
             raise CommandShapingFault("Invalid joint bounds for remote shaping")
         self.max_velocity = np.minimum(MAX_VELOCITY, self.max_step / MAX_TIME_BUDGET)
         self.position = np.array([initial[name] for name in JOINT_NAMES])
+        self.initial_position = self.position.copy()
         self.velocity = np.zeros(len(JOINT_NAMES))
         self._check_bounds(self.position)
         self.last_at = None
@@ -88,6 +89,18 @@ class JointCommandShaper:
         # mutate velocity while the dispatch thread may be preparing a step;
         # no invalidated instance can be resumed or committed again.
         self.valid = False
+
+    def initialize_position(self, initial_position: Mapping):
+        """Capture the settled pose at first dispatch, before any command is committed."""
+        if not self.valid or self.generation:
+            raise CommandShapingFault("Cannot reinitialize a used or invalidated remote command shaper")
+        initial = _action(initial_position)
+        position = np.array([initial[name] for name in JOINT_NAMES])
+        self._check_bounds(position)
+        self.position = position
+        self.initial_position = position.copy()
+        # Never reset valid: concurrent invalidation remains permanent. The
+        # first prepare and dispatch checks must still reject Stop/expiry.
 
     def prepare(self, requested: Mapping, *, now: float) -> CommandStep:
         if not self.valid:
@@ -181,6 +194,7 @@ class JointCommandShaper:
                              "tracking_lag_basis": "original requested minus sent joint command; not measured tracking error",
                              "timestamp_basis": "host command preparation; not per-motor dispatch or exposure time",
                              "grippers": "unchanged", "scope": "remote policy position commands only"},
+                "initial_joint_position": dict(zip(JOINT_NAMES, self.initial_position.tolist(), strict=True)),
                 "modified_count": self.modified_count, "postclamp_modified_count": self.postclamp_modified_count,
                 "sample_count": self.generation, "samples_dropped": max(0, self.generation - len(self.samples)),
                 "maximum_tracking_lag_rad": self.maximum_tracking_lag_rad,

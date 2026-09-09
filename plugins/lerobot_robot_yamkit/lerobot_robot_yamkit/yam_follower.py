@@ -443,10 +443,16 @@ class BiYamFollower(_CameraPreview, Robot):
         pass
 
     @check_if_not_connected
-    def get_observation(self) -> RobotObservation:
+    def get_joint_state(self) -> RobotObservation:
+        """Read current follower joint/gripper positions without acquiring cameras."""
         obs: dict = {}
         for side, h in self._sides.items():
             obs.update({f"{side}_{k}": v for k, v in h.observation().items()})
+        return obs
+
+    @check_if_not_connected
+    def get_observation(self) -> RobotObservation:
+        obs = self.get_joint_state()
         self._camera_observation(obs)
         return obs
 

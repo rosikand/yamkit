@@ -97,3 +97,25 @@ Factory tests cover both signs of raw gripper coordinates, closed/open/intermedi
 joint wrapping and normalized observation/command round trips. Existing calibration, strict
 measured-state rejection, command limits and motor timeout remain unchanged. Physical recovery
 and the complete task still require supervised validation.
+
+## First-dispatch pose correction
+
+After the gripper fix, a supervised left-only read connected and released normally with the
+gripper open. Both followers then connected and homed in run
+`20260909-022529-rollout-3eea2c74`, but its first policy dispatch triggered the postclamp
+acceleration guard. The left wrist was still settling when the shaper captured its initial
+pose; it moved from approximately −0.051 to −0.014 rad while startup admission waited for
+a sufficiently fresh chunk. The first shaped command still used the earlier pose, so the
+arm's unchanged 0.03-rad clamp altered it. Both followers released after the fault.
+
+The shaper now captures current joint/gripper state once, immediately before preparing the
+first actual policy command, without acquiring camera frames. Later commands retain their
+committed state. Initial command time, zero command velocity, target bounds, Stop/expiry checks,
+all speed/acceleration limits and postclamp rejection remain unchanged. This snapshot does not
+establish zero physical velocity. The initial joint positions are included in shaper metrics.
+
+The [1.24-second failure recording](https://huggingface.co/datasets/rohanlux/yamkit-rollouts/tree/8effa656d266a01d11998554526aa0a1deb1f4df/runs/20260909-022529-rollout-3eea2c74)
+contains 38 frames per camera and one bimanual send. Its full metrics were not exported, and
+the historical report has a broken metrics link; the archive flags that omission. Future
+fault traces preserve the metrics attached by runner cleanup, including command-shaping faults,
+while retaining the original failure and release gate. Physical validation remains pending.

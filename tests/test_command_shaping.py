@@ -225,6 +225,14 @@ class FakeBoundary:
         self.sent = []
         self.validated = []
         self.validation_hook = None
+        self.snapshot_hook = None
+        self.snapshot_count = 0
+
+    def get_joint_state(self):
+        self.snapshot_count += 1
+        if self.snapshot_hook:
+            self.snapshot_hook()
+        return action()
 
     def validate_action_target(self, target):
         self.validated.append(dict(target))
@@ -293,6 +301,52 @@ def test_reset_allows_initial_setup_but_never_restarts_a_used_or_invalidated_fil
     assert len(robot.sent) == 1
 
 
+@pytest.mark.parametrize("race", ["stop", "deadline", "session", "invalidate"])
+def test_first_snapshot_cannot_bypass_stop_expiry_or_invalidation(monkeypatch, race):
+    wrapped, robot, stop, shaper, clock = wrapper(monkeypatch)
+
+    def snapshot_hook():
+        if race == "stop":
+            stop.set()
+        elif race == "deadline":
+            clock[0] = 10.04
+        elif race == "invalidate":
+            shaper.invalidate()
+        else:
+            wrapped.session_check = lambda: (_ for _ in ()).throw(RuntimeError("session expired"))
+
+    robot.snapshot_hook = snapshot_hook
+    with pytest.raises((RuntimeError, CommandShapingFault)):
+        wrapped.send_action(action(0.5))
+    assert not robot.sent and not shaper.valid and stop.is_set()
+    wrapped.reset_shaping()
+    with pytest.raises(RuntimeError):
+        wrapped.send_action(action(0.5))
+    assert robot.snapshot_count == 1 and not robot.sent
+
+
+@pytest.mark.parametrize("field,value", [("right_joint_1.pos", float("nan")),
+                                         ("right_joint_1.pos", 3.0), ("right_gripper.pos", -0.01)])
+def test_invalid_first_measured_snapshot_rejects_both_arms(monkeypatch, field, value):
+    wrapped, robot, stop, shaper, _clock = wrapper(monkeypatch)
+    position = action()
+    position[field] = value
+    robot.get_joint_state = lambda: position
+    with pytest.raises(ValueError):
+        wrapped.send_action(action(0.5))
+    assert not robot.sent and not shaper.valid and stop.is_set()
+
+
+def test_first_snapshot_does_not_earn_extra_command_time(monkeypatch):
+    wrapped, robot, _stop, shaper, clock = wrapper(monkeypatch)
+    robot.snapshot_hook = lambda: clock.__setitem__(0, 10.02)
+    result = wrapped.send_action(action(0.5))
+    assert result[JOINT_NAMES[0]] == pytest.approx(2 / 30**2)
+    assert shaper.metrics()["samples"][0]["dt_s"] == pytest.approx(1 / 30)
+    with pytest.raises(CommandShapingFault, match="reinitialize"):
+        shaper.initialize_position(action(1.0))
+
+
 def test_plugin_original_target_validator_and_limits_never_read_or_command_hardware(rig, fake_connect):
     from lerobot_robot_yamkit import BiYamFollowerConfig
     from lerobot_robot_yamkit.yam_follower import BiYamFollower
@@ -315,5 +369,64 @@ def test_plugin_original_target_validator_and_limits_never_read_or_command_hardw
         with pytest.raises(ValueError, match="bounds"):
             robot.validate_action_target(bad)
         assert all(not fake.commands for fake in fake_connect.values())
+    finally:
+        robot.disconnect_no_home()
+
+
+@pytest.mark.parametrize("previous_command_age", [0.1, 1.24])
+def test_first_dispatch_uses_settled_pose_without_reseeding_later_commands(
+        monkeypatch, rig, fake_connect, previous_command_age):
+    """Reproduce physical startup drift while the first inference chunk is discarded."""
+    from lerobot_robot_yamkit import BiYamFollowerConfig
+    from lerobot_robot_yamkit.yam_follower import BiYamFollower
+
+    from yamkit import arm, remote_rollout
+
+    clock = [10.0]
+    for module in (arm, remote_rollout):
+        monkeypatch.setattr(module, "time", SimpleNamespace(
+            monotonic=lambda: clock[0], time=lambda: clock[0], sleep=lambda _: None))
+    rig.control.home_speed = 0
+    rig.save()
+    robot = BiYamFollower(BiYamFollowerConfig(rig=str(rig.path), cameras={}))
+    robot.connect()
+    snapshots = []
+
+    original_snapshot = robot.get_joint_state
+
+    def snapshot():
+        snapshots.append(clock[0])
+        return original_snapshot()
+
+    monkeypatch.setattr(robot, "get_joint_state", snapshot)
+    monkeypatch.setattr(robot, "_camera_observation", lambda *_: pytest.fail("Startup snapshot acquired cameras"))
+    try:
+        initial = action(gripper=0.8)
+        initial["left_joint_5.pos"] = -0.05092698558022413
+        for handle in robot._sides.values():
+            handle.arm._robot.pos[-1] = 0.8
+            handle.arm._last_cmd = handle.arm._robot.pos.copy()
+            handle.arm._last_cmd_t = clock[0] - previous_command_age
+        left = fake_connect["left_follower"]
+        left.pos[4] = -0.014305333028152845  # Settled while waiting for admission.
+        shaper = JointCommandShaper(initial, robot.joint_command_limits())
+        wrapped = remote_rollout._StoppableRobot(robot, threading.Event(), command_shaper=shaper)
+        wrapped.action_deadline = lambda: clock[0] + 0.03
+        requested = action(gripper=0.8)
+        requested["left_joint_5.pos"] = -0.0025453269481658936
+        measured = left.pos[4]
+        first = wrapped.send_action(requested)
+        assert first["left_joint_5.pos"] == pytest.approx(measured + 2 / 30**2)
+        assert shaper.metrics()["postclamp_modified_count"] == 0
+        assert shaper.metrics()["maximum_command_acceleration_rad_s2"] <= 2.0 + 1e-8
+        assert snapshots == [10.0]
+
+        # Measured tracking drift must not reset the ongoing command trajectory.
+        left.pos[4] = 0.7
+        clock[0] += 1 / 30
+        second = wrapped.send_action(requested)
+        assert snapshots == [10.0]
+        assert abs(second["left_joint_5.pos"] - first["left_joint_5.pos"]) <= 4 / 30**2 + 1e-8
+        assert shaper.generation == 2 and shaper.valid
     finally:
         robot.disconnect_no_home()
