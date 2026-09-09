@@ -52,7 +52,9 @@ def plan(duration=5, controller_mode="async"):
             "max_events": MAX_EVENTS, "max_chunks": MAX_CHUNKS,
             "observations": "Existing robot observations; local receipt timestamps, not camera exposure",
             "commands": "Requested and completed per-side post-clamp targets; failed sends are retained",
-            "production_guards_unchanged": True, "qualification_evidence": False,
+            "production_guards_unchanged": True,
+            "guard_scope": "Capture leaves the selected controller unchanged; reference explicitly disables policy speed/acceleration shaping",
+            "policy_speed_clamp_enabled": controller_mode != "reference", "qualification_evidence": False,
             "video_encoding": "Exact RGB PNGs plus near-lossless H.264 with observation-timestamp PTS, after release",
             "run_effects": "Connect cameras, energize/home both followers, run policy phase, return home after healthy duration completion, then release; Stop or a fault aborts movement and releases",
             "capture_scope": "Policy phase only; startup and return-home movement are not recorded"}
@@ -130,7 +132,7 @@ class Collector:
         self.memory_preflight = None
         self.lock = threading.RLock()
         self.counts = {"events_dropped": 0, "frames_dropped": 0, "chunks_dropped": 0,
-                       "observation_frames_seen": 0, "trace_errors": 0}
+                       "observation_frames_seen": 0, "trace_errors": 0, "reference_row_observations": 0}
         self.trace_error_types = set()
 
     def safely(self, operation, *args, **kwargs):
@@ -152,6 +154,14 @@ class Collector:
                 self.counts["events_dropped"] += 1
                 return
             self.events.append({"kind": kind, "monotonic_s": self.clock(), **values})
+
+    def row_observation(self, observation):
+        with self.lock:
+            self.counts["reference_row_observations"] += 1
+            self.event("reference_row_observation",
+                       positions={name: float(observation[name]) for name in ACTION_NAMES},
+                       rgb_retained=False,
+                       purpose="unused row-anchor camera read; policy uses post-step observation")
 
     def start_phase(self):
         self.phase_started = self.clock()
@@ -236,17 +246,20 @@ class Collector:
 def install_hooks(collector):
     """Scoped observation hooks; every production operation is called exactly once."""
     from lerobot.rollout.strategies.base import BaseStrategy
-    from lerobot_robot_yamkit.yam_follower import BiYamFollower, _FollowerHandle
+    from lerobot_robot_yamkit.yam_follower import BiYamFollower
 
     from yamkit import cli
+    from yamkit.arm import YamArm
     from yamkit.reference_rollout import ReferenceRemoteInferenceEngine
+    from yamkit.reference_strategy import ReferenceStrategy
     from yamkit.remote_policy.modeling_yamkit_remote import YamkitRemotePolicy
     from yamkit.remote_rollout import InvalidatableActionQueue, UnguidedRemoteInferenceEngine
 
     original_run = BaseStrategy.run
+    original_reference_run = ReferenceStrategy.run
     original_connect = BiYamFollower.connect
     original_observation = BiYamFollower.get_observation
-    original_send = _FollowerHandle.send
+    original_send = YamArm.command
     original_predict = YamkitRemotePolicy.predict_action_chunk
     original_merge = UnguidedRemoteInferenceEngine._record_merge
     original_get = InvalidatableActionQueue.get
@@ -265,24 +278,39 @@ def install_hooks(collector):
 
     def observation(robot):
         result = original_observation(robot)
-        collector.safely(collector.observation, result)
+        if getattr(robot, "_reference_observation_role", None) == "row_anchor":
+            if collector.active:
+                collector.safely(collector.row_observation, result)
+        else:
+            collector.safely(collector.observation, result)
         return result
 
-    def send(handle, action, **kwargs):
+    def run_reference(strategy, ctx):
+        collector.safely(collector.start_phase)
+        try:
+            return original_reference_run(strategy, ctx)
+        finally:
+            collector.safely(collector.end_phase)
+
+    def send(arm, q, gripper=None, *, limit_speed=True):
         active = collector.active
         if active:
-            collector.safely(lambda: collector.event("send_start", arm=handle.spec.name,
-                requested={key: float(value) for key, value in action.items()}))
+            collector.safely(lambda: collector.event("send_start", arm=arm.name,
+                requested={**{f"joint_{i + 1}.pos": float(value) for i, value in enumerate(q)},
+                           **({"gripper.pos": float(gripper)} if gripper is not None else {})},
+                speed_clamp_enabled=limit_speed))
         try:
-            result = original_send(handle, action, **kwargs)
+            result = original_send(arm, q, gripper, limit_speed=limit_speed)
         except BaseException as exc:
             if active:
-                collector.safely(collector.event, "send_error", arm=handle.spec.name,
+                collector.safely(collector.event, "send_error", arm=arm.name,
                                  error_type=type(exc).__name__, partial_dispatch_possible=True)
             raise
         if active:
-            collector.safely(lambda: collector.event("send_end", arm=handle.spec.name,
-                postclamp={key: float(value) for key, value in result.items()}))
+            collector.safely(lambda: collector.event("send_end", arm=arm.name,
+                postclamp={f"{name}.pos": float(value) for name, value in zip(
+                    [*[f"joint_{i + 1}" for i in range(6)], "gripper"], result, strict=False)},
+                speed_clamp_enabled=limit_speed))
         return result
 
     def predict(policy, *args, **kwargs):
@@ -315,8 +343,9 @@ def install_hooks(collector):
 
     with ExitStack() as stack:
         for target, name, replacement in (
-            (BaseStrategy, "run", run), (BiYamFollower, "connect", connect),
-            (BiYamFollower, "get_observation", observation), (_FollowerHandle, "send", send),
+            (BaseStrategy, "run", run), (ReferenceStrategy, "run", run_reference),
+            (BiYamFollower, "connect", connect),
+            (BiYamFollower, "get_observation", observation), (YamArm, "command", send),
             (YamkitRemotePolicy, "predict_action_chunk", predict),
             (UnguidedRemoteInferenceEngine, "_record_merge", merge),
             (InvalidatableActionQueue, "get", get), (cli, "_print_inference_result", result),
@@ -447,6 +476,9 @@ def export(collector, outdir):
     summary = {"status": "EXPORTING", "qualification_evidence": False,
                "instrumented_rollout": True, "task": TASK, "duration_s": collector.duration,
                "resources_released": released, "production_guards_unchanged": True,
+               "guard_scope": "Capture leaves the selected controller unchanged; reference explicitly disables policy speed/acceleration shaping",
+               "policy_speed_clamp_enabled": collector.controller_mode != "reference",
+               "auxiliary_observation_scope": "Reference row-anchor reads retain timestamps and measured state, not unused RGB; all policy-selected/post-step RGB observations are captured",
                "rollout_error": collector.rollout_error,
                "phase_started_monotonic_s": collector.phase_started,
                "phase_ended_monotonic_s": collector.phase_ended,

@@ -28,7 +28,7 @@ def inference_build_id() -> str:
     files = [*package.joinpath("inference").glob("*.py"),
              *package.joinpath("remote_policy").glob("*.py")]
     files += [package / name for name in (
-        "remote_rollout.py", "reference_rollout.py", "deployment.py", "modal_ops.py", "modal_qualification.py",
+        "remote_rollout.py", "reference_rollout.py", "reference_strategy.py", "deployment.py", "modal_ops.py", "modal_qualification.py",
         "external_ops.py", "arm.py")]
     entries = [(str(path.relative_to(package)), path) for path in files]
     entries.append(("configs/modal-requirements.txt", Path(ROOT) / "configs/modal-requirements.txt"))

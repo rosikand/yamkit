@@ -464,7 +464,7 @@ def validate_remote_rollout(cfg):
 class _StoppableRobot(ThreadSafeRobot):
     """The upstream dispatch loop also checks Stop immediately before sending."""
 
-    def __init__(self, robot, shutdown_event, *, command_shaper=None):
+    def __init__(self, robot, shutdown_event, *, command_shaper=None, reference_dispatch=False):
         super().__init__(robot)
         self.shutdown_event = shutdown_event
         self.on_action = None
@@ -474,6 +474,7 @@ class _StoppableRobot(ThreadSafeRobot):
         self.session_check = None
         self.command_shaper = command_shaper
         self.on_commit = None
+        self._reference_dispatch = reference_dispatch
 
     def invalidate_shaping(self):
         if self.command_shaper is not None:
@@ -522,7 +523,11 @@ class _StoppableRobot(ThreadSafeRobot):
                     step = self.command_shaper.prepare(action, now=time.monotonic())
                     self.inner.validate_action_target(step.shaped)
                     deadline, margin_s = self._check_dispatch()
-                result = self.inner.send_action(step.shaped if step is not None else action)
+                target = step.shaped if step is not None else action
+                if self._reference_dispatch:
+                    result = self.inner.send_reference_action(target, dispatch_check=self._check_dispatch)
+                else:
+                    result = self.inner.send_action(target)
                 if self.on_dispatch is not None:
                     self.on_dispatch(margin_s)
                 if self.on_action is not None:
@@ -665,7 +670,8 @@ def run_remote_rollout(cfg, *, shutdown_event: Event | None = None):
             from yamkit.inference.command_shaping import JointCommandShaper
 
             shaper = JointCommandShaper(ctx.hardware.initial_position, robot.joint_command_limits())
-        ctx.hardware.robot_wrapper = _StoppableRobot(robot, shutdown_event, command_shaper=shaper)
+        ctx.hardware.robot_wrapper = _StoppableRobot(robot, shutdown_event, command_shaper=shaper,
+                                                    reference_dispatch=reference)
         engine_options = {"policy": ctx.policy.policy, "preprocessor": ctx.policy.preprocessor,
                           "postprocessor": ctx.policy.postprocessor, "robot_wrapper": ctx.hardware.robot_wrapper,
                           "task": cfg.task, "fps": cfg.fps, "shutdown_event": shutdown_event}
@@ -683,7 +689,12 @@ def run_remote_rollout(cfg, *, shutdown_event: Event | None = None):
         ctx.hardware.robot_wrapper.session_check = getattr(
             ctx.policy.policy.transport, "ensure_session_active", None)
         ctx.policy.inference = engine
-        strategy = create_strategy(cfg.strategy)
+        if reference:
+            from yamkit.reference_strategy import ReferenceStrategy
+
+            strategy = ReferenceStrategy(cfg.strategy)
+        else:
+            strategy = create_strategy(cfg.strategy)
         strategy.setup(ctx)
         started_at = time.perf_counter()
         logger.info("[yamkit-rollout] running")

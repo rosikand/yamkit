@@ -48,7 +48,7 @@ executes complete chunks synchronously and interpolates all 14 values together, 
 trajectory time. Its wrapper reports cached command positions after initialization. The
 [linked Cortex client](https://github.com/SuveenE/lerobot/blob/e0bf4a54f600f5601e8753bf15ca1599ecf24f5d/src/lerobot/async_inference/robot_client.py#L443-L486)
 uses executed action indices and incoming queue replacement with weighted overlap averaging.
-Neither is identical to yamkit's wall-clock expiry and append queue. Neither examined deployment
+Neither is identical to yamkit's async wall-clock expiry and append queue. Neither examined deployment
 enables RTC guidance. Absolute joint units, left/right ordering and normalized gripper direction
 agree with yamkit; physical calibration accuracy remains a separate hardware question.
 
@@ -58,9 +58,10 @@ matching equal row numbers, still shows substantial disagreement: future-overlap
 about one interval. A simple absolute-tail splice correction underruns in two saved timing
 replays; fixed-grid resampling also produces expiry faults. Those changes were rejected.
 
-Joint/gripper coordination, retained late chunk rows, measured versus cached state, and the
-reference 640×360 versus current 640×480 camera geometry remain execution differences to
-investigate. The small target-braking correction deliberately isolates one demonstrated defect.
+Those archived async trials differ from the linked YAM runner in joint/gripper coordination,
+chunk consumption and measured versus cached state. Reference mode below follows that runner's
+execution contract. The reference 640×360 versus current 640×480 camera geometry remains a
+separate difference; physical calibration accuracy has not been inferred from software mapping.
 
 ## Reference controller mode
 
@@ -74,54 +75,52 @@ reference qualification or successful physical placement.
 The pinned YAM runner's spatial oracle takes a 14D start and target, computes
 `n = min(int(max(abs(target - start)) / 0.01), 100)`, and sends the target directly when
 `n <= 1`; otherwise it sends `np.linspace(start, target, n)`, including both endpoints.
-The maximum includes both normalized grippers. Its nominal 30 Hz loop does not impose a strict
-minimum send interval after a blocking RPC. Its unused `action_horizon=25` accessor does not
-truncate the returned response: this checkpoint returns 30 rows.
+The maximum includes both normalized grippers. Yamkit sends these exact points: no cubic easing,
+extra ticks or terminal holds. The runner's unused `action_horizon=25` accessor does not truncate
+the response: all 30 returned rows finish before the next RPC. There is no prefix dropping,
+queue replacement, overlap blending or application command during inference.
 
-Yamkit's reference planner preserves every original row endpoint and the same straight 14D path.
-All joints and grippers share one scalar `s(u) = 3u² - 2u³`; extra intervals and endpoint holds
-keep the unchanged 0.6 rad/s joint speed, 2 rad/s² command acceleration, per-joint step limits
-and gripper step limits. Actual dispatch intervals and postclamp results are checked as well.
-**This is deliberately slower timing, not literal upstream interpolation timing.** Commands
-never catch up in a burst after inference. A command-space bound does not measure motor dynamics.
+For each point the order is **send → Rate.sleep → observe**, followed by a 1 ms sleep when the
+row has multiple points. The nominal rate is 30 Hz. As upstream, the post-send rate clock resets
+after an overrun; it imposes no minimum interval before the next send after a slow RPC. Yamkit
+uses a monotonic clock and interruptible 100 µs polling for that wait. This preserves the rate
+algorithm while making Stop responsive and avoiding wall-clock adjustments. It does not
+guarantee 33 ms between commands or bound physical speed and acceleration.
 
-The controller consumes all 30 rows, including their interpolation endpoints, before taking the
-next policy observation and starting another RPC. Inference and policy-row progression do not overlap;
-there is no prefix dropping, queue replacement or overlap blending. After initialization, the
-model receives the last committed 14D command as state, matching the linked runner's cached-state
-convention. Measured encoders remain in monitoring and hardware guards; saved observation events
-therefore do not represent that cached model state after the first chunk. New traces save the
-actual 14D robot-unit input after client preprocessing in `trace.json.chunks[].policy_state`;
-historical recordings lack that field. Model input images are unchanged.
+Reference dispatch uses `send_reference_action` → `YamArm.command(limit_speed=False)`. Only this
+mode bypasses yamkit's per-step joint/gripper clamps, stale ramp reset and async joint shaper;
+it has no added 100 ms interpolation-stall limit. Finite 14D targets, joint bounds, normalized
+gripper bounds, measured-state validation and exact returned-command coherence are still checked.
+Stop/session cancellation, the 400 ms motor firmware timeout, accepted mapping and supervised
+approval remain required. Teleop, recording, local/async rollout and normal homing retain their
+existing command limits.
 
-During an RPC after a completed chunk, the main LeRobot control loop continues monitoring and
-resends only that exact stationary 14D endpoint at 30 Hz. One worker owns the fixed observation
-and inference request; it cannot command hardware. These maintenance sends use normal measured-state
-validation, speed clamps and postclamp checks. They advance no model row and cannot renew the fixed
-request deadline. The command clock stays continuous: an actual control-loop gap over 100 ms faults.
-There is no independent heartbeat, stale-anchor override or measured-pose rebase.
+In a software-only replay of all 73 saved chunks from run `20260909-024246-rollout-bdf21f72`,
+the literal oracle produces **6,999 points**, compared with **28,183** from the previous eased
+planner, for the same 2,190 model rows. Every literal point and original row endpoint matches
+the pinned formula. These frozen predictions establish implementation agreement, not a physical
+trajectory or successful placement.
 
-This addresses physical reference trial `20260909-035814-rollout-7f2593ec`: its first 30 rows and
-587 interpolated commands completed unchanged, but the next 0.88-second application-command gap
-triggered the arm layer's existing 0.5-second stale ramp reset. Measured-position anchors changed
-the resumed hold by 0.00549 and 0.00367 rad on left/right joint 3. The postclamp guard faulted and
-released both followers without homing. The cube was not grasped. A fake-motor replay reproduced
-the same returned commands; maintained endpoint sends require separate qualification and physical
-validation. The arm layer's stale rule and limits remain unchanged.
+The initial model state and interpolation anchor use the first measured observation before
+inference. Thereafter both use the last committed 14D command, matching the linked runner.
+Measured encoders remain in monitoring and hardware guards. RGB comes from the initial or latest
+post-step observation. The extra observation read at each model row matches upstream's row-anchor
+read; its images are not selected for inference.
 
-Freshness applies at RPC admission: the response must arrive within the configured observation
-budget, at most two seconds. The request also has a finite timeout and phase/session bounds.
-An admitted plan gets one fixed deadline:
-`min(phase_deadline, returned_at + interpolation_points / 30 * 1.1 + 0.1)`.
-It is not the async row deadline `observation_time + (row + 1) / 30`. Active interpolation retains
-the 100 ms stall/dispatch guard and cannot extend its plan lease. At a completed chunk, another
-RPC is skipped if its whole request/freshness budget cannot fit before the phase ends; monitoring
-continues until normal home and release. Stop, faults and expiry still release promptly, and the
-400 ms motor firmware timeout remains enabled.
+Response validation and plan admission must finish within the configured observation freshness
+budget, at most two seconds, and the finite RPC timeout. Once admitted, the plan is bounded by
+the existing phase/session deadline; it does not acquire async per-row expiry or an added timing
+lease. `planned_duration_s = interpolation_points / 30` is nominal accounting, not a wall-time
+prediction. Another RPC is skipped if its entire request budget cannot fit before the phase
+ends. Healthy duration completion homes and then releases both followers; Stop, a fault or
+session expiry releases without homing.
 
 Reference qualification uses the same real model with generated images and fake arms: 50 warm
 direct samples and 50 warm, fully consumed integrated chunks, with the first sample excluded.
-The integrated diagnostic allows at most 1,800 seconds at real 30 Hz; incomplete evidence fails.
+The integrated diagnostic allows at most 1,800 seconds with the same literal rate algorithm;
+incomplete evidence fails. It checks exact row counts, full chunk consumption, direct sends and
+zero SDK sends during RPC against the versioned literal contract, so older reference evidence
+cannot qualify this implementation.
 Its latency margin uses the synchronous admission budget, while async uses the remaining queue
 horizon. The diagnostic limit does not extend physical rollout or capture limits.
 
@@ -131,12 +130,15 @@ refer directly to `trace.json.chunks`, joining a committed point to its original
 `command_shaping.samples[].requested` is that interpolated point, **not** the raw model row;
 `shaped` and returned `sent` must preserve it. Bounded sample loss is counted explicitly. Use
 `completed_steps`, `completed_chunks` and `partial_chunk_at_stop` to distinguish a full chunk
-from one interrupted by duration or Stop. New samples have `dispatch_role`: `interpolation` carries
-that row join; `inference_hold` repeats the completed endpoint and has no row/point advancement.
-`interpolation_dispatches` and `inference_hold_dispatches` add to total executed commands. Per-request
-`maintenance_hold_samples` retain the sent vector, dispatch time and fixed wait deadline separately.
-Older reference recordings blocked the main loop during inference and lack maintenance fields.
-Video and measured positions establish physical outcomes separately.
+from one interrupted by duration or Stop. `trace.json.chunks[].policy_state` retains the exact
+14D robot-unit input after client preprocessing; measured observation events are separate.
+Historical traces can lack this model-state field.
+
+`reference_row_observation` events retain timestamps and measured positions for the extra
+row-anchor reads, with `rgb_retained=false`. Their unused RGB is intentionally omitted, as the
+summary's `auxiliary_observation_scope` states. Initial and post-step RGB remain captured with
+explicit missing-frame counts and original receipt timestamps. Video gaps preserve those
+timestamps; footage and measured positions establish physical outcomes separately.
 
 ## First supervised validation after target braking
 

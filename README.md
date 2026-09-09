@@ -273,8 +273,8 @@ yamkit rollout --policy outputs/train/my_policy/checkpoints/last/pretrained_mode
 ```
 
 `--rtc` enables LeRobot's real-time-chunking inference for compatible local policies.
-Measure end-to-end latency before relying on chunk buffering. The same speed clamps
-as in teleop bound every commanded step.
+Measure end-to-end latency before relying on chunk buffering. Local and remote async
+rollouts retain the teleop command speed clamps.
 
 For optional Modal GPU inference and browser deployment, see [docs/MODAL.md](docs/MODAL.md).
 For an existing Lambda GPU with a direct, private Lenovo SSH tunnel, use
@@ -282,9 +282,11 @@ For an existing Lambda GPU with a direct, private Lenovo SSH tunnel, use
 the GPU checkout and retains host qualification before any supervised robot rollout.
 
 Remote MolmoAct2 also supports `--controller-mode reference`: complete 30-row chunks run
-sequentially, with coordinated joint/gripper interpolation and added timing for the existing
-command limits. While awaiting the next chunk, the main control loop maintains the completed
-endpoint through normal validated commands; no policy row advances during inference.
+sequentially using the linked YAM runner's literal 14D linear interpolation and post-send rate
+waits. This mode sends targets directly with `limit_speed=False`; it bypasses yamkit's command
+speed/acceleration shaping, per-step clamps and stale ramp reset. It adds no easing, extra ticks
+or commands during inference. Joint/gripper bounds, measured-state validation, Stop, finite
+request and session deadlines, and the 400 ms firmware timeout remain enabled.
 `--controller-mode async` retains the experimental asynchronous controller and
 remains the default. Each mode requires its own current host qualification. For an attached
 Lambda service, qualify without opening hardware:
@@ -304,6 +306,7 @@ yamkit rollout --policy molmoact2 --backend external --external-service lambda-g
 ```
 
 This energizes both followers, runs the policy and homes after healthy completion before release.
+Stop or a fault releases the followers without homing.
 See the [reference execution contract and trace schema](docs/MOLMOACT2_EXECUTION.md#reference-controller-mode)
 for timing differences from the upstream runner and the experimental validation scope.
 

@@ -177,9 +177,6 @@ def test_next_chunk_uses_committed_state_or_stops_at_short_phase_boundary(monkey
         clock[0] += 1 / 30
         engine.notify_observation(observation)
         action = engine.get_action(observation)
-        if action is None:
-            assert engine._rpc["done"].wait(1)
-            continue
         if deadline is None:
             deadline = engine._plan_deadline
         assert engine._plan_deadline == deadline  # Consumption never extends the lease.
@@ -210,9 +207,7 @@ def test_next_chunk_uses_committed_state_or_stops_at_short_phase_boundary(monkey
         assert engine.dequeued_actions == dispatched
         assert not engine.failed and guard.valid and not engine._shutdown_event.is_set()
         return
-    if engine._rpc is not None:
-        assert engine._rpc["done"].wait(1)
     assert len(batches) == 2
     assert torch.allclose(batches[1], torch.full((1, 14), .02))
     assert np.array_equal(observation["observation.state"], np.full(14, .5, dtype=np.float32))
-    assert measured_reads == [True]
+    assert measured_reads == []  # ReferenceStrategy captures the initial raw seed before the RPC.

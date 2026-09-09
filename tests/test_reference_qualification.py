@@ -9,7 +9,6 @@ import pytest
 
 from tests import test_http_qualification, test_http_qualification_collection
 from yamkit.inference import qualification as q
-from yamkit.inference.profiles import get_profile
 from yamkit.modal_qualification import collect_qualification
 
 sdk_evidence = test_http_qualification.sdk_evidence
@@ -20,46 +19,36 @@ collection = test_http_qualification_collection.collection
 @pytest.fixture
 def reference_evidence(http_evidence):
     settings, direct, integrated = copy.deepcopy(http_evidence)
-    settings["controller_mode"] = "reference"
+    settings.update(controller_mode="reference", reference_contract=dict(q.REFERENCE_CONTRACT))
     integrated["policy_options"]["controller_mode"] = "reference"
     integrated.update(minimum_execution_queue_depth=0, expired_prefix_dropped=0,
-                      overlap_prefix_dropped=0, executed_actions=51 * 60 + 51 * 4)
+                      overlap_prefix_dropped=0, executed_actions=51 * 60)
     integrated["prediction_samples"] = [
         {"error": None, "accepted_steps": 30, "completed_chunks_at_start": index,
          "completed_steps_at_start": index * 30, "actions_executed_during_prediction": 0,
          "observation_age_at_return_s": 0.31, "prediction_started_monotonic_s": 100 + index * 3,
+         "observation_timestamp_monotonic_s": 100 + index * 3,
          "prediction_s": 0.31, "plan_dispatches": 60, "planned_duration_s": 2.0,
-         "plan_deadline_monotonic_s": 102.6 + index * 3} for index in range(51)]
+         "plan_admitted_monotonic_s": 100.32 + index * 3, "plan_deadline_monotonic_s": 1000.0,
+         "reference_row_max_deltas": [0.025] * 30, "reference_row_counts": [2] * 30} for index in range(51)]
+    integrated["prediction_samples"].append({
+        "error": "invalidated", "accepted_steps": 0, "actions_executed_during_prediction": 0,
+        "prediction_started_monotonic_s": 253, "prediction_s": 0.35})
     integrated["reference_execution"] = {
-        "controller_mode": "reference", "predicted_steps": 1530, "admitted_steps": 1530, "completed_steps": 1530,
-        "completed_chunks": 51, "interpolation_dispatches": 3060,
-        "inference_hold_dispatches": 204, "inference_hold_mismatches": 0,
+        "controller_mode": "reference", "reference_contract": dict(q.REFERENCE_CONTRACT),
+        "predicted_steps": 1530, "admitted_steps": 1530, "completed_steps": 1530,
+        "completed_chunks": 51, "interpolation_dispatches": 3060, "rate_steps": 3060,
+        "multipoint_extra_sleep_calls": 3060, "phase_deadline_monotonic_s": 1000.0,
         "uncompleted_steps_at_stop": 0, "expired_prefix_dropped": 0, "overlap_prefix_dropped": 0,
         "prefix_drop": 0, "expired_plans": 0, "coherence_violations": 0,
         "partial_chunk_at_stop": False, "next_observation_after_full_chunk": True,
     }
-    integrated["prediction_samples"].append({
-        "error": "invalidated", "accepted_steps": 0, "actions_executed_during_prediction": 0,
-        "prediction_started_monotonic_s": 253, "prediction_s": 0.35})
-    for index, event in enumerate(integrated["prediction_samples"]):
-        started = event["prediction_started_monotonic_s"]
-        anchor = dict.fromkeys(get_profile("molmoact2").action_names, 0.0) if index else None
-        event.update(observation_timestamp_monotonic_s=started,
-                     inference_wait_deadline_monotonic_s=started + 2,
-                     maintenance_hold_anchor=anchor, maintenance_holds_during_prediction=4 if index else 0,
-                     maintenance_hold_samples_dropped=0,
-                     maintenance_hold_samples=[{
-                         "dispatch_index": index * 60 + (index - 1) * 4 + step,
-                         "monotonic_s": started + (step + 1) * 0.08,
-                         "deadline_monotonic_s": started + (step + 1) * 0.08 + 0.09,
-                         "sent": dict(anchor)} for step in range(4)] if index else [])
-    integrated["command_shaping"] = {"inference_hold_count": 204, "postclamp_modified_count": 0,
-                                      "sample_count": integrated["executed_actions"]}
     integrated["transport_predictions"] = [
         {"mode": "native_fixture", "started": 90.0, "returned": 90.3},
         *[{"mode": "robot", "started": 100 + index * 3 + 0.02, "returned": 100 + index * 3 + 0.30}
           for index in range(51)], {"mode": "robot", "started": 253.02}]
-    integrated["sdk_commands_during_completed_rpc"] = [0, 0] + [3] * 50
+    integrated["sdk_commands_during_completed_rpc"] = [0] * 52
+    integrated["sdk_sends_during_completed_rpc"] = [0] * 52
     return settings, direct, integrated
 
 
@@ -81,92 +70,95 @@ def test_reference_full_consumption_qualifies_without_an_async_queue(reference_e
     assert q.validate_qualification(settings, path=path)["assessment"]["qualified"]
 
 
-def test_inference_holds_are_additional_commands_not_policy_steps(reference_evidence):
-    _, _, integrated = reference_evidence
+def test_reference_settings_bind_literal_contract_under_current_http_identity(http_evidence):
+    original, direct, _ = http_evidence
+    settings = q.qualification_settings(
+        "molmoact2", modal_app=original["modal_app"], observed_region=original["observed_region"],
+        call_mode="http", execution_mode="cuda_graph10", controller_mode="reference",
+        task=original["task"], metadata=direct["readiness"], endpoint_url=original["http_endpoint"])
+    assert settings["reference_contract"] == q.REFERENCE_CONTRACT
+    assert settings["reference_contract"] is not q.REFERENCE_CONTRACT
+    assert "reference_contract" not in original  # Async binding is unchanged.
+
+
+@pytest.mark.parametrize("container", ["settings", "proof"])
+@pytest.mark.parametrize("key", list(q.REFERENCE_CONTRACT))
+def test_literal_contract_cannot_be_relabelled_from_old_reference_or_another_dispatch(reference_evidence, container, key):
+    target = reference_evidence[0] if container == "settings" else reference_evidence[2]["reference_execution"]
+    target["reference_contract"][key] = "old-coordinated-maintenance-controller"
+    assert not assessment(reference_evidence)["qualified"]
+
+
+def test_missing_literal_contract_cannot_reuse_prior_reference_evidence(reference_evidence):
+    reference_evidence[2]["reference_execution"].pop("reference_contract")
+    assert not assessment(reference_evidence)["qualified"]
+
+
+@pytest.mark.parametrize("delta,count", [
+    (0.0, 1), (0.009, 1), (0.019, 1), (0.02, 2), (0.029, 2), (0.9999, 99), (1.0, 100), (9.0, 100),
+])
+def test_literal_row_floor_cap_and_single_target_branch(reference_evidence, delta, count):
+    integrated = reference_evidence[2]
+    event = integrated["prediction_samples"][0]
+    event["reference_row_max_deltas"][0] = delta
+    event["reference_row_counts"][0] = count
+    event["plan_dispatches"] += count - 2
+    event["planned_duration_s"] = event["plan_dispatches"] / 30
     proof = integrated["reference_execution"]
-    assert integrated["executed_actions"] == proof["interpolation_dispatches"] + proof["inference_hold_dispatches"]
-    assert proof["completed_steps"] == 1530 and proof["inference_hold_dispatches"] == 204
+    proof["interpolation_dispatches"] += count - 2
+    proof["rate_steps"] += count - 2
+    proof["multipoint_extra_sleep_calls"] += (count if count > 1 else 0) - 2
+    integrated["executed_actions"] += count - 2
     assert assessment(reference_evidence)["qualified"]
-    integrated["executed_actions"] = proof["interpolation_dispatches"]
+    # Matching aggregate counts cannot disguise one added interpolation point.
+    event["reference_row_counts"][0] += 1
+    event["plan_dispatches"] += 1
+    event["planned_duration_s"] = event["plan_dispatches"] / 30
+    proof["interpolation_dispatches"] += 1
+    proof["rate_steps"] += 1
+    integrated["executed_actions"] += 1
     assert not assessment(reference_evidence)["qualified"]
 
 
 @pytest.mark.parametrize("field,value", [
-    ("maintenance_holds_during_prediction", 3), ("maintenance_holds_during_prediction", None),
-    ("maintenance_hold_samples_dropped", 1), ("maintenance_hold_samples", []),
-    ("maintenance_hold_anchor", None), ("maintenance_hold_anchor", {"left_joint_1.pos": 0.0}),
-    ("inference_wait_deadline_monotonic_s", 105.1),
-    ("observation_timestamp_monotonic_s", 103.1), ("actions_executed_during_prediction", 1),
+    ("reference_row_max_deltas", []), ("reference_row_counts", [2] * 29),
+    ("reference_row_counts", [True] * 30), ("reference_row_counts", [3] * 30),
+    ("reference_row_max_deltas", [float("inf")] * 30),
+    ("reference_row_max_deltas", [-0.01] * 30),
+    ("plan_admitted_monotonic_s", 100.2), ("plan_admitted_monotonic_s", 102.0),
+    ("plan_admitted_monotonic_s", 102.01), ("plan_deadline_monotonic_s", 102.61),
 ])
-def test_reference_hold_evidence_must_be_complete_and_fresh(reference_evidence, field, value):
-    reference_evidence[2]["prediction_samples"][1][field] = value
+def test_literal_plan_cannot_add_smoothing_or_outlive_admission(reference_evidence, field, value):
+    reference_evidence[2]["prediction_samples"][0][field] = value
     assert not assessment(reference_evidence)["qualified"]
 
 
 @pytest.mark.parametrize("field,value", [
-    ("monotonic_s", 102.9), ("monotonic_s", 105.1),
-    ("deadline_monotonic_s", 105.1), ("deadline_monotonic_s", 103.4),
-    ("dispatch_index", 3264), ("dispatch_index", True), ("sent", None),
+    ("rate_steps", 3059), ("multipoint_extra_sleep_calls", 3059),
+    ("interpolation_dispatches", 3061), ("phase_deadline_monotonic_s", 999.0),
+    ("admitted_steps", 1529),
 ])
-def test_bad_individual_hold_cannot_qualify(reference_evidence, field, value):
-    reference_evidence[2]["prediction_samples"][1]["maintenance_hold_samples"][0][field] = value
+def test_literal_rate_and_direct_dispatch_counts_match_every_original_point(reference_evidence, field, value):
+    reference_evidence[2]["reference_execution"][field] = value
     assert not assessment(reference_evidence)["qualified"]
 
 
-@pytest.mark.parametrize("value", [0.001, True, float("nan")])
-def test_hold_must_preserve_exact_fourteen_dimensional_anchor(reference_evidence, value):
-    hold = reference_evidence[2]["prediction_samples"][1]["maintenance_hold_samples"][0]
-    hold["sent"]["left_joint_1.pos"] = value
+@pytest.mark.parametrize("field", ["sdk_commands_during_completed_rpc", "sdk_sends_during_completed_rpc"])
+def test_any_actual_sdk_overlap_rejects_literal_reference(reference_evidence, field):
+    reference_evidence[2][field][2] = 1
     assert not assessment(reference_evidence)["qualified"]
 
 
-def test_duplicate_hold_or_stalled_cadence_is_rejected(reference_evidence):
-    holds = reference_evidence[2]["prediction_samples"][1]["maintenance_hold_samples"]
-    holds[1]["dispatch_index"] = holds[0]["dispatch_index"]
-    assert not assessment(reference_evidence)["qualified"]
-    holds[1]["dispatch_index"] += 1
-    holds[1]["monotonic_s"] += 0.021
-    holds[1]["deadline_monotonic_s"] += 0.021
+def test_missing_raw_arm_send_count_cannot_be_hidden_by_flooring_pairs(reference_evidence):
+    reference_evidence[2].pop("sdk_sends_during_completed_rpc")
     assert not assessment(reference_evidence)["qualified"]
 
 
-@pytest.mark.parametrize("container,field,value", [
-    ("reference_execution", "inference_hold_dispatches", 203),
-    ("reference_execution", "inference_hold_mismatches", 1),
-    ("command_shaping", "inference_hold_count", 203),
-    ("command_shaping", "sample_count", 3060),
-    ("command_shaping", "postclamp_modified_count", 1),
-])
-def test_hold_totals_and_guard_proof_are_required(reference_evidence, container, field, value):
-    reference_evidence[2][container][field] = value
+def test_literal_request_interval_and_cancelled_stop_probe_cannot_hide_motion(reference_evidence):
+    reference_evidence[2]["prediction_samples"][-1]["actions_executed_during_prediction"] = 1
     assert not assessment(reference_evidence)["qualified"]
-
-
-def test_completed_http_overlap_must_fit_proven_holds(reference_evidence):
-    evidence = reference_evidence[2]
-    evidence["sdk_commands_during_completed_rpc"][2] = 5
-    assert not assessment(reference_evidence)["qualified"]
-    evidence["sdk_commands_during_completed_rpc"][2] = 3
-    evidence["transport_predictions"][2]["returned"] += 0.1
-    assert not assessment(reference_evidence)["qualified"]
-
-
-@pytest.mark.parametrize("value", [None, [], [0]])
-def test_missing_sdk_overlap_measurement_cannot_qualify(reference_evidence, value):
-    reference_evidence[2]["sdk_commands_during_completed_rpc"] = value
-    assert not assessment(reference_evidence)["qualified"]
-
-
-def test_worker_return_boundary_and_cancelled_probe_holds_are_accounted(reference_evidence):
-    _, _, integrated = reference_evidence
-    event = integrated["prediction_samples"][1]
-    last = event["maintenance_hold_samples"][-1]
-    assert last["monotonic_s"] > event["prediction_started_monotonic_s"] + event["prediction_s"]
-    assert integrated["sdk_commands_during_completed_rpc"][2] < event["maintenance_holds_during_prediction"]
-    assert assessment(reference_evidence)["qualified"]
-    # Removing a final cancelled request's holds would conceal successful SDK
-    # sends even though that request supplied no admitted policy rows.
-    integrated["prediction_samples"].pop()
+    reference_evidence[2]["prediction_samples"][-1]["actions_executed_during_prediction"] = 0
+    reference_evidence[2]["transport_predictions"][2]["returned"] += 0.1
     assert not assessment(reference_evidence)["qualified"]
 
 
@@ -188,7 +180,7 @@ def test_partial_replaced_or_modified_reference_execution_is_rejected(reference_
     ("plan_dispatches", 29), ("planned_duration_s", 1.0), ("plan_deadline_monotonic_s", 103.0),
     ("plan_deadline_monotonic_s", 100.1), ("plan_deadline_monotonic_s", float("inf")),
 ])
-def test_individual_request_must_preserve_full_chunk_order_and_fixed_lease(reference_evidence, field, value):
+def test_individual_request_must_preserve_full_chunk_order_and_phase_boundary(reference_evidence, field, value):
     reference_evidence[2]["prediction_samples"][0][field] = value
     assert not assessment(reference_evidence)["qualified"]
 
@@ -206,7 +198,11 @@ def test_reference_keeps_stop_release_and_expiry_guards(reference_evidence, fiel
 def test_reference_needs_fifty_warm_completed_chunks_not_fifty_rpc_returns(reference_evidence):
     proof = reference_evidence[2]["reference_execution"]
     reference_evidence[2]["prediction_samples"].pop(-2)
-    proof.update(predicted_steps=1500, completed_steps=1500, completed_chunks=50, interpolation_dispatches=3000)
+    proof.update(predicted_steps=1500, admitted_steps=1500, completed_steps=1500, completed_chunks=50,
+                 interpolation_dispatches=3000, rate_steps=3000, multipoint_extra_sleep_calls=3000)
+    reference_evidence[2]["transport_predictions"].pop(-2)
+    reference_evidence[2]["sdk_commands_during_completed_rpc"].pop()
+    reference_evidence[2]["sdk_sends_during_completed_rpc"].pop()
     reference_evidence[2]["executed_actions"] = 3000
     result = assessment(reference_evidence)
     assert not result["qualified"]

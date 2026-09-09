@@ -167,7 +167,8 @@ see `meta.json.task_success` and operator feedback when present.
   model state instead uses the last committed 14D command after initialization.
   In async mode, `action_dequeued` records queue deadlines. `send_start`
   contains requested arm targets, and `send_end.postclamp` contains the targets
-  sent after joint/gripper speed clamps. Pair sends by arm and chronological
+  returned by dispatch; `speed_clamp_enabled` says whether the native clamp
+  was used. Literal reference sends bypass it. Pair sends by arm and chronological
   order; two follower sends normally make one bimanual action. A send target is
   not proof that the physical joint reached it. `send_error` may mean partial
   dispatch; never count it as an ordinary completed send.
@@ -187,18 +188,22 @@ see `meta.json.task_success` and operator feedback when present.
   deadline `observation_monotonic_s + (j + 1) / 30`. Approximate matching by
   deadlines and requested values can reconstruct joins, but async has no explicit
   chunk/row foreign key. Ordered sends alone are not a one-to-one chunk join.
-  With `controller_mode=reference`, all 30 rows are consumed sequentially before
-  the next RPC; inference and policy-row progression do not overlap. Each row's 14D straight
-  path uses shared cubic-smoothstep progress and added timing/endpoint holds for
-  existing command limits. This is not literal upstream interpolation timing.
-  RPC observation freshness is at most two seconds; the fixed execution lease is
-  `min(phase_deadline, returned_at + interpolation_points / 30 * 1.1 + 0.1)`,
-  with an additional 100 ms active dispatch/stall guard. Async row deadlines do
-  not apply to reference interpolation. Duration, Stop or faults can interrupt
-  the final chunk; never infer full consumption merely from a saved prediction.
-  Newer reference runs maintain the exact completed endpoint through the normal
-  command path while one RPC is pending; the main loop still monitors cameras
-  and state. Older reference runs block dispatch/capture during that wait.
+  With `reference_execution.reference_contract.id=yam_upstream_literal_v1`,
+  all 30 rows are consumed sequentially before the next RPC. Each row uses
+  `n=min(int(max(abs(target-start)) / 0.01),100)` across all 14 values;
+  n<=1 sends the target once, otherwise endpoint-inclusive linear interpolation
+  sends n points. There is no easing, added hold, speed or acceleration shaping.
+  Each send precedes Rate.sleep and a new observation; multipoint rows add 1 ms
+  after each observation. Overruns reset the rate origin, so intervals can be
+  shorter than 1/30 second. RPC waits send no commands or observation reads.
+  RPC freshness remains bounded by two seconds; the approved phase deadline,
+  Stop, session expiry and faults can interrupt the final chunk. Never infer full
+  consumption merely from a saved prediction. Historical reference recordings
+  without this contract may use retimed smoothstep or maintained endpoint holds;
+  inspect their saved settings instead of assuming literal timing.
+  `reference_row_observation` events retain the extra upstream row-anchor reads'
+  measured state and host receipt time, but not their unused RGB arrays.
+  Initial and post-step observations, including policy-selected RGB, are retained.
 - `metrics.json`: complete available inference/queue/control/cleanup metrics;
   `summary.json`: capture scope, phase boundaries, dropped data and export errors.
   Newer remote runs include `command_shaping`: limits, counts and bounded samples
@@ -210,11 +215,8 @@ see `meta.json.task_success` and operator feedback when present.
   raw model row. `reference_execution.dispatch_samples` joins `dispatch_index`
   to `chunk_index`, `row_index`, `point_index`, scalar `progress` and `endpoint`;
   chunk and row indices refer directly to `trace.json.chunks` and its action rows.
-  Samples with `dispatch_role=inference_hold` instead repeat the completed
-  endpoint without row/point progression. `interpolation_dispatches` plus
-  `inference_hold_dispatches` equals all sent commands. Per-request
-  `maintenance_hold_samples` retain the held vector and original wait deadline.
-  Older runs lack these maintenance fields; their samples are interpolation.
+  In the literal contract all sends are interpolation commands. Historical
+  `dispatch_role=inference_hold` samples repeat an endpoint without row progress.
   Reference `shaped` and returned `sent` must preserve the interpolated point.
   `completed_steps`, `completed_chunks` and `partial_chunk_at_stop` describe
   consumption; commands do not prove measured motion or task success.
@@ -312,6 +314,11 @@ def package_rollout(
     for key, value in summary.get("counts", {}).items():
         if value and (key.endswith("_dropped") or key == "trace_errors"):
             missing.append(f"Capture reported {key}={value}.")
+    row_reads = summary.get("counts", {}).get("reference_row_observations", 0)
+    if row_reads:
+        missing.append(f"Unused RGB from {row_reads} auxiliary reference row-anchor reads was not retained; "
+                       "their measured state/timestamps are in reference_row_observation events. "
+                       "Policy-selected and post-step RGB remain in the normal observation capture.")
     if summary.get("video_export_errors") or summary.get("render_error_type"):
         missing.append("Capture reported export/render errors; inspect summary.json.")
     with tempfile.TemporaryDirectory(prefix=".bundle-build-", dir=run_dir) as temporary:

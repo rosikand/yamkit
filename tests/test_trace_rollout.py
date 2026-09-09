@@ -161,6 +161,30 @@ def test_every_observation_is_copied_once_with_original_time_and_caps_memory():
     assert len(collector.events) == prior
 
 
+def test_reference_row_read_keeps_state_without_displacing_policy_rgb(monkeypatch):
+    from lerobot_robot_yamkit.yam_follower import BiYamFollower
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    obs = {**dict.fromkeys(module.ACTION_NAMES, .25), **dict.fromkeys(module.CAMERAS, frame)}
+    robot = SimpleNamespace()
+    monkeypatch.setattr(BiYamFollower, "get_observation", lambda _robot: obs)
+    collector = module.Collector(5, controller_mode="reference")
+    with module.install_hooks(collector):
+        collector.start_phase()
+        assert BiYamFollower.get_observation(robot) is obs
+        robot._reference_observation_role = "row_anchor"
+        assert BiYamFollower.get_observation(robot) is obs
+        del robot._reference_observation_role
+        assert BiYamFollower.get_observation(robot) is obs
+        collector.end_phase()
+    assert len(collector.frames) == collector.counts["observation_frames_seen"] == 2
+    assert collector.counts["reference_row_observations"] == 1
+    row = next(event for event in collector.events if event["kind"] == "reference_row_observation")
+    assert row["positions"] == dict.fromkeys(module.ACTION_NAMES, .25)
+    assert row["rgb_retained"] is False
+    assert collector.counts["frames_dropped"] == collector.counts["trace_errors"] == 0
+
+
 def test_reserved_pool_is_checked_and_prefaulted_before_capture(monkeypatch):
     collector = module.Collector(5)
     collector.frame_capacity = 2
@@ -229,20 +253,24 @@ def test_trace_overflow_and_faults_are_explicit(monkeypatch):
         collector.safely(lambda: (_ for _ in ()).throw(TimeoutError()))
 
 
-def test_hooks_preserve_order_results_and_partial_dispatch_error(monkeypatch):
+@pytest.mark.parametrize("reference", [False, True])
+def test_hooks_preserve_order_results_and_partial_dispatch_error(monkeypatch, reference):
     from lerobot.rollout.strategies.base import BaseStrategy
-    from lerobot_robot_yamkit.yam_follower import BiYamFollower, _FollowerHandle
+    from lerobot_robot_yamkit.yam_follower import BiYamFollower
 
     from yamkit import cli
+    from yamkit.arm import YamArm
+    from yamkit.reference_strategy import ReferenceStrategy
     from yamkit.remote_policy.modeling_yamkit_remote import YamkitRemotePolicy
     from yamkit.remote_rollout import InvalidatableActionQueue, UnguidedRemoteInferenceEngine
 
     calls = []
     collector = module.Collector(5)
-    output = {"joint_1.pos": .05}
-    requested = {"joint_1.pos": .3}
-    left = SimpleNamespace(spec=SimpleNamespace(name="left_follower"))
-    right = SimpleNamespace(spec=SimpleNamespace(name="right_follower"))
+    output = np.full(7, .05)
+    requested = np.full(6, .3)
+    left = SimpleNamespace(name="left_follower")
+    right = SimpleNamespace(name="right_follower")
+    strategy = ReferenceStrategy if reference else BaseStrategy
     robot = SimpleNamespace(_sides={"left": SimpleNamespace(arm=None), "right": SimpleNamespace(arm=None)},
                             _opened_cameras=[], _camera_lease=None)
     observed = dict.fromkeys(module.ACTION_NAMES, .01)
@@ -250,22 +278,22 @@ def test_hooks_preserve_order_results_and_partial_dispatch_error(monkeypatch):
     chunk = torch.zeros((1, 30, 14))
     expected_error = RuntimeError("right-side failed after left completed")
 
-    def send(handle, action, **kwargs):
-        calls.append(handle.spec.name)
-        assert action is requested
-        if handle is right:
+    def send(arm, q, gripper=None, *, limit_speed=True):
+        calls.append(arm.name)
+        assert q is requested and gripper == .4 and limit_speed is False
+        if arm is right:
             raise expected_error
         return output
 
     def run(*args):
         assert collector.active
-        assert _FollowerHandle.send(left, requested) is output
-        return _FollowerHandle.send(right, requested)
+        assert YamArm.command(left, requested, .4, limit_speed=False) is output
+        return YamArm.command(right, requested, .4, limit_speed=False)
 
-    monkeypatch.setattr(BaseStrategy, "run", run)
+    monkeypatch.setattr(strategy, "run", run)
     monkeypatch.setattr(BiYamFollower, "connect", lambda self: calls.append("connect"))
     monkeypatch.setattr(BiYamFollower, "get_observation", lambda self: observed)
-    monkeypatch.setattr(_FollowerHandle, "send", send)
+    monkeypatch.setattr(YamArm, "command", send)
     monkeypatch.setattr(YamkitRemotePolicy, "predict_action_chunk", lambda *a, **kw: chunk)
     monkeypatch.setattr(UnguidedRemoteInferenceEngine, "_record_merge", lambda *a: None)
     monkeypatch.setattr(InvalidatableActionQueue, "get", lambda self: output)
@@ -279,14 +307,16 @@ def test_hooks_preserve_order_results_and_partial_dispatch_error(monkeypatch):
         UnguidedRemoteInferenceEngine._record_merge(None, {"accepted_steps": 5})
         cli._print_inference_result({"executed_actions": 1})
         with pytest.raises(RuntimeError) as caught:
-            BaseStrategy.run(None, None)
+            strategy.run(None, None)
         assert caught.value is expected_error
     assert calls == ["connect", "left_follower", "right_follower"]
     assert not collector.active and collector.released()
-    assert _FollowerHandle.send is send and cli._print_inference_result is original_print
+    assert YamArm.command is send and cli._print_inference_result is original_print
     send_events = [event for event in collector.events if event["kind"].startswith("send_")]
     assert [event["kind"] for event in send_events] == ["send_start", "send_end", "send_start", "send_error"]
-    assert send_events[0]["requested"] == requested and send_events[1]["postclamp"] == output
+    assert send_events[0]["requested"] == {**{f"joint_{i + 1}.pos": .3 for i in range(6)}, "gripper.pos": .4}
+    assert send_events[1]["postclamp"] == {**{f"joint_{i + 1}.pos": .05 for i in range(6)}, "gripper.pos": .05}
+    assert send_events[0]["speed_clamp_enabled"] is False
     assert send_events[3]["partial_dispatch_possible"] is True
     assert collector.metrics == {"executed_actions": 1}
 

@@ -328,8 +328,9 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
                 monitor.join(timeout=1)
         wall_s = time.monotonic() - started
     # Independent check against successful FakeRobot SDK commands, not queue pops.
-    overlap = [sum(event["started"] < at < event["returned"] for at in execution_times) // 2
-               for event in transport.requests if "returned" in event]
+    sdk_overlap = [sum(event["started"] < at < event["returned"] for at in execution_times)
+                   for event in transport.requests if "returned" in event]
+    overlap = [count // 2 for count in sdk_overlap]
     external = getattr(cfg.policy, "backend", "modal") == "external"
     return {"name": name, "source": "final LeRobot worker/strategy; fake RGB cameras and fake YAM; "
             + ("real external HTTP" if external and transport_factory else "real Modal RPC"
@@ -359,7 +360,8 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
                 event["started"] < stop.requested_at < event.get("returned", float("inf"))
                 for event in transport.requests),
             "all_fake_robots_released": all(robot.closed for robot in robots),
-            "sdk_commands_during_completed_rpc": overlap, **metrics}
+            "sdk_commands_during_completed_rpc": overlap,
+            "sdk_sends_during_completed_rpc": sdk_overlap, **metrics}
 
 
 def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,

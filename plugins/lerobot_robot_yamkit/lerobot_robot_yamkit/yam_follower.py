@@ -2,8 +2,9 @@
 
 Observation / action keys: ``joint_1.pos`` … ``joint_6.pos`` (rad) and ``gripper.pos`` (0 closed … 1
 open); bimanual variant prefixes ``left_`` / ``right_``. Camera frames are added under their rig
-names. Targets are speed-clamped inside `yamkit.arm.YamArm.command`, so a policy or leader that
-is far from the follower produces a bounded-speed move instead of a jump.
+names. Normal targets are speed-clamped inside `yamkit.arm.YamArm.command`. The dedicated
+bimanual reference dispatch sends prevalidated literal points without that speed clamp;
+measured-state, calibration and joint/gripper position validation still apply.
 """
 
 from __future__ import annotations
@@ -480,6 +481,44 @@ class BiYamFollower(_CameraPreview, Robot):
             out.update({f"{side}_{k}": v for k, v in h.send(actions[side], capture_hold=capture).items()})
         if isinstance(action, GatedAction):
             action.acknowledge(out)
+        return out
+
+    @check_if_not_connected
+    def send_reference_action(self, action: RobotAction, *, dispatch_check=None) -> RobotAction:
+        """Submit a literal reference point without the ordinary target-speed clamp.
+
+        The qualified reference controller owns interpolation, Stop/session and
+        deadline checks. This dedicated path accepts only a complete plain 14D
+        target; it never captures a measured hold or changes normal dispatch.
+        Both arms' measured/previous states and targets are validated before
+        either send. Each arm then revalidates immediately before its SDK call.
+        The wrapper's optional dispatch check repeats its deadline/session
+        validation after preflight and before each arm command.
+        """
+        if type(action) is not dict:
+            raise TypeError("reference action must be a plain dictionary of 14 named scalar targets")
+        if dispatch_check is not None and not callable(dispatch_check):
+            raise TypeError("reference dispatch check must be callable")
+        expected = {f"{side}_{name}.pos": float for side in ("left", "right")
+                    for name in (*JOINT_NAMES, "gripper")}
+        if set(self.action_features) != set(expected):
+            raise ValueError("reference dispatch requires two six-joint followers with motorized grippers")
+        _validate_action_keys(action, expected)
+        targets = {side: h.target({key: action[f"{side}_{key}"] for key in h.features})
+                   for side, h in self._sides.items()}
+        _check_session_stop(self.config)
+        for side, h in self._sides.items():
+            q, gripper = targets[side]
+            h.arm.validate_command(q, gripper, limit_speed=False)
+        out: dict = {}
+        for side, h in self._sides.items():
+            _check_session_stop(self.config)
+            if dispatch_check is not None:
+                dispatch_check()
+            q, gripper = targets[side]
+            sent = h.arm.command(q, gripper, limit_speed=False)
+            out.update({f"{side}_{name}.pos": float(value)
+                        for name, value in zip(h.names, sent, strict=True)})
         return out
 
     def disconnect(self, *, home: bool | None = None) -> None:

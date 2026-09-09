@@ -214,6 +214,16 @@ def test_reference_bundle_reports_committed_join_and_uncommitted_send(recording)
     assert any("omits 1 send(s)" in entry for entry in missing)
 
 
+def test_reference_bundle_flags_unused_auxiliary_rgb(recording):
+    run, trace = recording
+    summary = json.loads((trace / "summary.json").read_text())
+    summary.setdefault("counts", {})["reference_row_observations"] = 30
+    write_json(trace / "summary.json", summary)
+    bundle = package_rollout(run, trace_dir=trace)
+    assert any("Unused RGB from 30 auxiliary" in item for item in validate_bundle(bundle)["missing_data"])
+    assert "yam_upstream_literal_v1" in (bundle / "README.md").read_text()
+
+
 @pytest.mark.parametrize("raw, secret", [
     ("Authorization: Bearer arbitrary-credential", "arbitrary-credential"),
     ('{"password": "quoted-password"}', "quoted-password"),

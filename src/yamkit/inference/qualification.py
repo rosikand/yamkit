@@ -25,6 +25,15 @@ from .profiles import LEROBOT_VERSION, get_profile
 
 MAX_AGE_S = 24 * 60 * 60
 MIN_WARM_SAMPLES = 50
+REFERENCE_CONTRACT = {
+    "id": "yam_upstream_literal_v1",
+    "ref_revision": "9a46f908d5dfb8a999f9a2c236681bf2af74f4da",
+    "planner": "floor_max14_delta_0p01_cap100_endpoint_linspace",
+    "rate": "send_sleep_observe_then_1ms_for_multipoint",
+    "rate_clock": "monotonic_interruptible_100us",
+    "dispatch": "send_reference_action_limit_speed_false",
+    "state": "last_committed_14d_command",
+}
 _RUNNER_CONTEXT = ContextVar("yamkit_validated_remote_runner", default=False)
 
 
@@ -115,6 +124,8 @@ def qualification_settings(profile, *, modal_app: str | None = None, call_mode: 
             "protocol_version": 1, "lerobot_version": LEROBOT_VERSION,
             "jpeg_subsampling": 2 if image_encoding == "jpeg" else None,
             "image_boundary_version": "saved-policy-transform-v1"}
+    if controller_mode == "reference":
+        result["reference_contract"] = dict(REFERENCE_CONTRACT)
     if backend == "external":
         for key in ("modal_app", "requested_region", "observed_region", "routing_region"):
             result.pop(key)
@@ -377,122 +388,16 @@ def _check_http_evidence(settings, direct, integrated, reasons, requested):
                 break
 
 
-def _check_reference_holds(settings, integrated, completed, reasons, counter):
-    """Prove overlapping SDK sends only maintained one unchanged endpoint."""
-    proof = _mapping(integrated.get("reference_execution"), "reference execution", reasons)
-    guard = _mapping(integrated.get("command_shaping"), "reference command guard", reasons)
-    predictions = _rows(integrated.get("prediction_samples"), "reference prediction samples", reasons)
-    executed = counter(integrated.get("executed_actions"), "reference total commands", minimum=1)
-    names = set(get_profile(settings["profile"]).action_names)
-
-    def action(value):
-        try:
-            return (isinstance(value, dict) and set(value) == names
-                    and all(type(item) in (int, float) and math.isfinite(item) for item in value.values())
-                    and all(0 <= value[name] <= 1 for name in names if "gripper" in name))
-        except (OverflowError, TypeError):
-            return False
-
-    total = 0
-    last_dispatch = -1
-    for index, event in enumerate(predictions):
-        count = counter(event.get("maintenance_holds_during_prediction"), "reference maintenance count")
-        samples = _rows(event.get("maintenance_hold_samples"), "reference maintenance samples", reasons)
-        if count != len(samples) or len(samples) > 64:
-            reasons.append("Reference maintenance count lacks complete bounded send evidence")
-        if counter(event.get("maintenance_hold_samples_dropped"), "reference maintenance samples dropped") != 0:
-            reasons.append("Reference maintenance evidence was truncated")
-        if counter(event.get("actions_executed_during_prediction"), "reference policy inference overlap") != 0:
-            reasons.append("Policy interpolation overlapped reference inference")
-        anchor = event.get("maintenance_hold_anchor")
-        if not action(anchor) and not (index == 0 and anchor is None and count == 0):
-            reasons.append("Reference maintenance anchor is missing or invalid")
-        try:
-            started = _number(event.get("prediction_started_monotonic_s"), "reference prediction start")
-            observed = _number(event.get("observation_timestamp_monotonic_s"), "reference observation time")
-            wait_deadline = _number(event.get("inference_wait_deadline_monotonic_s"), "reference inference deadline")
-            if not observed <= started < wait_deadline <= observed + settings["max_observation_age_s"] + 1e-8:
-                reasons.append("Reference maintenance lacks its original bounded inference deadline")
-        except QualificationError as exc:
-            reasons.append(str(exc))
-            started = wait_deadline = 0
-        previous_at = None
-        for sample in samples:
-            dispatch = counter(sample.get("dispatch_index"), "reference maintenance dispatch index")
-            if dispatch is None or dispatch <= last_dispatch or executed is None or dispatch >= executed:
-                reasons.append("Reference maintenance dispatch indices are not unique and ordered")
-            if dispatch is not None:
-                last_dispatch = dispatch
-            if not action(sample.get("sent")) or not _same_value(sample.get("sent"), anchor):
-                reasons.append("Reference maintenance changed its cached full-vector endpoint")
-            try:
-                at = _number(sample.get("monotonic_s"), "reference maintenance time")
-                deadline = _number(sample.get("deadline_monotonic_s"), "reference maintenance dispatch deadline")
-                # A hold selected before worker completion can be prepared just
-                # after its return. The fixed wait lease still binds that send.
-                if not started <= at < deadline <= wait_deadline + 1e-8 or deadline - at > 0.1 + 1e-8:
-                    reasons.append("Reference maintenance escaped its original wait or dispatch deadline")
-                if previous_at is not None and not 0 < at - previous_at <= 0.1 + 1e-8:
-                    reasons.append("Reference maintenance intervals exceeded the active stall guard")
-                previous_at = at
-            except QualificationError as exc:
-                reasons.append(str(exc))
-        total += len(samples)
-    if (counter(proof.get("inference_hold_dispatches"), "reference inference holds") != total
-            or counter(guard.get("inference_hold_count"), "guard inference holds") != total):
-        reasons.append("Reference maintenance totals disagree with the recorded sends")
-    if (counter(proof.get("inference_hold_mismatches"), "reference maintenance mismatches") != 0
-            or counter(guard.get("postclamp_modified_count"), "reference postclamp modifications") != 0):
-        reasons.append("Reference maintenance or postclamp guard changed a command")
-    if counter(guard.get("sample_count"), "reference guard sample count") != integrated.get("executed_actions"):
-        reasons.append("Reference guard did not validate every executed command")
-
-    # This independently observed benchmark count includes native warmup. It
-    # counts individual successful arm sends strictly inside HTTP, then floors
-    # pairs; boundary-crossing pairs and engine pre/postprocessing explain <=.
-    transport = _rows(integrated.get("transport_predictions"), "reference transport requests", reasons)
-    returned = [event for event in transport if "returned" in event]
-    sdk = integrated.get("sdk_commands_during_completed_rpc")
-    if not isinstance(sdk, list) or len(sdk) != len(returned):
-        reasons.append("Reference maintenance lacks independent SDK overlap counts")
-        sdk = []
-    matched = 0
-    for request, observed_pairs in zip(returned, sdk, strict=False):
-        pairs = counter(observed_pairs, "reference observed SDK overlap")
-        if request.get("mode") == "native_fixture":
-            if pairs != 0:
-                reasons.append("SDK commands occurred during pre-hardware reference warmup")
-            continue
-        if request.get("mode") != "robot" or matched >= len(completed):
-            reasons.append("Reference transport requests do not match admitted policy predictions")
-            continue
-        event = completed[matched]
-        matched += 1
-        holds = counter(event.get("maintenance_holds_during_prediction"), "reference matched maintenance count")
-        if pairs is None or holds is None or pairs > holds:
-            reasons.append("Observed SDK overlap exceeds proven stationary reference holds")
-        try:
-            start = _number(request.get("started"), "reference HTTP request start")
-            end = _number(request.get("returned"), "reference HTTP request return")
-            prediction_start = _number(event.get("prediction_started_monotonic_s"), "reference prediction start")
-            elapsed = _number(event.get("prediction_s"), "reference prediction duration")
-            if not prediction_start <= start <= end <= prediction_start + elapsed + 1e-8:
-                reasons.append("Reference HTTP overlap measurement belongs to another prediction interval")
-        except QualificationError as exc:
-            reasons.append(str(exc))
-    if matched != len(completed):
-        reasons.append("Reference SDK overlap evidence omits completed predictions")
-    return total
-
-
 def _check_reference_evidence(settings, integrated, completed, reasons, counter):
-    """Check full response consumption, not just successful RPC completion."""
+    """Validate literal row consumption and direct dispatch under its exact build."""
     proof = _mapping(integrated.get("reference_execution"), "reference execution", reasons)
     chunk_steps = settings["chunk_steps"]
     if (settings.get("call_mode") != "http" or settings.get("execution_mode") != "cuda_graph10"
             or settings.get("image_encoding") != "rgb8" or settings.get("crop") != "none"
-            or proof.get("controller_mode") != "reference"):
-        reasons.append("Reference evidence lacks its reviewed controller and model execution binding")
+            or proof.get("controller_mode") != "reference"
+            or not _same_value(settings.get("reference_contract"), REFERENCE_CONTRACT)
+            or not _same_value(proof.get("reference_contract"), REFERENCE_CONTRACT)):
+        reasons.append("Reference evidence lacks its literal planner, rate and direct-dispatch contract")
     for key in ("expired_prefix_dropped", "overlap_prefix_dropped", "prefix_drop",
                 "coherence_violations", "expired_plans", "uncompleted_steps_at_stop"):
         if counter(proof.get(key), f"reference {key}") != 0:
@@ -509,34 +414,98 @@ def _check_reference_evidence(settings, integrated, completed, reasons, counter)
                           ("completed_chunks", len(completed))):
         if counter(proof.get(key), f"reference {key}") != expected:
             reasons.append(f"Reference {key} does not match every accepted full response")
-    planned_dispatches = 0
+    try:
+        phase_deadline = _number(proof.get("phase_deadline_monotonic_s"), "reference phase deadline")
+    except QualificationError as exc:
+        reasons.append(str(exc))
+        phase_deadline = None
+    expected_dispatches = expected_extra_sleeps = 0
     for index, event in enumerate(completed):
         if (counter(event.get("accepted_steps"), "reference accepted_steps") != chunk_steps
                 or counter(event.get("completed_chunks_at_start"), "reference completed_chunks_at_start") != index
-                or counter(event.get("completed_steps_at_start"), "reference completed_steps_at_start") != index * chunk_steps
-                or counter(event.get("actions_executed_during_prediction"), "reference inference overlap") != 0):
+                or counter(event.get("completed_steps_at_start"), "reference completed_steps_at_start") != index * chunk_steps):
             reasons.append("Reference requests did not follow complete, ordered chunk consumption")
-        points = counter(event.get("plan_dispatches"), "reference plan_dispatches", minimum=chunk_steps)
-        if points is not None:
-            planned_dispatches += points
+        deltas, counts = event.get("reference_row_max_deltas"), event.get("reference_row_counts")
+        expected_counts = []
+        if (not isinstance(deltas, list) or not isinstance(counts, list)
+                or len(deltas) != chunk_steps or len(counts) != chunk_steps):
+            reasons.append("Reference response lacks all literal row displacement/count measurements")
+        else:
+            for delta, count in zip(deltas, counts, strict=True):
+                try:
+                    distance = _number(delta, "reference maximum 14D displacement")
+                    # Avoid overflow before the pinned 100-point cap. Counts 0
+                    # and 1 both send the target once, as the upstream runner does.
+                    expected = 100 if distance >= 1 else max(1, int(distance / 0.01))
+                    expected_counts.append(expected)
+                    if type(count) is not int or count != expected:
+                        reasons.append("Reference row count differs from the literal floor/cap interpolation rule")
+                except QualificationError as exc:
+                    reasons.append(str(exc))
+        points = sum(expected_counts)
+        expected_dispatches += points
+        expected_extra_sleeps += sum(count for count in expected_counts if count > 1)
+        if counter(event.get("plan_dispatches"), "reference plan dispatches", minimum=chunk_steps) != points:
+            reasons.append("Reference plan adds or removes literal interpolation points")
         try:
             age = _number(event.get("observation_age_at_return_s"), "reference observation age")
-            duration = _number(event.get("planned_duration_s"), "reference planned duration")
-            deadline = _number(event.get("plan_deadline_monotonic_s"), "reference plan deadline")
+            observed = _number(event.get("observation_timestamp_monotonic_s"), "reference observation timestamp")
             started = _number(event.get("prediction_started_monotonic_s"), "reference request start")
             prediction_s = _number(event.get("prediction_s"), "reference prediction duration")
-            if (age > settings["max_observation_age_s"] or points is None
-                    or not math.isclose(duration, points / settings["fps"], rel_tol=1e-9, abs_tol=1e-9)
-                    or not started + prediction_s < deadline <= started + prediction_s + duration * 1.1 + 0.1 + 1e-8):
-                reasons.append("Reference request freshness or fixed plan lease is invalid")
+            admitted = _number(event.get("plan_admitted_monotonic_s"), "reference plan admission")
+            deadline = _number(event.get("plan_deadline_monotonic_s"), "reference plan deadline")
+            duration = _number(event.get("planned_duration_s"), "reference nominal plan duration")
+            if (age > settings["max_observation_age_s"] or not observed <= started
+                    or not started + prediction_s <= admitted < observed + settings["max_observation_age_s"]
+                    or not admitted < deadline or deadline != phase_deadline
+                    or not math.isclose(duration, points / settings["fps"], rel_tol=1e-9, abs_tol=1e-9)):
+                reasons.append("Reference admission freshness, phase deadline or nominal point duration is invalid")
         except QualificationError as exc:
             reasons.append(str(exc))
-    dispatches = counter(proof.get("interpolation_dispatches"), "reference interpolation_dispatches", minimum=1)
-    if dispatches != planned_dispatches:
-        reasons.append("Reference dispatch count does not exhaust every accepted interpolation plan")
-    holds = _check_reference_holds(settings, integrated, completed, reasons, counter)
-    if dispatches is None or dispatches + holds != integrated.get("executed_actions"):
-        reasons.append("Reference total commands do not equal interpolation plus stationary inference holds")
+    dispatches = counter(proof.get("interpolation_dispatches"), "reference interpolation dispatches", minimum=1)
+    if dispatches != expected_dispatches or dispatches != integrated.get("executed_actions"):
+        reasons.append("Reference executed commands do not exhaust exactly the literal interpolation points")
+    if counter(proof.get("rate_steps"), "reference rate steps") != dispatches:
+        reasons.append("Reference send/sleep/observe steps do not match completed commands")
+    if counter(proof.get("multipoint_extra_sleep_calls"), "reference multi-point sleeps") != expected_extra_sleeps:
+        reasons.append("Reference multi-point sleep count differs from the pinned execution loop")
+    predictions = _rows(integrated.get("prediction_samples"), "reference prediction samples", reasons)
+    if any(counter(event.get("actions_executed_during_prediction"), "reference inference overlap") != 0
+           for event in predictions):
+        reasons.append("Reference commands overlapped synchronous inference")
+    # Observe actual fake SDK sends independently of engine counters. Native
+    # pre-hardware warmup and every completed policy RPC must have zero sends.
+    transport = _rows(integrated.get("transport_predictions"), "reference transport requests", reasons)
+    returned = [event for event in transport if "returned" in event]
+    sdk = integrated.get("sdk_commands_during_completed_rpc")
+    sdk_sends = integrated.get("sdk_sends_during_completed_rpc")
+    if (not isinstance(sdk, list) or len(sdk) != len(returned)
+            or not isinstance(sdk_sends, list) or len(sdk_sends) != len(returned)):
+        reasons.append("Reference evidence lacks independent SDK overlap measurements")
+        sdk = sdk_sends = []
+    matched = 0
+    for request, observed_pairs, observed_sends in zip(returned, sdk, sdk_sends, strict=False):
+        if (counter(observed_pairs, "reference observed SDK overlap") != 0
+                or counter(observed_sends, "reference observed single-arm SDK overlap") != 0):
+            reasons.append("SDK commands occurred during literal reference inference")
+        if request.get("mode") == "native_fixture":
+            continue
+        if request.get("mode") != "robot" or matched >= len(completed):
+            reasons.append("Reference transport requests do not match admitted predictions")
+            continue
+        event = completed[matched]
+        matched += 1
+        try:
+            start = _number(request.get("started"), "reference HTTP request start")
+            end = _number(request.get("returned"), "reference HTTP request return")
+            prediction_start = _number(event.get("prediction_started_monotonic_s"), "reference prediction start")
+            elapsed = _number(event.get("prediction_s"), "reference prediction duration")
+            if not prediction_start <= start <= end <= prediction_start + elapsed + 1e-8:
+                reasons.append("Reference HTTP measurement belongs to another prediction interval")
+        except QualificationError as exc:
+            reasons.append(str(exc))
+    if matched != len(completed):
+        reasons.append("Reference SDK overlap evidence omits completed predictions")
 
 
 def _assess(settings, direct, integrated, requested):
