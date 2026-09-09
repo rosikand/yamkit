@@ -1,5 +1,56 @@
 # HTTP rollout validation — 2026-09-09
 
+**The managed UI/debug rollout completed; the orange-lid manipulation task still failed.**
+The latest Lenovo run is **`20260908-181138-rollout-deefc67a`** in the dashboard's
+Runs list. Its five-second policy phase acquired 150 observations and completed
+132 bimanual action dispatches, about 29.925 Hz from the first to last completed
+dispatch. There were zero queue underruns or expired dispatches. Both followers
+released normally about 473 ms after local Stop detection. The operator reported
+that the UI and camera view seemed fine, but the lid was not placed in the container.
+
+Debug capture saved 25 frames per camera at 5 fps without dropped samples,
+overflow, trace errors or export errors. This sampling rate applies to saved
+debug video; the configured policy cadence remained 30 Hz. All three videos,
+joint plots, the HTML report and full metrics were imported into Runs. The
+artifact summary is `TRACE_SAVED`, with resources released. Full local evidence
+is in `.context/validation/debug-rollout-preparation/actual-run/` (git-ignored).
+
+The physical trial completed 13 warm requests with a 399 ms round-trip p95;
+its first request took 560 ms. These short-run measurements are distinct from
+the fresh, uninstrumented qualification before motion: 50 integrated warm
+requests with a 312 ms p95. One final in-flight request was invalidated during
+normal shutdown; the corresponding closed-transport log message did not mark
+the control loop failed. The retained GPU was stopped and zero containers were
+verified. Another trial requires a freshly qualified session and explicit approval.
+
+This validates one supervised managed control and evidence-capture trial. It
+does not establish manipulation success, identify the cause of jitter or rule
+out future latency stalls. The historical measurements below retain their
+original scope.
+
+The subsequent software update keeps the stock 30 Hz action cadence, records every
+observation with its video presentation timestamp, and adds a bounded slow return
+home after successful duration completion. Operator Stop, faults and expiry retain
+release without an additional home move. These changes are not validated by the
+earlier physical run; their supervised test is pending. The model's pinned
+[dataset metadata](https://huggingface.co/datasets/allenai/MolmoAct2-BimanualYAM-Dataset/blob/e9f21ae15074330839f2ac25ed4b49d76dfa1f9c/meta/info.json)
+specifies 30 fps. In the recorded trial, the policy requested approximately
+1.3-radian joint changes at a chunk transition while the configured clamps limited
+sent joint changes to 0.03 rad. That discrepancy is an investigation target, not
+proof of a mapping, network or hardware fault. Some blur was already present in
+original wrist-camera PNGs before video encoding.
+
+The update passed 1,951 hardware-free tests and nine subtests, plus Ruff. Real
+video encode/decode tests preserve 150 frames over five seconds, 300 over ten,
+and deliberately irregular frame timestamps. A Lenovo benchmark using saved
+images copied all 150 observations over five seconds with no drops and a
+0.71 ms p95 callback time (1.29 ms maximum). It opened no cameras or motors and
+made no inference requests; this measures capture-copy overhead, not complete
+physical-loop performance. Return-home tests exercise Stop, expiry, timeout,
+partial failure and late inference replies with fake arms.
+
+## First physical CLI trial
+
 **The first real VLA control rollout completed; the manipulation task failed.**
 On 2026-09-09 at 00:23 UTC, the Lenovo ran the pinned MolmoAct2 policy with live
 camera images and both follower arms. The five-second policy phase completed
@@ -267,9 +318,9 @@ action was dispatched. The simulated Stop-to-release interval was 400 ms.
 All completed requests matched the same source, task, model, graph, container,
 tunnel endpoint hash and session expiry. The task remained `pick up the red cube`.
 
-This is a 15.4-second simulated control-loop test, not a physical manipulation
-result or a guarantee about future network tails. Real cameras, live arm state
-and task success still need supervised testing. The qualification-only owner
+This was a 15.4-second simulated control-loop test, not a physical manipulation
+result or a guarantee about future network tails. At that checkpoint, real cameras,
+live arm state and task success still needed supervised testing. The qualification-only owner
 stopped app `ap-2pCN40LN9qgvVgKCgjzmVk`, verified zero containers and retired the
 Lenovo endpoint credential. Full evidence is in
 `.context/validation/production-http-qualification-attempt4.json`.
@@ -287,11 +338,12 @@ The qualification-only helper shuts down its app and retires the Lenovo endpoint
 credential when it finishes, even if its measurements pass. A supervised session
 must retain the same `app.run()` context and container (`min_containers=1`) through
 qualification, inspection and rollout, within its explicit time and spending caps.
-The next physical step is an explicitly approved current observation capture,
-followed by inspecting predictions before a separately approved short rollout.
-Rollout includes configured follower startup homing before policy control; its
-cleanup releases the followers without a return-home move. The motion approval
-must cover startup homing as well as predicted joint and gripper movements.
+The managed UI/debug workflow acquires live observations during each separately
+approved short rollout and preserves video, requested/sent targets and measured state.
+Rollout includes configured follower startup homing before policy control and a
+bounded slow return home after normal completion. Stop, faults and expiry release
+without starting another home move. The motion approval must cover startup homing,
+predicted joint/gripper movements and the final return home.
 Required cameras are acquired before either follower is enabled. If a camera is
 busy or fails to open, startup releases any acquired cameras without connecting
 an arm. UI-managed sessions hand off camera ownership automatically; for a
@@ -303,8 +355,8 @@ reclaimed the cameras. The followers homed before camera acquisition failed;
 both were released and no policy actions executed. The camera-first startup
 order prevents that failure from enabling the followers. Validation passed
 1,804 software tests and 9 subtests, plus Ruff, including camera failure before
-arm activation and camera release after an arm connection failure. A subsequent physical
-policy rollout is still required to validate control and task behavior.
+arm activation and camera release after an arm connection failure. Subsequent physical
+CLI and managed UI trials completed their control loops; the manipulation task remains unsuccessful.
 
 The existing `policy-probe` CLI uses SDK/eager execution; inspecting a saved capture
 on this HTTP/graph service requires a matching HTTP `saved_probe` request. Saved

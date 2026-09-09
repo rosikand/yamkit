@@ -36,6 +36,7 @@ _READ_RE = re.compile(r"^\s*(\S+) q=\[([^\]]*)\] grip=(\S+)(?: btn=([01]+))?")
 _TELEOP_HZ_RE = re.compile(r"\[\s*([\d.]+)Hz\]")
 _TELEOP_PAIR_RE = re.compile(r"(\S+->\S+): (ENGAGED|idle)\s*err=\s*([-+.\dnaif]+)rad grip=(\S+)")
 _OPERATOR_PHASE_RE = re.compile(r"\[yamkit-operator\] (starting|homing|synchronizing|ready|holding|stopping|closing)\s*$")
+_ROLLOUT_PHASE_RE = re.compile(r"\[yamkit-rollout\] (running|returning_home|releasing|released)\s*$")
 # lerobot-record progress (message wording varies between versions; match loosely)
 _EPISODE_RE = re.compile(r"[Rr]ecord(?:ing)?\s+episode\s+(\d+)")
 _PREPARING_RE = re.compile(r"Preparing episode\s+(\d+): waiting for operator readiness\.")
@@ -129,6 +130,10 @@ def _group_alive(pid: int) -> bool:
 def parse_line(line: str, parsed: dict[str, Any]) -> None:
     """Update the shared parsed-state dict from one line of child output (in place)."""
     line = _ANSI_RE.sub("", line)
+    m = _ROLLOUT_PHASE_RE.search(line)
+    if m:
+        parsed["rollout_phase"] = m.group(1)
+        return
     m = _OPERATOR_PHASE_RE.search(line)
     if m:
         parsed["operator_phase"] = m.group(1)

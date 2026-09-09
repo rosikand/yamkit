@@ -45,6 +45,7 @@ d.mkdir(parents=True)
 (d/'summary.json').write_text(json.dumps({'resources_released':True,'rig':a.rig}))
 (d/'trace.json').write_text('{"events":[]}')
 (d/'metrics.json').write_text('{"executed_actions":132}')
+(d/'video_timeline.json').write_text('{"nominal_fps":30}')
 (d/'top.mp4').write_bytes(b'fake video fixture')
 (d/'report.html').write_text('<html>fake report</html>')
 (d/'unexpected-secret.json').write_text('PRIVATE_FILE_MUST_NOT_IMPORT')
@@ -78,11 +79,12 @@ d.symlink_to(renamed,target_is_directory=True)
         if failure == "copy":
             assert any("artifact import incomplete" in line for line in detail["log"])
         return
-    assert detail["artifacts"] == ["metrics.json", "report.html", "summary.json", "trace.json"]
+    assert detail["artifacts"] == ["metrics.json", "report.html", "summary.json", "trace.json", "video_timeline.json"]
     assert detail["videos"] == ["top.mp4"]
     artifact = ui.client.get(f"/api/deployments/{run_id}/artifact/summary.json")
     assert artifact.status_code == 200
     assert artifact.json() == {"resources_released": True, "rig": str(ui.rig.path)}
+    assert ui.client.get(f"/api/deployments/{run_id}/artifact/video_timeline.json").json() == {"nominal_fps": 30}
     assert ui.client.get(f"/api/deployments/{run_id}/video/top.mp4").content == b"fake video fixture"
     report = ui.client.get(f"/api/deployments/{run_id}/artifact/report.html")
     assert "sandbox" in report.headers["content-security-policy"]

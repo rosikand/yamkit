@@ -748,7 +748,8 @@ pages.inference = {
         <div id="inf-attach-controls">
           <div class="hint">Conductor prepares and qualifies the cloud session. Enter its exact warmed task above. This page attaches over HTTP using ten-step inference and raw RGB.</div>
           <label class="check"><input type="checkbox" id="inf-mapping" /> I verified left/right arms, cameras and gripper calibration and accept this policy's YAM mapping.</label>
-          <label class="check"><input type="checkbox" id="inf-trace" /> Save debug video and joint traces (orange-lid task, 5 or 10 seconds).</label>
+          <label class="check"><input type="checkbox" id="inf-trace" /> Save 30 fps video and joint traces (orange-lid task, 5 or 10 seconds).</label>
+          <div class="hint">MolmoAct2 action rate: 30 Hz. Debug video preserves the timing of those camera observations, including gaps.</div>
           <div class="toolbar"><button id="btn-inf-preflight">Check retained session (no hardware)</button></div>
           <div id="inf-qualification-status" class="hint"></div>
         </div>
@@ -762,7 +763,7 @@ pages.inference = {
           <button id="btn-ro" class="danger">Start rollout</button><button id="btn-inf-stop" class="danger">Stop local execution</button>
           <button id="btn-cloud-stop">Shut down owned cloud service</button>
         </div>
-        <div class="hint warn">Start rollout enables motors and moves the followers. Stop halts local execution; cloud shutdown is separate. Closing this browser is not Stop.</div>
+        <div class="hint warn">Start rollout enables motors and moves the followers. Normal completion returns them home slowly before release. Stop interrupts motion and releases the arms. Closing this browser is not Stop.</div>
         <div class="hint">Retained sessions expire automatically. Conductor manages their preparation and shutdown. Check the session again after changing any rollout option.</div>
       </div></div>
       <div class="sect"><div class="sect-head">Action probe · never executes predicted positions</div><div class="panel pad">
@@ -791,7 +792,7 @@ pages.inference = {
     $("#btn-ro").onclick = (e) => {
       this.syncForm();
       if ($("#btn-ro").disabled) return;
-      if (!confirm("Start rollout? Motors will be enabled and the follower arms WILL move. Clear the workspace and supervise the run.")) return;
+      if (!confirm("Start rollout? Motors will be enabled and the follower arms WILL move, then return home slowly after normal completion. Stop interrupts motion and releases the arms. Clear the workspace and supervise the run.")) return;
       this.launch("/session/rollout", { confirm_motion: true, supervised_confirmed: true }, e.target);
     };
     $("#btn-inf-preflight").onclick = () => this.checkAttachment();
@@ -854,7 +855,7 @@ pages.inference = {
       const result = await post("/inference/preflight", selected);
       if (sequence !== this._checkSequence || JSON.stringify(this.selection()) !== key) return;
       this._qualification = { ...result, key,
-        deadline: requestedAt + Math.max(0, (result.expires_at - result.checked_at - selected.duration - 30) * 1000) };
+        deadline: requestedAt + Math.max(0, (result.expires_at - result.checked_at - selected.duration - 60) * 1000) };
     } catch (e) {
       if (sequence === this._checkSequence && JSON.stringify(this.selection()) === key)
         this._qualification = { key, ready: false, reason: e.message };
@@ -897,11 +898,25 @@ pages.inference = {
     $("#btn-inf-preflight").disabled = session.active || this._checking || this._launching || !modal;
     $("#btn-ro").disabled ||= modalBlocked || !!profile && (!profile.mapping_verified || (profile.id === "molmoact2" && selected.rtc));
     $("#btn-inf-stop").disabled = !session.active;
+    const rolloutPhase = session.parsed?.rollout_phase;
+    $("#btn-inf-stop").textContent = session.active && session.mode === "rollout"
+      ? rolloutPhase === "released" ? "Interrupt saving" : "Stop and release arms"
+      : "Stop local execution";
     const submitted = this._submitted;
     const matches = submitted && submitted.selection === JSON.stringify(selected) && submitted.saved === $("#inf-saved").value && submitted.id === session.meta?.operation_id;
     $("#inf-status").textContent = matches ? `${session.mode}: ${session.active ? (session.stopping ? "stopping local process…" : "running…") : session.stop_requested ? "stopped by user" : session.returncode === 0 ? "completed" : "failed or stopped"} · operation ${submitted.id}` : "No completed operation for this selection. Changing options invalidates the displayed readiness result.";
     const managedRollout = session.active && session.mode === "rollout";
-    if (managedRollout && !matches) $("#inf-status").textContent = `rollout: ${session.stopping ? "stopping local process…" : "running…"} · ${session.meta?.task || ""}`;
+    if (managedRollout) {
+      const phases = {
+        running: "Policy running — 30 Hz",
+        returning_home: "Returning home — keep clear; Stop releases the arms",
+        releasing: "Releasing arms…",
+        released: session.meta?.capture_trace ? "Arms released — saving video and joint traces…" : "Arms released — finishing…",
+      };
+      const status = session.stopping ? "Stopping — releasing arms and finishing cleanup…"
+        : phases[rolloutPhase] || "Preparing cameras and arms…";
+      $("#inf-status").textContent = `${status} · ${session.meta?.task || ""}`;
+    }
     $("#inf-result").textContent = matches || managedRollout ? (session.log || []).join("\n") +
       (session.parsed?.result ? "\n" + JSON.stringify(session.parsed.result, null, 2) : "") : "";
     syncCams();

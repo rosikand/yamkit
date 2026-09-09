@@ -107,8 +107,16 @@ def test_output_symlink_and_parent_escape_rejected_before_writing(tmp_path, monk
         module.render(tmp_path)
 
 
-def test_html_escaped_synthetic_labeled_and_samples_never_connected(tmp_path, monkeypatch):
-    saved(tmp_path)
+@pytest.mark.parametrize("fps", [5, 30])
+def test_html_escaped_synthetic_labeled_and_samples_never_connected(tmp_path, monkeypatch, fps):
+    summary, _ = saved(tmp_path)
+    summary["video_fps"] = fps
+    if fps == 30:
+        summary.update(video_timing='Original PTS, gaps retained <img onerror=bad>',
+                       video_quality='Near-lossless <script>bad</script>',
+                       capture_scope='Policy phase only; startup and return-home movement are not recorded')
+        (tmp_path / "video_timeline.json").write_text('{}')
+    (tmp_path / "summary.json").write_text(json.dumps(summary))
     plots = []
     closed = []
 
@@ -138,6 +146,13 @@ def test_html_escaped_synthetic_labeled_and_samples_never_connected(tmp_path, mo
     assert "<script>" not in document and "&lt;script&gt;" in document
     assert "<img onerror=test>" not in document and "&lt;img onerror=test&gt;" in document
     assert "Synthetic software fixture" in document and "No arms were connected" in document
+    assert f"Nominal video capture rate: {fps} fps" in document
+    assert '<img onerror=bad>' not in document and '<script>bad</script>' not in document
+    if fps == 30:
+        assert 'href="video_timeline.json"' in document and 'Original PTS, gaps retained' in document
+        assert 'return-home movement are not recorded' in document
+    else:
+        assert 'Legacy sampled video' in document and 'href="video_timeline.json"' not in document
     assert plots and all(kwargs["linestyle"] == "none" for _, kwargs in plots)
     assert len(closed) == 2
     assert os.environ["MPLCONFIGDIR"] == str(cache)

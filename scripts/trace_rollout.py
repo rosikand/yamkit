@@ -19,6 +19,8 @@ import threading
 import time
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
+from fractions import Fraction
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,7 +28,10 @@ TASK = "pick up the orange lid and place it into the black circular container"
 CAMERAS = ("top", "left_wrist", "right_wrist")
 ACTION_NAMES = tuple(f"{side}_{joint}.pos" for side in ("left", "right")
                      for joint in (*[f"joint_{i}" for i in range(1, 7)], "gripper"))
-VIDEO_FPS = 5
+VIDEO_FPS = 30
+VIDEO_TIME_BASE = Fraction(1, 1_000_000)
+FRAME_TRIPLET_BYTES = 3 * 480 * 640 * 3
+MEMORY_HEADROOM_BYTES = 512 * 1024 * 1024
 MAX_EVENTS = 4096
 MAX_CHUNKS = 128
 MAX_ROLLOUT_WALL_S = 120
@@ -38,13 +43,15 @@ def plan(duration=5):
             "duration_s": duration, "maximum_rollout_wall_s": MAX_ROLLOUT_WALL_S,
             "maximum_export_wall_s": MAX_EXPORT_WALL_S,
             "video_fps": VIDEO_FPS, "max_frame_triplets": duration * VIDEO_FPS + 3,
-            "max_frame_bytes": (duration * VIDEO_FPS + 3) * 3 * 480 * 640 * 3,
+            "max_frame_bytes": (duration * VIDEO_FPS + 3) * FRAME_TRIPLET_BYTES,
+            "memory_headroom_bytes": MEMORY_HEADROOM_BYTES,
             "max_events": MAX_EVENTS, "max_chunks": MAX_CHUNKS,
             "observations": "Existing robot observations; local receipt timestamps, not camera exposure",
             "commands": "Requested and completed per-side post-clamp targets; failed sends are retained",
             "production_guards_unchanged": True, "qualification_evidence": False,
-            "video_encoding": "LeRobot image/video utilities only after confirmed robot release",
-            "run_effects": "Connect cameras, energize/home both followers, run policy phase, release without homing"}
+            "video_encoding": "Exact RGB PNGs plus near-lossless H.264 with observation-timestamp PTS, after release",
+            "run_effects": "Connect cameras, energize/home both followers, run policy phase, return home after healthy duration completion, then release; Stop or a fault aborts movement and releases",
+            "capture_scope": "Policy phase only; startup and return-home movement are not recorded"}
 
 
 def parse_args(argv=None):
@@ -64,6 +71,37 @@ def parse_args(argv=None):
     return args
 
 
+def available_memory_bytes(meminfo=Path('/proc/meminfo'), cgroup_root=Path('/sys/fs/cgroup'),
+                           process_cgroup=Path('/proc/self/cgroup')):
+    """Read Linux host and applicable cgroup limits; no allocations or device calls."""
+    lines = meminfo.read_text().splitlines()
+    candidates = [int(line.split()[1]) * 1024 for line in lines if line.startswith('MemAvailable:')]
+    if len(candidates) != 1 or candidates[0] <= 0:
+        raise ValueError('Linux MemAvailable is required before reserving trace frames')
+    if process_cgroup.is_file():
+        for line in process_cgroup.read_text().splitlines():
+            _, controllers, relative = line.split(':', 2)
+            if controllers == '':
+                base, limit_name, used_name = cgroup_root, 'memory.max', 'memory.current'
+            elif 'memory' in controllers.split(','):
+                base, limit_name, used_name = cgroup_root / 'memory', 'memory.limit_in_bytes', 'memory.usage_in_bytes'
+            else:
+                continue
+            current = base / relative.lstrip('/')
+            if '..' in current.parts:
+                continue
+            while current.is_relative_to(base):
+                limit, used = current / limit_name, current / used_name
+                if limit.is_file() and used.is_file():
+                    value = limit.read_text().strip()
+                    if value != 'max':
+                        candidates.append(max(0, int(value) - int(used.read_text().strip())))
+                if current == base:
+                    break
+                current = current.parent
+    return min(candidates)
+
+
 class Collector:
     def __init__(self, duration, *, clock=time.monotonic):
         self.duration, self.clock = duration, clock
@@ -71,11 +109,13 @@ class Collector:
         self.metrics = None
         self.active = False
         self.phase_started = self.phase_ended = None
-        self.next_frame_at = None
         self.frame_capacity = duration * VIDEO_FPS + 3
+        self.frame_pool = None
+        self.frame_observation_indices = []
+        self.memory_preflight = None
         self.lock = threading.RLock()
         self.counts = {"events_dropped": 0, "frames_dropped": 0, "chunks_dropped": 0,
-                       "video_sample_slots_missed": 0, "trace_errors": 0}
+                       "observation_frames_seen": 0, "trace_errors": 0}
         self.trace_error_types = set()
 
     def safely(self, operation, *args, **kwargs):
@@ -100,9 +140,22 @@ class Collector:
 
     def start_phase(self):
         self.phase_started = self.clock()
-        self.next_frame_at = self.phase_started
         self.active = True
         self.event("policy_phase_started")
+
+    def reserve_frames(self):
+        import numpy as np
+
+        needed = self.frame_capacity * FRAME_TRIPLET_BYTES
+        self.memory_preflight = {"available_bytes": available_memory_bytes(), "frame_bytes": needed,
+                                 "headroom_bytes": MEMORY_HEADROOM_BYTES}
+        if self.memory_preflight['available_bytes'] < needed + MEMORY_HEADROOM_BYTES:
+            raise MemoryError('Insufficient available memory for all 30 Hz observation frames')
+        # Prefault the complete bounded pool before the normal CLI can connect
+        # hardware. Observation callbacks copy into these slots without another
+        # retained RGB allocation or any compression/disk work.
+        self.frame_pool = np.empty((self.frame_capacity, 3, 480, 640, 3), dtype=np.uint8)
+        self.frame_pool.fill(0)
 
     def end_phase(self):
         self.active = False
@@ -115,12 +168,10 @@ class Collector:
         import numpy as np
 
         started = self.clock()
-        self.event("observation", positions=[float(obs[key]) for key in ACTION_NAMES])
-        if self.next_frame_at is None or started < self.next_frame_at:
-            return
-        missed = max(0, math.floor((started - self.next_frame_at) * VIDEO_FPS))
-        self.counts["video_sample_slots_missed"] += missed
-        self.next_frame_at += (missed + 1) / VIDEO_FPS
+        observation_index = self.counts['observation_frames_seen']
+        self.counts['observation_frames_seen'] += 1
+        self.event("observation", observation_index=observation_index,
+                   positions=[float(obs[key]) for key in ACTION_NAMES])
         if len(self.frames) >= self.frame_capacity:
             self.counts["frames_dropped"] += 1
             return
@@ -130,8 +181,16 @@ class Collector:
             self.counts["frames_dropped"] += 1
             raise ValueError("Unexpected trace image shape or dtype")
         # Only bounded copies here; no compression, disk I/O, extra reads or video workers.
-        self.frames.append((started, tuple(frame.copy() for frame in images)))
+        if self.frame_pool is None:  # Hardware-free collectors/tests can remain lazily allocated.
+            copied = tuple(frame.copy() for frame in images)
+        else:
+            copied = tuple(self.frame_pool[len(self.frames), index] for index in range(len(CAMERAS)))
+            for destination, frame in zip(copied, images, strict=True):
+                np.copyto(destination, frame)
+        self.frames.append((started, copied))
+        self.frame_observation_indices.append(observation_index)
         self.event("video_sample", frame_index=len(self.frames) - 1,
+                   observation_index=observation_index,
                    observation_receipt_monotonic_s=started, copy_s=self.clock() - started)
 
     def capture_chunk(self, result, observation_time):
@@ -273,6 +332,88 @@ def wall_limit(seconds):
         signal.signal(signal.SIGALRM, previous)
 
 
+def video_timeline(timestamps, phase_start, phase_end, observation_indices=None):
+    """One presentation entry per original observation; never resample across gaps."""
+    if not timestamps:
+        return {"nominal_fps": VIDEO_FPS, "time_base": [1, 1_000_000], "frames": [],
+                "origin_monotonic_s": None, "policy_phase_offset_s": None, "duration_s": 0.0}
+    if (len(timestamps) > 10 * VIDEO_FPS + 3
+            or any(type(value) not in (int, float) or not math.isfinite(value)
+                   for value in [phase_start, phase_end, *timestamps])
+            or phase_end <= phase_start or phase_end - phase_start > MAX_ROLLOUT_WALL_S
+            or timestamps[0] < phase_start or timestamps[-1] >= phase_end):
+        raise ValueError('Video timestamps must lie within the bounded recorded policy phase')
+    origin = timestamps[0]
+    points = [round((at - origin) / VIDEO_TIME_BASE) for at in timestamps]
+    end = round((phase_end - origin) / VIDEO_TIME_BASE)
+    if any(right <= left for left, right in pairwise(points)) or end <= points[-1]:
+        raise ValueError('Video timestamps must be strictly increasing at microsecond precision')
+    indices = list(range(len(points))) if observation_indices is None else observation_indices
+    if (len(indices) != len(points) or any(type(index) is not int or index < 0 for index in indices)
+            or any(right <= left for left, right in pairwise(indices))):
+        raise ValueError('Video observation indices must preserve their original order')
+    return {"nominal_fps": VIDEO_FPS, "time_base": [1, 1_000_000], "origin_monotonic_s": origin,
+            "policy_phase_offset_s": origin - phase_start, "duration_s": end * float(VIDEO_TIME_BASE),
+            "timestamp_basis": "Original observation receipt; not camera exposure",
+            "gap_behavior": "Previous image remains displayed until the next original observation; no invented frames",
+            "frames": [{"source_index": index, "observation_index": indices[index],
+                        "receipt_monotonic_s": timestamps[index], "pts": point,
+                        "duration_ticks": (points[index + 1] if index + 1 < len(points) else end) - point}
+                       for index, point in enumerate(points)]}
+
+
+def encode_timestamped_video(images, video_path, timeline):
+    """Use LeRobot's codec configuration and PyAV for the missing variable-PTS API.
+
+    LeRobot encode_video_frames and StreamingVideoEncoder use frame count / FPS,
+    with no caller-supplied timestamps. Keep their H.264 configuration but assign
+    original PTS and durations here so irregular observations cannot speed up.
+    """
+    import av
+    from lerobot.configs.video import RGBEncoderConfig
+
+    rows = timeline['frames']
+    if not rows:
+        raise ValueError('Video encoding requires recorded observation frames')
+    configuration = RGBEncoderConfig(vcodec='h264', crf=12, preset='veryfast')
+    iterator = iter(images)
+    with av.open(str(video_path), 'w') as output:
+        stream = output.add_stream(configuration.vcodec, rate=VIDEO_FPS,
+                                   options=configuration.get_codec_options(1, as_strings=True))
+        stream.pix_fmt = configuration.pix_fmt
+        stream.time_base = stream.codec_context.time_base = VIDEO_TIME_BASE
+        stream.codec_context.max_b_frames = 0
+        durations = {row['pts']: row['duration_ticks'] for row in rows}
+        encoded_points = set()
+
+        def mux(packets):
+            for packet in packets:
+                # With B-frames disabled there is one encoded access unit per
+                # input frame; reject unexpected timestamp conversion explicitly.
+                point = round(packet.pts * packet.time_base / VIDEO_TIME_BASE)
+                if point not in durations or point in encoded_points:
+                    raise ValueError('Encoder returned an unknown observation timestamp')
+                encoded_points.add(point)
+                packet.duration = round(durations[point] * VIDEO_TIME_BASE / packet.time_base)
+                output.mux(packet)
+
+        for index, row in enumerate(rows):
+            try:
+                image = next(iterator)
+            except StopIteration:
+                raise ValueError('Video frame count differs from its observation timeline') from None
+            if index == 0:
+                stream.height, stream.width = image.shape[:2]
+            frame = av.VideoFrame.from_ndarray(image, format='rgb24')
+            frame.pts, frame.time_base = row['pts'], VIDEO_TIME_BASE
+            mux(stream.encode(frame))
+        if next(iterator, None) is not None:
+            raise ValueError('Video contains more images than its observation timeline')
+        mux(stream.encode())
+        if encoded_points != set(durations):
+            raise ValueError('Encoder did not preserve every observation frame')
+
+
 def export(collector, outdir):
     """Only call after rollout unwound; no image writes until resources are released."""
     released = collector.released()
@@ -284,9 +425,13 @@ def export(collector, outdir):
                "action_names": ACTION_NAMES, "camera_names": CAMERAS,
                "timestamps": "Host monotonic receipt/dispatch times; camera exposure unobserved",
                "counts": collector.counts, "trace_error_types": sorted(collector.trace_error_types),
+               "memory_preflight": collector.memory_preflight,
                "overflow": any(collector.counts[key] for key in ("events_dropped", "frames_dropped", "chunks_dropped")),
                "frame_count": len(collector.frames), "video_fps": VIDEO_FPS,
-               "video_timing": "Frames are sampled at at most 5 fps; use frame_timestamps.json for true timing and gaps",
+               "observation_frames_missing": max(0, collector.counts['observation_frames_seen'] - len(collector.frames)),
+               "video_timing": "Every captured observation has its original variable presentation timestamp; video_timeline.json preserves gaps and the policy-phase offset",
+               "video_quality": "Near-lossless H.264 CRF 12, yuv420p; exact original RGB PNGs retained",
+               "capture_scope": "Policy phase only; startup and return-home movement are not recorded",
                "full_metrics_available": collector.metrics is not None, "video_export_errors": {},
                "report_available": False, "render_error_type": None}
     write_json(outdir / "trace.json", {"events": collector.events, "chunks": collector.chunks})
@@ -298,18 +443,19 @@ def export(collector, outdir):
         summary["status"] = "EXPORT_SKIPPED_RESOURCES_OPEN"
         write_json(outdir / "summary.json", summary)
         return summary
-    from lerobot.configs.video import RGBEncoderConfig
     from lerobot.datasets.image_writer import write_image
-    from lerobot.datasets.video_utils import encode_video_frames
 
+    timeline = video_timeline([at for at, _ in collector.frames], collector.phase_started, collector.phase_ended,
+                              collector.frame_observation_indices or None)
+    write_json(outdir / "video_timeline.json", timeline)
     for camera_index, name in enumerate(CAMERAS if collector.frames else ()):
         try:
             directory = outdir / "frames" / name
             directory.mkdir(parents=True)
             for index, (_, images) in enumerate(collector.frames):
                 write_image(images[camera_index], directory / f"frame-{index:06d}.png", compress_level=1)
-            encode_video_frames(directory, outdir / f"{name}.mp4", VIDEO_FPS,
-                                video_encoder=RGBEncoderConfig(vcodec="h264", crf=23, preset="veryfast"), encoder_threads=1)
+            encode_timestamped_video((images[camera_index] for _, images in collector.frames),
+                                     outdir / f"{name}.mp4", timeline)
         except TimeoutError:
             raise  # The export alarm is absolute; never continue into another encoder after it fires.
         except Exception as exc:  # noqa: BLE001 — artifacts survive an encoder error after hardware release.
@@ -372,6 +518,7 @@ def execute(args):
     status, error_type = 0, None
     try:
         with install_hooks(collector), wall_limit(MAX_ROLLOUT_WALL_S):
+            collector.reserve_frames()
             cli.app(args=rollout_arguments(args), standalone_mode=False)
     except BaseException as exc:  # noqa: BLE001 — preserve partial trace after normal runner cleanup.
         status, error_type = 1, type(exc).__name__

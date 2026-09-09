@@ -278,17 +278,23 @@ as in teleop bound every commanded step.
 
 For optional Modal GPU inference and browser deployment, see [docs/MODAL.md](docs/MODAL.md).
 Local remains the default. MolmoAct2-YAM has a reviewed source mapping and a local synchronous
-path. One supervised five-second Modal HTTP control trial on the Lenovo completed 132 bimanual
-policy dispatches with zero queue underruns and normal arm release. **The orange-lid manipulation
-task failed**; this demonstrates the live control path, not useful task behavior. See the
+path. The latest supervised five-second trial ran through the Lenovo UI and completed 132 bimanual
+policy dispatches at about 29.9 Hz after the first action, with zero queue underruns and normal
+arm release. Live previews, three saved videos, joint plots and full metrics are available in
+**Runs → `20260908-181138-rollout-deefc67a`**. **The orange-lid manipulation task failed**;
+this demonstrates the managed control and debugging path, not useful task behavior. See the
 [physical trial evidence and limits](docs/VLA_HTTP_ROLLOUT.md).
 
 **Physical Modal rollout requires a current passing qualification on the actual robot host**,
 separate mapping acceptance and explicit supervised confirmation. The trial's retained session
 was retired; each new session must qualify again. The Inference page can now attach the exact
 qualified retained session and launch a managed trial with optional debug video and joint traces.
-This new UI/debug workflow has been tested with fake hardware only. Expired, stale or mismatched
-sessions remain blocked; readiness or confirmation alone cannot enable motion. See the
+The supervised UI trial saved 25 frames per camera at 5 fps with no capture drops or trace/export
+errors; policy control remained at 30 Hz. The subsequent update captures every 30 Hz observation
+with its playback timestamp and returns the followers home slowly after normal completion.
+Stop, faults and expiry retain prompt release. These two changes still need supervised hardware
+validation. The previous trial's GPU shutdown was verified. Expired, stale or
+mismatched sessions remain blocked; readiness or confirmation alone cannot enable motion. See the
 [managed trial and debugging workflow](docs/VLA_DEBUGGING.md). Checks and probes remain available. SmolVLA
 and pi05 base profiles support native checks and are blocked from physical rollout because they
 lack a reviewed YAM mapping. Guided remote RTC and local Molmo guidance are unsupported. See
@@ -392,8 +398,8 @@ Every command accepts `--help`. Local `record`/`teleoperate`/`rollout`/`train` p
 Modal rollout rejects extra LeRobot flags and requires the same qualification and confirmation
 checks even with `--dry-run`. Browser Modal Start is available through the managed retained-session
 workflow only after its exact session passes the current qualification and confirmation checks;
-expired or mismatched sessions remain blocked. The new UI launch/debug path has hardware-free
-test coverage and still needs supervised physical validation. See [VLA debugging](docs/VLA_DEBUGGING.md).
+expired or mismatched sessions remain blocked. A supervised UI debug trial completed with saved
+videos and joint traces; manipulation success remains unvalidated. See [VLA debugging](docs/VLA_DEBUGGING.md).
 
 ## How it fits together
 

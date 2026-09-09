@@ -256,7 +256,313 @@ def test_remote_rollout_runs_actual_strategy_and_no_home(transport, rollout_conf
     assert result["sample_count"] >= 1
     assert result["peak_queue_depth"] > 0
     assert result["last_queue_depth_before_stop"] > 0
+    assert result["duration_completed"] and not result["home_attempted"]
     assert all(r.closed and r.commands for r in fake_connect.values())
+
+
+def _enable_rollout_home(rollout_config):
+    from yamkit.config import RigConfig
+
+    rig = RigConfig.load(rollout_config.robot.rig)
+    rig.control.home_speed = 0.25
+    rig.save()
+
+
+def test_normal_duration_cancels_policy_then_homes_concurrently_before_camera_release(
+        transport, rollout_config, fake_connect, monkeypatch, caplog):
+    from yamkit.arm import YamArm
+    from yamkit.remote_rollout import run_remote_rollout
+
+    _enable_rollout_home(rollout_config)
+    calls = {}
+    both_homing = threading.Barrier(2)
+    original = YamArm.go_home
+
+    def home(self, *args, **kwargs):
+        calls[self.name] = calls.get(self.name, 0) + 1
+        if calls[self.name] == 2:
+            robot = rollout_config.robot._runtime_robot
+            assert all(camera.is_connected for camera in robot.cameras.values())
+            assert all(not fake.closed for fake in fake_connect.values())
+            assert rollout_config.policy._session_shutdown_event.is_set() is False
+            assert kwargs["speed"] == 0.25
+            both_homing.wait(timeout=2)
+        return original(self, *args, **kwargs)
+
+    from yamkit import remote_rollout
+    original_invalidate = remote_rollout.UnguidedRemoteInferenceEngine.invalidate
+    cancelled = threading.Event()
+
+    def invalidate(engine):
+        original_invalidate(engine)
+        assert not engine.action_queue.valid and engine.action_queue.qsize() == 0
+        assert engine._policy.session._closed
+        cancelled.set()
+
+    def checked_home(self, *args, **kwargs):
+        if calls.get(self.name) == 1:
+            assert cancelled.is_set()
+        return home(self, *args, **kwargs)
+
+    monkeypatch.setattr(YamArm, "go_home", checked_home)
+    monkeypatch.setattr(remote_rollout.UnguidedRemoteInferenceEngine, "invalidate", invalidate)
+    with caplog.at_level("INFO", logger="yamkit.remote_rollout"):
+        result = run_remote_rollout(rollout_config, shutdown_event=threading.Event())
+    assert calls == {"left_follower": 2, "right_follower": 2}
+    assert result["duration_completed"] and result["home_attempted"] and result["home_completed"]
+    assert not result["home_aborted"] and not result["failed"]
+    assert result["stop_to_robot_release_s"] is None
+    assert result["fault_stop_to_robot_release_s"] is None
+    assert result["policy_stop_to_home_s"] >= 0
+    assert result["policy_stop_to_robot_release_s"] >= result["home_duration_s"] > 0
+    assert [record.message for record in caplog.records if "[yamkit-rollout]" in record.message] == [
+        "[yamkit-rollout] running", "[yamkit-rollout] returning_home",
+        "[yamkit-rollout] releasing", "[yamkit-rollout] released"]
+    assert all(fake.closed for fake in fake_connect.values())
+    for fake in fake_connect.values():
+        np.testing.assert_allclose(fake.pos[:6], 0, atol=1e-9)
+        assert fake.pos[6] > 0, "Home must preserve the current gripper target"
+
+
+@pytest.mark.parametrize("abort", ["operator_stop", "session_expired", "home_timeout"])
+def test_return_home_abort_releases_both_without_retry(
+        transport, rollout_config, fake_connect, monkeypatch, abort):
+    from yamkit import remote_rollout
+    from yamkit.arm import YamArm
+
+    _enable_rollout_home(rollout_config)
+    stop = threading.Event()
+    entered = threading.Barrier(2)
+    calls = {}
+    original = YamArm.go_home
+    if abort == "home_timeout":
+        monkeypatch.setattr(remote_rollout, "RETURN_HOME_TIMEOUT_S", 0.05)
+    if abort == "session_expired":
+        # Keep the fake transport active through startup and the policy phase.
+        transport.http_session_expires_at = time.time() + 30
+        original_return = remote_rollout._return_home_after_duration
+
+        def soon_expiring(*args, **kwargs):
+            transport.http_session_expires_at = time.time() + 0.05
+            return original_return(*args, **kwargs)
+
+        monkeypatch.setattr(remote_rollout, "_return_home_after_duration", soon_expiring)
+
+    def home(self, *args, **kwargs):
+        calls[self.name] = calls.get(self.name, 0) + 1
+        if calls[self.name] == 1:
+            return original(self, *args, **kwargs)
+        entered.wait(timeout=2)
+        if abort == "operator_stop":
+            stop.set()
+        assert kwargs["stop"].wait(1), "Every home worker must see Stop or the finite deadline"
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(YamArm, "go_home", home)
+    if abort == "operator_stop":
+        result = remote_rollout.run_remote_rollout(rollout_config, shutdown_event=stop)
+    else:
+        with pytest.raises(RemoteFault, match=abort) as failure:
+            remote_rollout.run_remote_rollout(rollout_config, shutdown_event=stop)
+        result = failure.value.metrics
+        assert result["failed"]
+    assert calls == {"left_follower": 2, "right_follower": 2}
+    assert result["home_attempted"] and result["home_aborted"] and not result["home_completed"]
+    assert result["home_abort_reason"] == abort
+    assert 0 <= result["fault_stop_to_robot_release_s"] < 1
+    assert all(fake.closed for fake in fake_connect.values())
+
+
+@pytest.mark.parametrize("error", [RuntimeError("home failed"), KeyboardInterrupt(), SystemExit(1)])
+def test_home_error_or_second_interrupt_still_releases_without_retry(
+        transport, rollout_config, fake_connect, monkeypatch, error):
+    from yamkit import arm
+    from yamkit.remote_rollout import run_remote_rollout
+
+    _enable_rollout_home(rollout_config)
+    calls = []
+
+    def interrupted(jobs, *, stop):
+        calls.append(jobs)
+        raise error
+
+    # The plugin retains its original startup helper; only return-home is interrupted.
+    monkeypatch.setattr(arm, "go_home_all", interrupted)
+    with pytest.raises(RemoteFault if isinstance(error, RuntimeError) else type(error)) as failure:
+        run_remote_rollout(rollout_config, shutdown_event=threading.Event())
+    assert len(calls) == 1
+    assert failure.value.metrics["home_aborted"] and not failure.value.metrics["home_completed"]
+    assert all(fake.closed for fake in fake_connect.values())
+
+
+def test_duration_without_dispatched_actions_never_initiates_return_home(
+        transport, rollout_config, fake_connect, monkeypatch):
+    from yamkit import arm
+    from yamkit.remote_rollout import run_remote_rollout
+
+    _enable_rollout_home(rollout_config)
+    transport.hook = lambda: time.sleep(0.2)
+    monkeypatch.setattr(arm, "go_home_all", lambda *a, **kw: pytest.fail("No successful policy phase to return from"))
+    result = run_remote_rollout(rollout_config, shutdown_event=threading.Event())
+    assert result["executed_actions"] == 0
+    assert not result["duration_completed"] and not result["home_attempted"]
+    assert all(fake.closed for fake in fake_connect.values())
+
+
+def test_late_prediction_during_return_home_cannot_restore_policy_actions(
+        transport, rollout_config, fake_connect, monkeypatch):
+    from yamkit import remote_rollout
+    from yamkit.arm import YamArm
+
+    _enable_rollout_home(rollout_config)
+    pending, allow_reply = threading.Event(), threading.Event()
+    original_home = YamArm.go_home
+    original_return = remote_rollout._return_home_after_duration
+    calls, captured = {}, {}
+
+    def predict():
+        if len(transport.requests) == 2:
+            pending.set()
+            assert allow_reply.wait(3)
+
+    def returning(robot, engine, stop):
+        captured["engine"] = engine
+        captured["executed_actions"] = engine.executed_actions
+        return original_return(robot, engine, stop)
+
+    def home(self, *args, **kwargs):
+        calls[self.name] = calls.get(self.name, 0) + 1
+        if calls[self.name] == 2:
+            assert pending.is_set() and not captured["engine"].action_queue.valid
+            allow_reply.set()
+        return original_home(self, *args, **kwargs)
+
+    transport.hook = predict
+    monkeypatch.setattr(YamArm, "go_home", home)
+    monkeypatch.setattr(remote_rollout, "_return_home_after_duration", returning)
+    try:
+        result = remote_rollout.run_remote_rollout(rollout_config, shutdown_event=threading.Event())
+    finally:
+        allow_reply.set()
+    assert result["home_completed"] and not result["failed"]
+    assert result["executed_actions"] == captured["executed_actions"] > 0
+    assert result["queue_depth"] == 0 and result["failed_request_count"] == 1
+    assert result["prediction_samples"][-1]["error"] == "invalidated"
+    assert all(fake.closed for fake in fake_connect.values())
+
+
+def test_expiry_at_duration_boundary_prevents_home(transport, rollout_config, fake_connect, monkeypatch):
+    from lerobot.rollout.strategies.base import BaseStrategy
+
+    from yamkit import arm
+    from yamkit.remote_rollout import run_remote_rollout
+
+    _enable_rollout_home(rollout_config)
+    ended = threading.Event()
+    original_run = BaseStrategy.run
+
+    def run(strategy, ctx):
+        original_run(strategy, ctx)
+        ended.set()
+
+    def check():
+        if ended.is_set():
+            raise RemoteFault("session expired at duration boundary")
+
+    transport.ensure_session_active = check
+    monkeypatch.setattr(BaseStrategy, "run", run)
+    monkeypatch.setattr(arm, "go_home_all", lambda *a, **kw: pytest.fail("Expired session attempted return"))
+    with pytest.raises(RemoteFault, match="expired") as failure:
+        run_remote_rollout(rollout_config, shutdown_event=threading.Event())
+    assert not failure.value.metrics["home_attempted"]
+    assert all(fake.closed for fake in fake_connect.values())
+
+
+@pytest.mark.parametrize("reason", ["operator_stop", "session_expired", "remote_fault"])
+def test_stop_or_expiry_racing_with_policy_cancellation_cannot_start_home(
+        transport, rollout_config, fake_connect, monkeypatch, reason):
+    from yamkit import arm, remote_rollout
+
+    _enable_rollout_home(rollout_config)
+    stop = threading.Event()
+    original_invalidate = remote_rollout.UnguidedRemoteInferenceEngine.invalidate
+
+    def raced_invalidate(engine):
+        original_invalidate(engine)
+        if reason == "session_expired":
+            # The guard already captured this deadline before transport closure.
+            time.sleep(0.02)
+        elif reason == "remote_fault":
+            engine._rtc_error.set()
+            stop.set()
+        else:
+            stop.set()
+
+    if reason == "session_expired":
+        original_return = remote_rollout._return_home_after_duration
+
+        def soon_expiring(*args, **kwargs):
+            transport.http_session_expires_at = time.time() + 0.01
+            return original_return(*args, **kwargs)
+
+        monkeypatch.setattr(remote_rollout, "_return_home_after_duration", soon_expiring)
+    monkeypatch.setattr(remote_rollout.UnguidedRemoteInferenceEngine, "invalidate", raced_invalidate)
+    monkeypatch.setattr(arm, "go_home_all", lambda *a, **kw: pytest.fail("Cancellation race attempted home"))
+    if reason == "operator_stop":
+        result = remote_rollout.run_remote_rollout(rollout_config, shutdown_event=stop)
+    else:
+        with pytest.raises(RemoteFault, match=reason) as failure:
+            remote_rollout.run_remote_rollout(rollout_config, shutdown_event=stop)
+        result = failure.value.metrics
+        assert result["failed"]
+    assert result["home_aborted"] and not result["home_attempted"] and not result["home_completed"]
+    assert result["home_abort_reason"] == reason
+    assert all(fake.closed for fake in fake_connect.values())
+
+
+def test_partial_strategy_setup_failure_keeps_original_error_and_releases(
+        transport, rollout_config, fake_connect, monkeypatch):
+    from lerobot.rollout.strategies.base import BaseStrategy
+
+    from yamkit.remote_rollout import run_remote_rollout
+
+    def failed_setup(*args, **kwargs):
+        raise RuntimeError("partial strategy setup failed")
+
+    monkeypatch.setattr(BaseStrategy, "setup", failed_setup)
+    with pytest.raises(RuntimeError, match="partial strategy setup failed") as failure:
+        run_remote_rollout(rollout_config, shutdown_event=threading.Event())
+    assert not failure.value.metrics["home_attempted"]
+    assert all(fake.closed for fake in fake_connect.values())
+
+
+def test_policy_invalidation_failure_cannot_skip_robot_release(
+        transport, rollout_config, fake_connect, monkeypatch):
+    from yamkit import remote_rollout
+
+    def failed_close():
+        raise RuntimeError("transport close failed")
+
+    transport.close = failed_close
+    with pytest.raises(RuntimeError, match="transport close failed"):
+        remote_rollout.run_remote_rollout(rollout_config, shutdown_event=threading.Event())
+    assert all(fake.closed for fake in fake_connect.values())
+
+
+@pytest.mark.parametrize("clock", ["wall", "monotonic"])
+def test_home_guard_retains_both_session_expiry_clocks_after_transport_close(monkeypatch, clock):
+    from yamkit import remote_rollout
+
+    now = {"wall": 100.0, "monotonic": 10.0}
+    monkeypatch.setattr(remote_rollout, "time", SimpleNamespace(
+        time=lambda: now["wall"], monotonic=lambda: now["monotonic"]))
+    transport = SimpleNamespace(http_session_expires_at=105.0, _session_deadline_monotonic=15.0)
+    event = threading.Event()
+    stop = remote_rollout._HomeStop(event, transport)
+    del transport.http_session_expires_at, transport._session_deadline_monotonic
+    assert not stop.is_set()
+    now[clock] += 5
+    assert stop.is_set() and event.is_set() and stop.reason == "session_expired"
 
 
 def test_fault_releases_without_actions_or_homing(transport, rollout_config, fake_connect, monkeypatch):

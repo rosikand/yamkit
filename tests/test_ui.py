@@ -22,6 +22,17 @@ SMOKE = ROOT / "data" / "datasets" / "smoke"
 
 
 # ----------------------------------------------------------------------------- line parsing --
+def test_rollout_phases_distinguish_return_home_from_startup_and_saving():
+    parsed = {}
+    parse_line("INFO [yamkit-operator] homing", parsed)
+    assert "rollout_phase" not in parsed
+    for phase in ("running", "returning_home", "releasing", "released"):
+        parse_line(f"INFO [yamkit-rollout] {phase}", parsed)
+        assert parsed["rollout_phase"] == phase
+    parse_line("INFO [yamkit-rollout] unrecognized", parsed)
+    assert parsed["rollout_phase"] == "released"
+
+
 def test_parse_read_line():
     parsed = {}
     parse_line("   left_follower q=[+0.001 -0.512 +0.300 +0.000 -0.100 +0.200] grip=0.98", parsed)

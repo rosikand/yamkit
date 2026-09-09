@@ -174,17 +174,26 @@ def render(directory):
                      for name in ('top', 'left_wrist', 'right_wrist')
                      if not (directory / f'{name}.mp4').is_symlink() and (directory / f'{name}.mp4').is_file())
     counts = html.escape(json.dumps(summary.get('counts', {}), sort_keys=True))
+    video_fps = html.escape(str(summary.get('video_fps', 'unspecified')))
+    video_timing = html.escape(str(summary.get('video_timing',
+        'Legacy sampled video; frame_timestamps.json contains the original receipt times and any gaps.')))
+    video_quality = html.escape(str(summary.get('video_quality', 'Encoding quality was not recorded.')))
+    capture_scope = html.escape(str(summary.get('capture_scope', 'Policy phase only.')))
+    timeline_link = (' · <a href="video_timeline.json">Video timing and frame map</a>'
+                     if not (directory / 'video_timeline.json').is_symlink()
+                     and (directory / 'video_timeline.json').is_file() else '')
     title = 'Synthetic software fixture' if summary.get('synthetic_fixture') is True else 'Saved rollout trace'
     document = f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>{title}</title><style>body{{font:16px system-ui;max-width:1100px;margin:32px auto;padding:0 20px;color:#111827}}img{{width:100%}}video{{width:100%;max-width:640px}}figure{{margin:16px 0}}code{{overflow-wrap:anywhere}}</style>
 <h1>{title}</h1><p>{'Generated test data only. No arms were connected; this is not evidence of a physical rollout.' if summary.get('synthetic_fixture') is True else ''}</p><p>{html.escape(str(summary.get('task', '')))}</p>
 <p>Gray vertical lines mark chunk merges; red dashed lines mark failed sends. Targets after the yamkit clamp are commands, not proof of movement. SDK gripper force limiting may modify the gripper target further.</p>
-<p>Points show recorded samples only. Camera exposure timestamps are unavailable. Video is sampled at up to 5 fps; consult frame_timestamps.json for gaps and exact receipt times. These plots do not establish the cause of jitter or task success.</p>
+<p>Points show recorded samples only. Camera exposure timestamps are unavailable. These plots do not establish the cause of jitter or task success.</p>
+<p>Nominal video capture rate: {video_fps} fps. {video_timing} {video_quality} {capture_scope}</p>
 <p>Resources released: {html.escape(str(summary.get('resources_released')))}. Overflow: {html.escape(str(summary.get('overflow')))}. Trace counters: <code>{counts}</code>.</p>
 <h2>Video</h2>{videos or '<p>No video is available.</p>'}
 <h2>Left follower</h2><img alt="Left follower joint traces" src="joints-left.png">
 <h2>Right follower</h2><img alt="Right follower joint traces" src="joints-right.png">
-<p><a href="summary.json">Summary</a> · <a href="trace.json">Raw trajectories and chunks</a> · <a href="frame_timestamps.json">Frame timestamps</a> · <a href="metrics.json">Full metrics</a></p></html>'''
+<p><a href="summary.json">Summary</a> · <a href="trace.json">Raw trajectories and chunks</a> · <a href="frame_timestamps.json">Frame timestamps</a>{timeline_link} · <a href="metrics.json">Full metrics</a></p></html>'''
     atomic_output(directory / 'report.html', lambda path: path.write_text(document))
     return directory / 'report.html'
 

@@ -156,13 +156,13 @@ def test_attached_preflight_expires_with_qualification_before_tunnel(attached_mo
     from yamkit.inference.qualification import MAX_AGE_S
 
     state = attached_modal
-    state.created_at = time.time() - MAX_AGE_S + 60
+    state.created_at = time.time() - MAX_AGE_S + 90
     response = state.ui.client.post("/api/inference/preflight", json=attached_payload())
     assert response.json()["ready"] is True
     assert response.json()["expires_at"] == state.created_at + MAX_AGE_S
     state.created_at -= 40
     response = state.ui.client.post("/api/inference/preflight", json=attached_payload())
-    assert response.json()["ready"] is False  # Evidence must outlast startup and the whole rollout.
+    assert response.json()["ready"] is False  # Evidence must cover startup, policy execution and return home.
     assert not state.ui.seen
 
 
@@ -693,12 +693,29 @@ def test_browser_attached_trace_selection_invalidates_qualification(attached_bro
     assert json.loads(ctx.eval("JSON.stringify(posts[1].body)"))["capture_trace"] is True
 
 
-def test_browser_attached_start_expires_before_startup_and_duration_would_overrun(attached_browser):
+@pytest.mark.parametrize("phase,label,button", [
+    ("running", "Policy running — 30 Hz", "Stop and release arms"),
+    ("returning_home", "Returning home — keep clear", "Stop and release arms"),
+    ("releasing", "Releasing arms", "Stop and release arms"),
+    ("released", "Arms released — saving video and joint traces", "Interrupt saving"),
+])
+def test_browser_managed_rollout_reports_motion_and_export_separately(attached_browser, phase, label, button):
+    ctx = attached_browser
+    state = {"active": True, "mode": "rollout", "meta": {"capture_trace": True, "task": "pick"},
+             "parsed": {"rollout_phase": phase}, "log": []}
+    ctx.eval(f"session={json.dumps(state)}; pages.inference.syncForm()")
+    assert label in ctx.eval("$('#inf-status').textContent")
+    assert ctx.eval("$('#btn-inf-stop').textContent") == button
+    assert not ctx.eval("$('#btn-inf-stop').disabled")
+    assert ctx.eval("$('#btn-ro').disabled")
+
+
+def test_browser_attached_start_reserves_startup_duration_and_return_home(attached_browser):
     ctx = attached_browser
     ctx.eval("$('#inf-mapping').checked=true")
     _check_attached_browser(ctx)
     assert ctx.eval("$('#btn-ro').disabled") is False
-    ctx.eval("browserNow+=84999; pages.inference.syncForm()")
+    ctx.eval("browserNow+=54999; pages.inference.syncForm()")
     assert ctx.eval("$('#btn-ro').disabled") is False
     ctx.eval("browserNow+=1; pages.inference.syncForm()")
     assert ctx.eval("$('#btn-ro').disabled")

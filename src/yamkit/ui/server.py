@@ -35,7 +35,7 @@ from .sessions import DeploymentLog, SessionManager
 
 FRONTEND_DIR = ROOT / "ui"
 TRACE_TASK = "pick up the orange lid and place it into the black circular container"
-TRACE_FILES = frozenset({"summary.json", "trace.json", "metrics.json", "frame_timestamps.json", "export-error.json",
+TRACE_FILES = frozenset({"summary.json", "trace.json", "metrics.json", "frame_timestamps.json", "video_timeline.json", "export-error.json",
                          "top.mp4", "left_wrist.mp4", "right_wrist.mp4",
                          "report.html", "joints-left.png", "joints-right.png"})
 
@@ -471,8 +471,8 @@ def create_app(
         http_credentials(options.modal_app)  # Verify locally; never include this private object in the response.
         expires = min(settings["http_session_expires_at"], record["created_unix_s"] + MAX_AGE_S)
         checked = time.time()
-        if checked + options.duration + 30 >= expires:
-            raise ValueError("Retained session expires too soon for this duration and 30 seconds of startup; refresh it in Conductor")
+        if checked + options.duration + 60 >= expires:
+            raise ValueError("Retained session expires too soon for this duration, 30 seconds of startup and 30 seconds of return home; refresh it in Conductor")
         return {"ready": True, "reason": "Qualified for these settings; mapping acceptance and supervised Start are still required",
                 "selection_key": options.operation_key, "checked_at": checked,
                 "expires_at": expires, "modal_app": options.modal_app}

@@ -1,12 +1,17 @@
 # Optional Modal inference and browser checks
 
 **Physical Modal rollout requires a passing qualification on the actual robot host,
-accepted mapping and explicit supervised confirmation.** No passing qualification
-has been demonstrated by the current measurements. `modal-qualify` collects evidence
+accepted mapping and explicit supervised confirmation.** Retained HTTP sessions have
+passed Lenovo qualification and completed short supervised control trials; the
+orange-lid manipulation task failed. `modal-qualify` collects evidence
 without hardware; failed, expired or foreign-host records cannot authorize motion.
 CLI validation and the integrated runner enforce these conditions before activation;
 direct raw LeRobot rollout cannot bypass that runner. Cloud workspaces cannot activate
-physical Modal rollout, and browser Modal Start remains disabled.
+physical Modal rollout. The Lenovo browser can attach an exact qualified retained
+session; expired or mismatched sessions remain blocked. Normal completion now
+returns the followers home slowly, with Stop and faults retaining prompt release.
+The 30 fps timestamped debug capture and return-home update still needs supervised
+hardware validation. See the current [debugging workflow](VLA_DEBUGGING.md).
 See [the H100 and image-fidelity investigation](MOLMO_H100.md),
 [the earlier latency investigation](MODAL_LATENCY.md),
 [the performance gate](REMOTE_PERFORMANCE.md) and [staged acceptance](acceptance-test.md).
@@ -28,15 +33,15 @@ context, background worker, base strategy and YAM plugin. See
 | Checkpoint/path | Fresh CPU/GPU check | Physical rollout |
 |---|---|---|
 | `smolvla` / `lerobot/smolvla_base` | Native 6-dimensional fixture | Blocked: no published YAM physical mapping |
-| `molmoact2` / `lerobot/MolmoAct2-BimanualYAM-LeRobot` | Native 14-dimensional fixture | Modal requires current robot-host qualification, mapping acceptance and supervised confirmation; no passing qualification demonstrated. Local sync path available; physical validation not performed |
+| `molmoact2` / `lerobot/MolmoAct2-BimanualYAM-LeRobot` | Native 14-dimensional fixture | Modal requires current robot-host qualification, mapping acceptance and supervised confirmation. Short physical control trials completed; manipulation failed. Local sync path available |
 | `pi05` / `lerobot/pi05_base` | Native 32-dimensional fixture | Blocked: no published YAM physical mapping/statistics |
 | Compatible custom local checkpoint | Existing local policy-check | Existing local LeRobot CPU/GPU path and supported local RTC |
 | Unreviewed custom Modal checkpoint | Rejected | Blocked; profile/mapping review would not remove the performance gate |
 
 MolmoAct2's saved processor uses absolute joint pose control. Its local synchronous
 path requires both standard YAM followers, calibrated LINEAR_4310 grippers, RGB
-top/left_wrist/right_wrist cameras and 30 Hz. No supervised physical mapping or
-rollout validation was performed. The pinned model advertises RTC support for continuous inference,
+top/left_wrist/right_wrist cameras and 30 Hz. Physical evidence covers the remote
+HTTP path, not the local synchronous path. The pinned model advertises RTC support for continuous inference,
 but yamkit rejects local Molmo RTC before activation because its physical profile and
 prefix processing have not been qualified with guidance. A narrow local preflight parses the effective LeRobot
 configuration, validates schema/options, then calls the unchanged upstream rollout.
