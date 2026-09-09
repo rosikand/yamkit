@@ -172,8 +172,10 @@ class ReferenceCommandGuard:
         self.period_s = _period(period_s)
         self.valid, self.generation, self.anchor_initialized = True, 0, False
         self.last_at, self._pending, self._wait_deadline = None, None, None
+        self._wait_anchor, self._wait_record = None, None
         self._clock_floor = None
         self.samples, self.inference_waits = deque(maxlen=MAX_SAMPLES), deque(maxlen=128)
+        self.inference_hold_count = 0
         self.postclamp_modified_count = 0
         self.maximum_command_velocity_rad_s = self.maximum_command_acceleration_rad_s2 = 0.0
         self.initialize_position(initial_position)
@@ -213,6 +215,11 @@ class ReferenceCommandGuard:
         if floor is not None and limit <= floor:
             self._fault("Reference inference wait deadline already elapsed")
         self._wait_deadline = limit
+        self._wait_anchor = dict(self._last_action)
+        self._wait_record = {"last_dispatch_monotonic_s": self.last_at,
+                             "deadline_monotonic_s": limit, "resumed_monotonic_s": None,
+                             "stationary": True, "hold_count": 0}
+        self.inference_waits.append(self._wait_record)
 
     def end_inference_wait(self, now):
         try:
@@ -221,16 +228,18 @@ class ReferenceCommandGuard:
             self.invalidate()
             raise
         floor = self.last_at if self.last_at is not None else self._clock_floor
-        if (not self.valid or self._wait_deadline is None or at >= self._wait_deadline
+        if (not self.valid or self._pending is not None or self._wait_deadline is None or at >= self._wait_deadline
                 or (floor is not None and at < floor)
                 or np.any(np.abs(self._velocity_all) > TOLERANCE)):
             self._fault("Reference inference wait expired or became invalid")
-        self.inference_waits.append({"last_dispatch_monotonic_s": self.last_at,
-                                     "deadline_monotonic_s": self._wait_deadline,
-                                     "resumed_monotonic_s": at, "stationary": True})
+        if self.generation and (self.last_at is None or at - self.last_at > MAX_DISPATCH_GAP + TOLERANCE):
+            self._fault("Reference inference wait command clock stalled; no catch-up")
+        self._wait_record["resumed_monotonic_s"] = at
         self._wait_deadline = None
+        self._wait_anchor, self._wait_record = None, None
         self._clock_floor = at
-        self.last_at = None  # Zero velocity only; generation, pose and validity are preserved.
+        # Preserve actual dispatch time across maintained waits. Only the first
+        # ever wait has no committed command and therefore keeps last_at=None.
 
     def _violations(self, action, step):
         position = _check_positions(action, self.lower, self.upper)
@@ -248,12 +257,19 @@ class ReferenceCommandGuard:
         return position, velocity, reasons
 
     def prepare(self, requested: Mapping, *, now: float) -> CommandStep:
-        if not self.valid or self._pending is not None or self._wait_deadline is not None:
-            self._fault("Reference command is invalid, pending, or paused for inference")
+        if not self.valid or self._pending is not None:
+            self._fault("Reference command is invalid or pending")
         try:
             action = _action(requested)
             _check_positions(action, self.lower, self.upper)
             at = finite_scalar(now, "reference dispatch time")
+            if self._wait_deadline is not None:
+                if not self.generation:
+                    self._fault("First reference inference is paused until its initial pose is captured")
+                if at >= self._wait_deadline:
+                    self._fault("Reference inference hold deadline expired")
+                if action != self._wait_anchor or action != self._last_action:
+                    self._fault("Reference inference hold must equal the exact committed stationary endpoint")
             if self._clock_floor is not None and at < self._clock_floor:
                 self._fault("Reference dispatch clock moved backwards after inference wait")
             dt = self.period_s if self.last_at is None else at - self.last_at
@@ -281,12 +297,16 @@ class ReferenceCommandGuard:
         except ValueError:
             self.invalidate()
             raise
-        modified = any(abs(actual[n] - step.shaped[n]) > TOLERANCE for n in ACTION_NAMES)
+        holding = self._wait_deadline is not None
+        # A stationary hold must not accumulate even tiny postclamp changes.
+        modified = (actual != self._wait_anchor or actual != step.shaped if holding else
+                    any(abs(actual[n] - step.shaped[n]) > TOLERANCE for n in ACTION_NAMES))
         acceleration = (velocity - step.previous_velocity) / step.dt_s
         self.postclamp_modified_count += int(modified)
         self.maximum_command_velocity_rad_s = max(self.maximum_command_velocity_rad_s, float(np.abs(velocity).max()))
         self.maximum_command_acceleration_rad_s2 = max(self.maximum_command_acceleration_rad_s2, float(np.abs(acceleration).max()))
         self.samples.append({"dispatch_index": self.generation, "monotonic_s": step.monotonic_s,
+                             "dispatch_role": "inference_hold" if holding else "interpolation",
                              "deadline_monotonic_s": deadline_monotonic_s, "dt_s": step.dt_s,
                              "requested": step.requested, "shaped": step.shaped, "sent": actual,
                              "postclamp_modified": modified, "postclamp_bounds_exceeded": bool(reasons)})
@@ -295,6 +315,9 @@ class ReferenceCommandGuard:
         self._clock_floor = step.monotonic_s
         self._last_action, self._pending = actual, None
         self.generation += 1
+        if holding:
+            self.inference_hold_count += 1
+            self._wait_record["hold_count"] += 1
         if modified or reasons:
             self._fault("Postclamp reference command changed coordination or violated bounds; stopping")
 
@@ -310,7 +333,8 @@ class ReferenceCommandGuard:
                              "timing_deviation": "shared smoothstep time dilation and endpoint holds; not literal reference timing"},
                 "initial_joint_position": dict(zip(JOINT_NAMES, self.initial_position.tolist(), strict=True)),
                 "sample_count": self.generation, "samples_dropped": max(0, self.generation - len(self.samples)),
+                "inference_hold_count": self.inference_hold_count,
                 "postclamp_modified_count": self.postclamp_modified_count,
                 "maximum_command_velocity_rad_s": self.maximum_command_velocity_rad_s,
                 "maximum_command_acceleration_rad_s2": self.maximum_command_acceleration_rad_s2,
-                "samples": list(self.samples), "inference_waits": list(self.inference_waits)}
+                "samples": list(self.samples), "inference_waits": [dict(wait) for wait in self.inference_waits]}

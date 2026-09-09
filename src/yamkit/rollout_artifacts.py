@@ -64,7 +64,12 @@ def sanitize(value: Any, *, secrets: tuple[str, ...] = (), _path: tuple[str, ...
             # is provenance, not a credential. Keep the exception at its schema path.
             package_version = (key == "tokenizers" and _path[-2:] == ("runtime_provenance", "packages")
                                and type(item) is str and re.fullmatch(r"[0-9]{1,3}(?:\.[0-9]{1,3}){1,3}", item))
-            return package_version or not _SENSITIVE_KEY.search(str(key))
+            # Reference interpolation's endpoint flag is a boolean, never a
+            # service address. Keep only these two recorded schema locations.
+            reference_endpoint = (key == "endpoint" and type(item) is bool and (
+                _path[-3:] == ("reference_execution", "dispatch_samples", "[]")
+                or (_path == ("events", "[]") and value.get("kind") == "reference_dispatch")))
+            return package_version or reference_endpoint or not _SENSITIVE_KEY.search(str(key))
 
         return {sanitize_text(str(key), secrets=secrets): sanitize(item, secrets=secrets, _path=(*_path, str(key)))
                 for key, item in value.items() if allowed(key, item)}
@@ -183,7 +188,7 @@ see `meta.json.task_success` and operator feedback when present.
   deadlines and requested values can reconstruct joins, but async has no explicit
   chunk/row foreign key. Ordered sends alone are not a one-to-one chunk join.
   With `controller_mode=reference`, all 30 rows are consumed sequentially before
-  the next RPC; inference and dispatch do not overlap. Each row's 14D straight
+  the next RPC; inference and policy-row progression do not overlap. Each row's 14D straight
   path uses shared cubic-smoothstep progress and added timing/endpoint holds for
   existing command limits. This is not literal upstream interpolation timing.
   RPC observation freshness is at most two seconds; the fixed execution lease is
@@ -191,6 +196,9 @@ see `meta.json.task_success` and operator feedback when present.
   with an additional 100 ms active dispatch/stall guard. Async row deadlines do
   not apply to reference interpolation. Duration, Stop or faults can interrupt
   the final chunk; never infer full consumption merely from a saved prediction.
+  Newer reference runs maintain the exact completed endpoint through the normal
+  command path while one RPC is pending; the main loop still monitors cameras
+  and state. Older reference runs block dispatch/capture during that wait.
 - `metrics.json`: complete available inference/queue/control/cleanup metrics;
   `summary.json`: capture scope, phase boundaries, dropped data and export errors.
   Newer remote runs include `command_shaping`: limits, counts and bounded samples
@@ -202,6 +210,11 @@ see `meta.json.task_success` and operator feedback when present.
   raw model row. `reference_execution.dispatch_samples` joins `dispatch_index`
   to `chunk_index`, `row_index`, `point_index`, scalar `progress` and `endpoint`;
   chunk and row indices refer directly to `trace.json.chunks` and its action rows.
+  Samples with `dispatch_role=inference_hold` instead repeat the completed
+  endpoint without row/point progression. `interpolation_dispatches` plus
+  `inference_hold_dispatches` equals all sent commands. Per-request
+  `maintenance_hold_samples` retain the held vector and original wait deadline.
+  Older runs lack these maintenance fields; their samples are interpolation.
   Reference `shaped` and returned `sent` must preserve the interpolated point.
   `completed_steps`, `completed_chunks` and `partial_chunk_at_stop` describe
   consumption; commands do not prove measured motion or task success.
@@ -273,9 +286,19 @@ def package_rollout(
         "Camera exposure timestamps are not recorded; image times are host receipt times.",
         "Startup and return-home RGB/video and joint trajectories are outside the policy capture scope.",
         "Motor currents, torques, velocities and hardware acknowledgement timestamps are not captured.",
-        "Exact prediction request IDs and an explicit chunk-to-executed-action index join are not captured.",
+        "Exact prediction request IDs are not captured.",
         "Cloud service stdout/stderr and internal model tensors are not part of the robot-host recording.",
     ])
+    metrics = _json(sources["metrics.json"]) if "metrics.json" in sources else {}
+    reference = metrics.get("reference_execution", {}) if isinstance(metrics, dict) else {}
+    joined = reference.get("dispatch_samples", []) if isinstance(reference, dict) else []
+    if not any(isinstance(sample, dict) and all(key in sample for key in (
+            "dispatch_index", "chunk_index", "row_index", "point_index")) for sample in joined):
+        missing.append("An explicit chunk-to-executed-action index join was not captured.")
+    elif reference.get("dispatch_samples_dropped", 0):
+        missing.append(f"Reference dispatch metadata omits {reference['dispatch_samples_dropped']} send(s); "
+                       "a failed postclamp commit also omits this event. Inspect command_shaping.samples "
+                       "and trace send events; do not assume every send has a committed row join.")
     if not sources.get("run_metadata.json") and not metadata:
         missing.append("Configuration/model-version metadata was not captured for this run.")
     supplied = _json(sources["run_metadata.json"]) if "run_metadata.json" in sources else {}

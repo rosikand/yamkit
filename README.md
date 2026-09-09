@@ -283,7 +283,9 @@ the GPU checkout and retains host qualification before any supervised robot roll
 
 Remote MolmoAct2 also supports `--controller-mode reference`: complete 30-row chunks run
 sequentially, with coordinated joint/gripper interpolation and added timing for the existing
-command limits. `--controller-mode async` retains the experimental asynchronous controller and
+command limits. While awaiting the next chunk, the main control loop maintains the completed
+endpoint through normal validated commands; no policy row advances during inference.
+`--controller-mode async` retains the experimental asynchronous controller and
 remains the default. Each mode requires its own current host qualification. For an attached
 Lambda service, qualify without opening hardware:
 

@@ -102,9 +102,13 @@ def test_every_original_row_is_reached_before_turning_and_pauses_only_after_zero
         assert np.max(np.abs(g.velocity)) == 0
         generation, anchor = g.generation, g.last_action
         g.begin_inference_wait(now + 1)
-        g.end_inference_wait(now + .4)
-        now += .4
-        assert g.valid and g.generation == generation and g.last_action == anchor
+        for _ in range(12):
+            now += 1 / 30
+            commit(g, anchor, now)
+        g.end_inference_wait(now)
+        assert g.valid and g.generation == generation + 12 and g.last_action == anchor
+        assert g.last_at == now
+        assert g.metrics()["inference_waits"][-1]["hold_count"] == 12
     assert len(g.metrics()["inference_waits"]) == len(targets)
 
 
@@ -231,7 +235,123 @@ def test_dispatch_after_explicit_wait_must_not_precede_recorded_resume_time():
     g = guard()
     commit(g, action(), 10)
     g.begin_inference_wait(11)
-    g.end_inference_wait(10.7)
+    commit(g, action(), 10 + 1 / 30)
+    commit(g, action(), 10 + 2 / 30)
+    g.end_inference_wait(10.08)
     with pytest.raises(ReferenceInterpolationFault, match="backwards"):
-        g.prepare(action(), now=10.6)
-    assert not g.valid and g.generation == 1
+        g.prepare(action(), now=10.07)
+    assert not g.valid and g.generation == 3
+
+
+def test_exact_inference_holds_preserve_real_command_clock_and_fixed_deadline():
+    g = guard(action(.2, .6))
+    anchor = g.last_action
+    commit(g, anchor, 10)
+    g.begin_inference_wait(11.2)
+    for index in range(1, 28):
+        now = 10 + index / 30
+        commit(g, anchor, now)
+        assert g.last_at == now and g.last_action == anchor
+        assert g._wait_deadline == 11.2
+        assert g.metrics()["samples"][-1]["dispatch_role"] == "inference_hold"
+        np.testing.assert_array_equal(g.velocity, 0)
+    generation, last_at = g.generation, g.last_at
+    g.end_inference_wait(10.91)
+    assert g.generation == generation and g.last_at == last_at and g.last_action == anchor
+    next_step = commit(g, anchor, 10 + 28 / 30)
+    assert next_step.dt_s == pytest.approx(1 / 30)
+    metrics = g.metrics()
+    assert metrics["inference_hold_count"] == 27
+    assert metrics["samples"][-1]["dispatch_role"] == "interpolation"
+    assert metrics["inference_waits"] == [{
+        "last_dispatch_monotonic_s": 10, "deadline_monotonic_s": 11.2,
+        "resumed_monotonic_s": 10.91, "stationary": True, "hold_count": 27,
+    }]
+
+
+@pytest.mark.parametrize("key", [JOINT_NAMES[0], GRIPPER_NAMES[0]])
+def test_inference_hold_rejects_even_tiny_changed_target_before_commit(key):
+    g = guard()
+    commit(g, action(), 10)
+    g.begin_inference_wait(11)
+    target = g.last_action
+    target[key] += 1e-12
+    with pytest.raises(ReferenceInterpolationFault, match="exact committed"):
+        g.prepare(target, now=10 + 1 / 30)
+    assert not g.valid and g.generation == 1 and g.last_at == 10
+    assert g.metrics()["inference_waits"][-1]["hold_count"] == 0
+
+
+@pytest.mark.parametrize("operation", ["hold", "resume"])
+def test_wait_cannot_hide_actual_command_stall(operation):
+    g = guard()
+    commit(g, action(), 10)
+    g.begin_inference_wait(11)
+    with pytest.raises(ReferenceInterpolationFault, match="clock"):
+        if operation == "hold":
+            g.prepare(action(), now=10.1001)
+        else:
+            g.end_inference_wait(10.1001)
+    assert not g.valid and g.generation == 1 and g.last_at == 10
+    assert g.metrics()["inference_waits"][-1]["resumed_monotonic_s"] is None
+
+
+def test_hold_deadline_is_not_renewed_by_successful_maintenance_commands():
+    g = guard()
+    commit(g, action(), 10)
+    g.begin_inference_wait(10.1)
+    commit(g, action(), 10 + 1 / 30)
+    commit(g, action(), 10 + 2 / 30)
+    with pytest.raises(ReferenceInterpolationFault, match="deadline expired"):
+        g.prepare(action(), now=10.1)
+    assert not g.valid and g.generation == 3
+    assert g.metrics()["inference_waits"][-1]["hold_count"] == 2
+    assert g.metrics()["inference_waits"][-1]["deadline_monotonic_s"] == 10.1
+
+
+@pytest.mark.parametrize("operation", ["resume", "replace", "initialize"])
+def test_pending_hold_cannot_be_rebased_or_cross_a_wait_transition(operation):
+    g = guard()
+    commit(g, action(), 10)
+    g.begin_inference_wait(11)
+    step = g.prepare(action(), now=10 + 1 / 30)
+    with pytest.raises(ReferenceInterpolationFault):
+        if operation == "resume":
+            g.end_inference_wait(10.04)
+        elif operation == "replace":
+            g.begin_inference_wait(12)
+        else:
+            g.initialize_position(action(.1))
+    with pytest.raises(ReferenceInterpolationFault):
+        g.commit(step, step.shaped, deadline_monotonic_s=11)
+    assert not g.valid and g.generation == 1 and g.last_at == 10
+    assert g.last_action == action() and g._wait_deadline == 11
+
+
+def test_first_wait_without_committed_commands_retains_fresh_initial_dispatch():
+    g = guard()
+    g.begin_inference_wait(11)
+    g.end_inference_wait(10.8)
+    assert g.generation == 0 and g.last_at is None
+    g.initialize_position(action(.2, .5))
+    step = commit(g, g.last_action, 10.81)
+    assert step.dt_s == pytest.approx(1 / 30)
+    assert g.metrics()["inference_hold_count"] == 0
+    assert g.metrics()["inference_waits"][-1]["hold_count"] == 0
+    assert g.metrics()["samples"][-1]["dispatch_role"] == "interpolation"
+
+
+@pytest.mark.parametrize("key", [JOINT_NAMES[0], GRIPPER_NAMES[0]])
+def test_hold_postclamp_changes_cannot_accumulate_below_normal_tolerance(key):
+    g = guard()
+    commit(g, action(), 10)
+    g.begin_inference_wait(11)
+    step = g.prepare(g.last_action, now=10 + 1 / 30)
+    sent = dict(step.shaped)
+    sent[key] += 1e-12
+    with pytest.raises(ReferenceInterpolationFault, match="Postclamp"):
+        g.commit(step, sent, deadline_monotonic_s=11)
+    assert not g.valid and g.generation == 2 and g.last_action == sent
+    sample = g.metrics()["samples"][-1]
+    assert sample["dispatch_role"] == "inference_hold" and sample["postclamp_modified"]
+    assert g.metrics()["inference_hold_count"] == 1

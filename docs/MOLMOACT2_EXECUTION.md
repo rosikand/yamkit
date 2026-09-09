@@ -86,13 +86,28 @@ and gripper step limits. Actual dispatch intervals and postclamp results are che
 never catch up in a burst after inference. A command-space bound does not measure motor dynamics.
 
 The controller consumes all 30 rows, including their interpolation endpoints, before taking the
-next policy observation and starting another RPC. Inference and policy dispatch do not overlap;
+next policy observation and starting another RPC. Inference and policy-row progression do not overlap;
 there is no prefix dropping, queue replacement or overlap blending. After initialization, the
 model receives the last committed 14D command as state, matching the linked runner's cached-state
 convention. Measured encoders remain in monitoring and hardware guards; saved observation events
 therefore do not represent that cached model state after the first chunk. New traces save the
 actual 14D robot-unit input after client preprocessing in `trace.json.chunks[].policy_state`;
 historical recordings lack that field. Model input images are unchanged.
+
+During an RPC after a completed chunk, the main LeRobot control loop continues monitoring and
+resends only that exact stationary 14D endpoint at 30 Hz. One worker owns the fixed observation
+and inference request; it cannot command hardware. These maintenance sends use normal measured-state
+validation, speed clamps and postclamp checks. They advance no model row and cannot renew the fixed
+request deadline. The command clock stays continuous: an actual control-loop gap over 100 ms faults.
+There is no independent heartbeat, stale-anchor override or measured-pose rebase.
+
+This addresses physical reference trial `20260909-035814-rollout-7f2593ec`: its first 30 rows and
+587 interpolated commands completed unchanged, but the next 0.88-second application-command gap
+triggered the arm layer's existing 0.5-second stale ramp reset. Measured-position anchors changed
+the resumed hold by 0.00549 and 0.00367 rad on left/right joint 3. The postclamp guard faulted and
+released both followers without homing. The cube was not grasped. A fake-motor replay reproduced
+the same returned commands; maintained endpoint sends require separate qualification and physical
+validation. The arm layer's stale rule and limits remain unchanged.
 
 Freshness applies at RPC admission: the response must arrive within the configured observation
 budget, at most two seconds. The request also has a finite timeout and phase/session bounds.
@@ -116,8 +131,12 @@ refer directly to `trace.json.chunks`, joining a committed point to its original
 `command_shaping.samples[].requested` is that interpolated point, **not** the raw model row;
 `shaped` and returned `sent` must preserve it. Bounded sample loss is counted explicitly. Use
 `completed_steps`, `completed_chunks` and `partial_chunk_at_stop` to distinguish a full chunk
-from one interrupted by duration or Stop. Video and measured positions establish physical
-outcomes separately.
+from one interrupted by duration or Stop. New samples have `dispatch_role`: `interpolation` carries
+that row join; `inference_hold` repeats the completed endpoint and has no row/point advancement.
+`interpolation_dispatches` and `inference_hold_dispatches` add to total executed commands. Per-request
+`maintenance_hold_samples` retain the sent vector, dispatch time and fixed wait deadline separately.
+Older reference recordings blocked the main loop during inference and lack maintenance fields.
+Video and measured positions establish physical outcomes separately.
 
 ## First supervised validation after target braking
 

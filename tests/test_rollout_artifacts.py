@@ -188,6 +188,32 @@ def test_known_credentials_redacted_without_recognizable_prefix(recording, monke
     assert "unprefixed" not in (bundle / "metrics.json").read_text()
 
 
+@pytest.mark.parametrize("flag", [True, False])
+def test_reference_endpoint_boolean_survives_only_at_recorded_schema_paths(flag):
+    sample = {"endpoint": flag, "http_endpoint": "http://private/service"}
+    value = {"reference_execution": {"dispatch_samples": [sample]},
+             "events": [{"kind": "reference_dispatch", **sample}, sample],
+             "endpoint": flag, "other": sample}
+    clean = sanitize(value)
+    assert clean["reference_execution"]["dispatch_samples"] == [{"endpoint": flag}]
+    assert clean["events"] == [{"kind": "reference_dispatch", "endpoint": flag}, {}]
+    assert "endpoint" not in clean and clean["other"] == {}
+    sample["endpoint"] = "https://secret-endpoint/service"
+    assert sanitize(value)["reference_execution"]["dispatch_samples"] == [{}]
+
+
+def test_reference_bundle_reports_committed_join_and_uncommitted_send(recording):
+    run, trace = recording
+    sample = {"dispatch_index": 0, "chunk_index": 0, "row_index": 0, "point_index": 0, "endpoint": False}
+    write_json(trace / "metrics.json", {"reference_execution": {
+        "dispatch_samples": [sample], "dispatch_samples_dropped": 1}})
+    bundle = package_rollout(run, trace_dir=trace)
+    assert json.loads((bundle / "metrics.json").read_text())["reference_execution"]["dispatch_samples"] == [sample]
+    missing = validate_bundle(bundle)["missing_data"]
+    assert not any("index join was not captured" in entry for entry in missing)
+    assert any("omits 1 send(s)" in entry for entry in missing)
+
+
 @pytest.mark.parametrize("raw, secret", [
     ("Authorization: Bearer arbitrary-credential", "arbitrary-credential"),
     ('{"password": "quoted-password"}', "quoted-password"),
