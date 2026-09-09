@@ -725,6 +725,7 @@ function makeChart(canvas, label, t, s1, s2) {
 pages.inference = {
   async render(el, args) {
     if (args.length) return renderRunDetail(el, decodeURIComponent(args[0]));
+    this._runDetailId = null;
     this._submitted = null;
     this._previews = false;
     this._qualification = null;
@@ -749,6 +750,9 @@ pages.inference = {
           <div class="hint">Conductor prepares and qualifies the cloud session. Enter its exact warmed task above. This page attaches over HTTP using ten-step inference and raw RGB.</div>
           <label class="check"><input type="checkbox" id="inf-mapping" /> I verified left/right arms, cameras and gripper calibration and accept this policy's YAM mapping.</label>
           <label class="check"><input type="checkbox" id="inf-trace" /> Save 30 fps video and joint traces (orange-lid task, 5 or 10 seconds).</label>
+          <label class="check"><input type="checkbox" id="inf-upload" /> Upload finalized rollout to a private Hugging Face dataset.</label>
+          <label class="field">rollout dataset<input type="text" id="inf-upload-repo" placeholder="your-namespace/yamkit-rollouts" /></label>
+          <div class="hint">Upload saves all debug data after the arms are released and video export finishes. Local originals are kept. Requires 5 or 10 second capture.</div>
           <div class="hint">MolmoAct2 action rate: 30 Hz. Debug video preserves the timing of those camera observations, including gaps.</div>
           <div class="toolbar"><button id="btn-inf-preflight">Check retained session (no hardware)</button></div>
           <div id="inf-qualification-status" class="hint"></div>
@@ -778,13 +782,15 @@ pages.inference = {
         <div id="inf-cams-content"></div></div>
       <div class="sect"><div class="sect-head">Runs</div><div id="run-list">loading…</div></div>`;
     this._profiles = [];
-    api("/inference/profiles").then((data) => { this._profiles = data.profiles; this._ownedService = data.owned_service; this.syncForm(); }).catch(() => {});
+    api("/inference/profiles").then((data) => { this._profiles = data.profiles; this._ownedService = data.owned_service;
+      if (data.rollout_repo) { $("#inf-upload-repo").value = data.rollout_repo; $("#inf-upload").checked = true; }
+      this.syncForm(); }).catch(() => {});
     api("/models").then((list) => {
       const dl = $("#policy-list");
       if (dl) dl.innerHTML = list.map((m) => `<option value="${esc(m.where === "cloud" ? m.repo_id : "outputs/" + m.path)}">${esc(m.policy_type ?? "")}</option>`).join("");
     }).catch(() => {});
     $("#inf-preset").onchange = () => { $("#inf-policy").value = $("#inf-preset").value === "custom" ? "" : $("#inf-preset").value; this.syncForm(); };
-    ["inf-backend", "inf-policy", "inf-task", "inf-arms", "inf-duration", "inf-device", "inf-gpu", "inf-rtc", "inf-crop", "inf-saved", "inf-modal-app", "inf-mapping", "inf-trace"].forEach((id) => {
+    ["inf-backend", "inf-policy", "inf-task", "inf-arms", "inf-duration", "inf-device", "inf-gpu", "inf-rtc", "inf-crop", "inf-saved", "inf-modal-app", "inf-mapping", "inf-trace", "inf-upload", "inf-upload-repo"].forEach((id) => {
       document.getElementById(id).addEventListener("input", () => this.syncForm());
     });
     $("#btn-pc").onclick = (e) => this.launch("/session/policy-check", {}, e.target);
@@ -841,7 +847,8 @@ pages.inference = {
       modal_app: modal ? $("#inf-modal-app").value.trim() || null : null,
       call_mode: modal ? "http" : "remote", execution_mode: modal ? "cuda_graph10" : "eager",
       mapping_accepted: modal && $("#inf-mapping").checked,
-      capture_trace: modal && $("#inf-trace").checked,
+      capture_trace: modal && ($("#inf-trace").checked || $("#inf-upload").checked),
+      upload_repo_id: modal && $("#inf-upload").checked ? $("#inf-upload-repo").value.trim() : null,
       arms: $("#inf-arms").value ? [$("#inf-arms").value] : null };
   },
   async checkAttachment() {
@@ -876,6 +883,9 @@ pages.inference = {
     if (modal) $("#inf-rtc").checked = false;
     $("#inf-crop").disabled = !modal;
     if (!modal) $("#inf-crop").checked = false;
+    $("#inf-trace").disabled = modal && $("#inf-upload").checked;
+    if ($("#inf-trace").disabled) $("#inf-trace").checked = true;
+    $("#inf-upload-repo").disabled = !modal || !$("#inf-upload").checked;
     const selected = this.selection();
     const profile = this._profiles.find((p) => p.id === selected.policy || p.repo_id === selected.policy);
     const qualification = this._qualification?.key === JSON.stringify(selected) ? this._qualification : null;
@@ -938,23 +948,44 @@ pages.inference = {
     if (!el) return;
     try {
       const list = await api("/deployments");
-      el.innerHTML = `<div class="panel">` + (list.length ? `<table><tr><th>run</th><th>kind</th><th>model</th><th>task</th><th class="num">latency</th><th class="num">duration</th><th>status</th><th>termination</th></tr>` +
+      this._uploadsPending = list.some((d) => d.status === "running" || ["queued", "packaging", "uploading"].includes(d.upload?.status));
+      this._lastRunRefresh = Date.now();
+      el.innerHTML = `<div class="panel">` + (list.length ? `<table><tr><th>run</th><th>kind</th><th>model</th><th>task</th><th class="num">latency</th><th class="num">duration</th><th>status</th><th>termination</th><th>HF upload</th></tr>` +
         list.map((d) => `<tr class="click" onclick="location.hash='#/inference/${encodeURIComponent(d.id)}'">
           <td class="mono">${esc(d.id)}</td><td>${esc(d.kind ?? "–")}</td><td class="mono">${esc(d.policy ?? "–")}</td><td>${esc(d.task ?? "–")}</td>
           <td class="num">${d.first_call_ms != null ? d.first_call_ms.toFixed(0) + " ms" : "–"}</td>
           <td class="num">${fmtDur(d.duration_s)}</td>
           <td>${st(d.status === "success", d.status ?? "?", d.status === "running" || d.status === "stopped")}</td>
-          <td>${esc(d.termination ?? "–")}</td></tr>`).join("") + `</table>`
+          <td>${esc(d.termination ?? "–")}</td><td>${esc(d.upload?.status || "off")}</td></tr>`).join("") + `</table>`
         : `<div class="empty">no policy runs yet — run a policy check or rollout above</div>`) + `</div>`;
     } catch (e) { el.innerHTML = errBanner(e.message); }
   },
-  update() {  // re-fetch only when a session starts/ends, not on every poll
+  update() {
     this.syncForm();
-    if (this._wasActive !== session.active) { this._wasActive = session.active; this.refreshList(); }
+    if (this._runDetailId && Date.now() - (this._lastUploadRefresh || 0) > 2000) {
+      this._lastUploadRefresh = Date.now();
+      const id = this._runDetailId;
+      api(`/deployments/${encodeURIComponent(id)}`).then((d) => {
+        if (this._runDetailId === id && $("#run-upload")) $("#run-upload").innerHTML = rolloutUploadHTML(d.upload);
+      }).catch(() => {});
+    }
+    if (this._wasActive !== session.active || this._uploadsPending && Date.now() - (this._lastRunRefresh || 0) > 2000) {
+      this._wasActive = session.active; this.refreshList();
+    }
   },
 };
 
+function rolloutUploadHTML(upload) {
+  if (!upload) return "Not requested";
+  const link = /^https:\/\/huggingface\.co\/datasets\//.test(upload.url || "")
+    ? ` · <a href="${esc(upload.url)}" target="_blank" rel="noopener">Open private HF run</a>` : "";
+  return `${esc(upload.status)}${upload.repo_id ? ` · ${esc(upload.repo_id)}` : ""}${link}` +
+    (upload.error ? `<div class="hint warn">${esc(upload.error)}</div>` : "") +
+    (upload.retry_command ? `<div class="hint mono">${esc(upload.retry_command)}</div>` : "");
+}
+
 async function renderRunDetail(el, id) {
+  pages.inference._runDetailId = id;
   el.innerHTML = `<a class="back" href="#/inference">← inference</a>${pageHead(id)}<div id="run-detail">loading…</div>`;
   let d;
   try { d = await api(`/deployments/${encodeURIComponent(id)}`); }
@@ -970,6 +1001,7 @@ async function renderRunDetail(el, id) {
       <div>latency (first call)</div><div>${d.first_call_ms != null ? d.first_call_ms.toFixed(0) + " ms" : "–"}</div>
       <div>latency (next calls)</div><div>${d.step_call_ms ? d.step_call_ms.map((x) => x.toFixed(0)).join(" / ") + " ms" : "–"}</div>
       <div>exit code</div><div class="mono">${d.returncode ?? "–"}</div>
+      <div>HF upload</div><div id="run-upload">${rolloutUploadHTML(d.upload)}</div>
     </div></div>
     ${(d.videos || []).length ? `<div class="sect"><div class="sect-head">Replay</div><div class="cams">` + d.videos.map((v) => `
       <div class="cam"><span class="label">${esc(v)}</span>

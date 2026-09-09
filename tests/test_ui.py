@@ -539,11 +539,11 @@ def test_hub_login_status_and_settings(client, fake_hub, rig):
     assert client.post("/api/hub/login", json={"token": "bad"}).status_code == 400
     assert client.post("/api/hub/login", json={"token": "hf_good"}).json() == {"username": "tester"}
     r = client.post("/api/config", json={"hub": {"username": "rigger", "datasets": "hub", "private": False}})
-    assert r.status_code == 200 and r.json()["hub"] == {"username": "rigger", "private": False, "datasets": "hub"}
+    assert r.status_code == 200 and r.json()["hub"] == {"username": "rigger", "private": False, "datasets": "hub", "rollout_repo": None}
     assert "datasets: hub" in rig.path.read_text()
     assert client.post("/api/config", json={"hub": {"datasets": "moon"}}).status_code == 422
     assert client.post("/api/config", json={"hub": {"nope": 1}}).status_code == 422
-    assert client.get("/api/overview").json()["hub"] == {"logged_in": True, "username": "rigger", "private": False, "datasets": "hub"}
+    assert client.get("/api/overview").json()["hub"] == {"logged_in": True, "username": "rigger", "private": False, "datasets": "hub", "rollout_repo": None}
 
 
 def test_record_and_transfers_pass_destination(client, fake_hub, monkeypatch, tmp_path):

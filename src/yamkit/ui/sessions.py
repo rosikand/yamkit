@@ -22,7 +22,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 log = logging.getLogger(__name__)
 
@@ -260,6 +260,8 @@ class SessionManager:
         self._record_stop_target: tuple[int, str] | None = None
         self.preview_generation = 0
         self.log: deque[str] = deque(maxlen=log_lines)
+        self._log_file: TextIO | None = None
+        self._log_complete = False
         self.parsed: dict[str, Any] = {}
         self.mode: str | None = None
         self.meta: dict[str, Any] = {}
@@ -318,6 +320,14 @@ class SessionManager:
             self.parsed = {"operator_phase": "starting"} if mode in ("teleop", "teleoperate", "record") else {}
             self.mode = mode
             self.meta = meta or {}
+            self._log_complete = False
+            log_path = self.meta.get("session_log_path")
+            if log_path:
+                try:
+                    self._log_file = Path(log_path).open("w")  # noqa: SIM115 — lifetime spans child reader thread
+                    self._log_complete = True
+                except OSError:
+                    raise RuntimeError("could not create the complete session log; no child was started") from None
             self.started_at = time.time()
             self.ended_at = self.returncode = None
             self.stopping = False
@@ -327,7 +337,7 @@ class SessionManager:
             self._record_stop_target = None
             self._seen_owners.clear()
             self.preview_generation += 1
-            self.log.append(self._redact("$ " + " ".join(argv)))
+            self._append_log(self._redact("$ " + " ".join(argv)))
             try:
                 self._proc = subprocess.Popen(
                     argv,
@@ -340,6 +350,7 @@ class SessionManager:
                 )
             except OSError:
                 self._proc = None
+                self._close_log()
                 self.ended_at = time.time()
                 self.returncode = -1
                 self._session = self._token = ""
@@ -383,7 +394,7 @@ class SessionManager:
                     continue
                 if line.strip():
                     line = self._redact(line)
-                    self.log.append(line)
+                    self._append_log(line)
                     before = self.parsed.get("phase")
                     try:
                         parse_line(line, self.parsed)
@@ -408,11 +419,32 @@ class SessionManager:
             if proc.stdin:
                 proc.stdin.close()
             proc.stdout.close()
-            if self.on_exit:
-                try:
-                    self.on_exit(self.status())
-                except Exception:
-                    log.exception("session on_exit hook failed")
+            self._close_log()
+            status = self.status()
+        # The process group is gone and camera ownership has been released. Disk finalization
+        # and post-run upload scheduling must not hold the session/Stop lock.
+        if self.on_exit:
+            try:
+                self.on_exit(status)
+            except Exception:
+                log.exception("session on_exit hook failed")
+
+    def _append_log(self, line: str) -> None:
+        self.log.append(line)
+        if self._log_file is not None:
+            try:
+                self._log_file.write(line + "\n")
+            except OSError:
+                self._log_complete = False
+                self._close_log()
+
+    def _close_log(self) -> None:
+        if self._log_file is not None:
+            try:
+                self._log_file.close()
+            except OSError:
+                self._log_complete = False
+            self._log_file = None
 
     def _redact(self, value: str) -> str:
         for secret in self._redactions:
@@ -610,6 +642,7 @@ class SessionManager:
             "parsed": self.parsed,
             "phase_elapsed_s": round(now - self.parsed["phase_since"], 1) if active and self.parsed.get("phase_since") else None,
             "log": list(self.log),
+            "log_complete": self._log_complete,
         }
 
 
@@ -630,7 +663,11 @@ class DeploymentLog:
         return d
 
     def finalize(self, run_dir: Path, status: dict[str, Any]) -> None:
-        (run_dir / "log.txt").write_text("\n".join(status.get("log", [])) + "\n")
+        # Managed inference writes its complete, redacted output directly to this file.
+        # Other callers retain the ring-buffer fallback and advertise that limit in metadata.
+        complete_path = status.get("meta", {}).get("session_log_path")
+        if not complete_path or Path(complete_path) != run_dir / "log.txt" or not (run_dir / "log.txt").is_file():
+            (run_dir / "log.txt").write_text("\n".join(status.get("log", [])) + "\n")
         self._write_meta(run_dir, status, run_dir.name)
 
     @staticmethod
@@ -658,5 +695,6 @@ class DeploymentLog:
             "termination": termination,
             "first_call_ms": parsed.get("first_call_ms"),
             "step_call_ms": parsed.get("step_call_ms"),
+            "log_complete": status.get("log_complete", False),
         }
         (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")

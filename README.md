@@ -300,6 +300,12 @@ and pi05 base profiles support native checks and are blocked from physical rollo
 lack a reviewed YAM mapping. Guided remote RTC and local Molmo guidance are unsupported. See
 [remote performance and its measurement limits](docs/REMOTE_PERFORMANCE.md).
 
+To inspect a rollout on another computer, optionally upload its finalized debug bundle
+to a private HF dataset. The bundle retains all three videos, original RGB frames,
+timing/trajectory JSONs, metrics, logs and sanitized provenance under `runs/<run-id>/`.
+Upload runs after hardware release and artifact finalization; local originals remain.
+See [rollout archives and download commands](docs/ROLLOUT_ARCHIVES.md).
+
 Modal defaults to raw RGB, cached `.remote` calls and `us-west` placement, with earlier
 requests through the same LeRobot async worker. JPEG qualities 85, 90 and 95 all exceeded
 the gripper-difference limit in paired H100 fixture tests; raw RGB preserves the image

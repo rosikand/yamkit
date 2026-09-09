@@ -126,7 +126,10 @@ control:
 #   private    keep pushed datasets and models private (recommended: your rig, your room)
 #   datasets   where a recording goes by default: local | hub | both. "local" = exactly the old
 #              behaviour; with hub/both the upload happens only AFTER the recording session ends.
+#   rollout_repo  optional namespace/repository for private rollout debug bundles; enable upload
+#                 per rollout in Inference. Packaging/upload starts after arms release and saving.
 hub:
   username: your-hf-username
   private: true
   datasets: local
+  rollout_repo: null

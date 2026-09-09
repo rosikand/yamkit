@@ -8,7 +8,10 @@ or opening any page never connects to (and never energises) an arm.
 from __future__ import annotations
 
 import dataclasses
+import json
+import shlex
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -38,6 +41,40 @@ TRACE_TASK = "pick up the orange lid and place it into the black circular contai
 TRACE_FILES = frozenset({"summary.json", "trace.json", "metrics.json", "frame_timestamps.json", "video_timeline.json", "export-error.json",
                          "top.mp4", "left_wrist.mp4", "right_wrist.mp4",
                          "report.html", "joints-left.png", "joints-right.png"})
+
+
+def _rollout_metadata(options, rig: RigConfig) -> dict:
+    """Capture source/configuration identity before launch without storing host credentials."""
+    from ..inference.identity import inference_build_id
+    from ..inference.profiles import LEROBOT_VERSION, get_profile
+
+    arm_fields = {"role", "side", "arm_type", "gripper", "gripper_limits", "rest_pose", "joint_offsets"}
+    camera_fields = {"type", "width", "height", "fps", "color_mode", "rotation"}
+    option_fields = {"policy", "task", "backend", "device", "gpu", "call_mode", "execution_mode",
+                     "image_encoding", "jpeg_quality", "prediction_queue_threshold", "center_crop",
+                     "async_chunks", "duration", "fps", "rtc", "arms"}
+    try:
+        model = dataclasses.asdict(get_profile(options.policy))
+    except ValueError:
+        model = {"requested_policy": options.policy, "revision": None}
+    software = {"lerobot_version": LEROBOT_VERSION, "inference_build_id": inference_build_id()}
+    try:
+        software["git_commit"] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, stderr=subprocess.DEVNULL, timeout=3, text=True).strip()
+        software["git_dirty"] = bool(subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT,
+            stderr=subprocess.DEVNULL, timeout=3, text=True).strip())
+    except (OSError, subprocess.SubprocessError):
+        software["git_commit"] = None
+    return {"provenance": {"captured_at": time.time(), "kind": "before_managed_child_launch"},
+            "model": model, "software": software,
+            "configuration": {key: value for key, value in dataclasses.asdict(options).items()
+                              if key in option_fields},
+            "rig": {"arms": {name: {key: value for key, value in dataclasses.asdict(arm).items()
+                                    if key in arm_fields} for name, arm in rig.arms.items()},
+                    "cameras": {name: {key: value for key, value in config.items() if key in camera_fields}
+                                for name, config in rig.cameras.items()},
+                    "control": dataclasses.asdict(rig.control)}}
 
 
 # --------------------------------------------------------------------------- request bodies --
@@ -94,6 +131,7 @@ class InferenceBody(BaseModel):
     mapping_accepted: StrictBool = False
     supervised_confirmed: StrictBool = False
     capture_trace: StrictBool = False
+    upload_repo_id: str | None = None
     center_crop: bool = False
     async_chunks: bool = True
     duration: float = 60.0
@@ -167,8 +205,55 @@ def create_app(
 
     rig0 = load_rig()
     cameras = CameraHub(rig0.cameras if rig0 else {})
-    run_dir_box: dict[str, Path | None] = {"dir": None}
-    inference_launch_lock = threading.Lock()
+    run_dirs: dict[str, Path] = {}
+    inference_launch_lock = threading.RLock()
+
+    def upload_status(run_dir: Path) -> dict | None:
+        path = run_dir / "hf-upload.json"
+        try:
+            value = json.loads(path.read_text()) if path.is_file() and not path.is_symlink() else None
+            return value if isinstance(value, dict) else None
+        except (OSError, ValueError):
+            return None
+
+    def write_upload_status(run_dir: Path, value: dict) -> None:
+        path = run_dir / "hf-upload.json"
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps({**value, "updated_at": time.time()}, indent=2) + "\n")
+        temporary.replace(path)
+
+    def upload_retry(run_dir: Path, repo_id: str, trace_dir: Path | None = None) -> str:
+        args = ["yamkit", "bundle-rollout", str(run_dir), "--upload-to", repo_id]
+        if trace_dir:
+            args += ["--trace-dir", str(trace_dir)]
+        return shlex.join(args)
+
+    # A UI restart cannot continue its old daemon workers. Retain an explicit interrupted
+    # receipt so operators can retry the finalized local bundle without starting hardware.
+    for old_run in deployments.root.iterdir() if deployments.root.is_dir() else ():
+        if not old_run.is_dir() or old_run.is_symlink():
+            continue
+        previous = upload_status(old_run)
+        if previous and previous.get("status") in ("queued", "packaging", "uploading"):
+            previous.update(status="interrupted", error="Dashboard restarted before upload completion; local artifacts retained")
+            write_upload_status(old_run, previous)
+
+    def upload_finalized_run(run_dir: Path, trace_dir: Path | None, repo_id: str) -> None:
+        # This worker is not a managed hardware session. No session lock, child process or
+        # motor/camera ownership is held while copying, hashing or contacting the Hub.
+        pending = {"repo_id": repo_id, "retry_command": upload_retry(run_dir, repo_id, trace_dir)}
+        try:
+            from ..rollout_artifacts import package_rollout, upload_rollout
+
+            write_upload_status(run_dir, {"status": "packaging", **pending})
+            bundle = package_rollout(run_dir, trace_dir=trace_dir)
+            write_upload_status(run_dir, {"status": "uploading", **pending})
+            result = upload_rollout(bundle, repo_id=repo_id)
+            write_upload_status(run_dir, result)
+        except Exception as exc:  # noqa: BLE001 — post-run failures never affect hardware cleanup
+            # Exceptions from HTTP clients can contain credentials and private endpoints.
+            write_upload_status(run_dir, {"status": "failed", **pending,
+                                          "error": f"{type(exc).__name__}: upload did not complete; local artifacts retained"})
 
     def finalize_run(run_dir: Path, status: dict) -> None:
         """Import known debug artifacts after the managed child and descendants exit."""
@@ -186,17 +271,36 @@ def create_app(
                         if artifact.is_file() and not artifact.is_symlink() and artifact.stat().st_size <= 256 * 1024 * 1024:
                             shutil.copyfile(artifact, run_dir / name)
         except OSError:
-            status = {**status, "log": [*status.get("log", []),
-                                       "Debug artifact import incomplete; original files remain in the trace directory."]}
+            message = "Debug artifact import incomplete; original files remain in the trace directory."
+            with (run_dir / "log.txt").open("a") as logfile:
+                logfile.write(message + "\n")
+            status = {**status, "log": [*status.get("log", []), message]}
         finally:
             deployments.finalize(run_dir, status)
+        metadata_path = run_dir / "run_metadata.json"
+        try:
+            if metadata_path.is_file():
+                snapshot = json.loads(metadata_path.read_text())
+                snapshot["capture"] = {"log_complete": status.get("log_complete", False)}
+                metadata_path.write_text(json.dumps(snapshot, indent=2) + "\n")
+        except (OSError, ValueError, TypeError):
+            # Preserve the original snapshot and let packaging report a durable failure.
+            pass
+        repo_id = status.get("meta", {}).get("upload_repo_id")
+        if repo_id and status.get("mode") == "rollout":
+            write_upload_status(run_dir, {"status": "queued", "repo_id": repo_id,
+                                          "retry_command": upload_retry(run_dir, repo_id, Path(source_value) if source_value else None)})
+            threading.Thread(target=upload_finalized_run,
+                             args=(run_dir, Path(source_value) if source_value else None, repo_id),
+                             name=f"rollout-upload-{run_dir.name}", daemon=True).start()
 
     def on_exit(status: dict[str, Any]) -> None:
         if status.get("mode") in ("push", "pull", "record"):
             hub.clear_cache()  # what is on the Hub may just have changed
-        if run_dir_box["dir"] is not None:
-            finalize_run(run_dir_box["dir"], status)
-            run_dir_box["dir"] = None
+        with inference_launch_lock:
+            run_dir = run_dirs.pop(status.get("meta", {}).get("operation_id", ""), None)
+        if run_dir is not None:
+            finalize_run(run_dir, status)
 
     sessions = session_manager or SessionManager()
     sessions.on_camera_acquire = cameras.suspend
@@ -478,6 +582,13 @@ def create_app(
                 "expires_at": expires, "modal_app": options.modal_app}
 
     def validate_trace(body: InferenceBody) -> None:
+        if body.upload_repo_id is not None:
+            from huggingface_hub.utils import validate_repo_id
+
+            validate_repo_id(body.upload_repo_id)
+            if body.upload_repo_id.count("/") != 1:
+                raise ValueError("Upload destination must be a namespace/repository private dataset ID")
+            body.capture_trace = True  # All camera frames and trace data must exist for the upload.
         if body.capture_trace and (
                 body.backend != "modal" or body.policy not in ("molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot")
                 or body.task != TRACE_TASK or body.duration not in (5, 10)
@@ -512,18 +623,33 @@ def create_app(
 
     def inference_start(mode: str, args: list[str], options, *, argv_override=None, extra_meta=None) -> dict:
         with inference_launch_lock:
+            if sessions.active:
+                raise HTTPException(409, "Wait for the current UI session to finish")
             operation_id = uuid.uuid4().hex
             meta = {**dataclasses.asdict(options), "operation_id": operation_id,
                     "profile_key": options.operation_key, **(extra_meta or {})}
-            st = start(mode, argv_override if argv_override is not None else sessions.yamkit_argv(*args), meta)
-            # The child can exit between start() and writing its history record. Finalize that
-            # snapshot here too so an immediate failure cannot stay marked as running.
-            run_dir = deployments.create(st)
-            run_dir_box["dir"] = run_dir
-            current = sessions.status()
-            if not current["active"]:
-                finalize_run(run_dir, current)
-                run_dir_box["dir"] = None
+            # Reserve the history and snapshot provenance before the child can open hardware.
+            run_dir = deployments.create({"active": True, "mode": mode, "meta": meta,
+                                          "started_at": time.time()})
+            meta["session_log_path"] = str(run_dir / "log.txt")
+            if mode == "rollout":
+                snapshot = _rollout_metadata(options, require_rig())
+                snapshot["original_paths"] = {"deployment_dir": str(run_dir), "rig_path": str(rig_path),
+                                               "trace_dir": meta.get("debug_trace_dir")}
+                (run_dir / "run_metadata.json").write_text(json.dumps(snapshot, indent=2) + "\n")
+            run_dirs[operation_id] = run_dir
+            try:
+                st = start(mode, argv_override if argv_override is not None else sessions.yamkit_argv(*args), meta)
+            except HTTPException:
+                pending = run_dirs.pop(operation_id, None)
+                if pending is not None:
+                    deployments.finalize(pending, {"active": False, "mode": mode, "meta": meta,
+                                                   "ended_at": time.time(), "returncode": -1,
+                                                   "log": ["Managed child did not start."]})
+                # Popen failure may already have invoked on_exit synchronously. Its complete
+                # snapshot owns finalization; never overwrite it while its upload is starting.
+                raise
+            # Immediate exits are finalized by the callback after this launch lock releases.
             return st
 
     @app.get("/api/inference/profiles")
@@ -531,8 +657,10 @@ def create_app(
         from ..inference.profiles import list_profiles
         from ..modal_ops import credential_status, owned_service
 
+        rig = load_rig()
         return {"profiles": list_profiles(), "credentials": credential_status(),
-                "owned_service": owned_service(), "default_backend": "local"}
+                "owned_service": owned_service(), "default_backend": "local",
+                "rollout_repo": rig.hub.rollout_repo if rig else None}
 
     @app.post("/api/session/rollout")
     def session_rollout(body: RolloutBody) -> dict[str, Any]:
@@ -571,7 +699,8 @@ def create_app(
                           "--duration", str(int(body.duration)), "--modal-app", str(body.modal_app),
                           "--rig", str(rig_path), "--output-dir", str(trace_dir), "--confirm-supervised"]
             return inference_start("rollout", args, options, argv_override=trace_args,
-                                   extra_meta={"capture_trace": True, "debug_trace_dir": str(trace_dir)})
+                                   extra_meta={"capture_trace": True, "debug_trace_dir": str(trace_dir),
+                                               "upload_repo_id": body.upload_repo_id})
         return inference_start("rollout", args, options)
 
     @app.post("/api/session/policy-check")
@@ -758,7 +887,8 @@ def create_app(
     # ------------------------------------------------------------------- deployments/models --
     @app.get("/api/deployments")
     def deployments_list() -> list[dict[str, Any]]:
-        return catalog.list_deployments(deployments.root)
+        return [{**entry, "upload": upload_status(deployments.root / entry["id"])}
+                for entry in catalog.list_deployments(deployments.root)]
 
     @app.get("/api/deployments/{run_id}")
     def deployment(run_id: str) -> dict[str, Any]:
@@ -766,6 +896,7 @@ def create_app(
         if d is None:
             raise HTTPException(404, f"no deployment {run_id!r}")
         directory = deployments.root / run_id
+        d["upload"] = upload_status(directory)
         d["artifacts"] = sorted(name for name in TRACE_FILES if not name.endswith(".mp4")
                                 and (directory / name).is_file() and not (directory / name).is_symlink())
         return d

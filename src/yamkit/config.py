@@ -127,10 +127,17 @@ class HubSpec:
     username: str | None = None  # account datasets/models are pushed under; default: the signed-in account
     private: bool = True  # pushed datasets/models are private unless this is false
     datasets: str = "local"  # where recordings go by default: local | hub | both (uploading is opt-in)
+    rollout_repo: str | None = None  # optional private debug-bundle destination; each upload remains opt-in
 
     def __post_init__(self) -> None:
         if self.datasets not in ("local", "hub", "both"):
             raise ValueError(f"hub.datasets must be local, hub or both, got {self.datasets!r}")
+        if self.rollout_repo is not None:
+            from huggingface_hub.utils import validate_repo_id
+
+            validate_repo_id(self.rollout_repo)
+            if self.rollout_repo.count("/") != 1:
+                raise ValueError("hub.rollout_repo must be a namespace/repository dataset ID")
 
 
 @dataclass
@@ -313,6 +320,8 @@ _SECTIONS: dict[str, str] = {
 #   private    keep pushed datasets and models private (recommended: your rig, your room)
 #   datasets   where a recording goes by default: local | hub | both. "local" = exactly the old
 #              behaviour; with hub/both the upload happens only AFTER the recording session ends.
+#   rollout_repo  optional namespace/repository for private rollout debug bundles; enable upload
+#                 per rollout in Inference. Packaging/upload starts after arms release and saving.
 """,
 }
 

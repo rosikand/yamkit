@@ -1167,6 +1167,32 @@ def hub_status(rig: RigOpt = DEFAULT_RIG) -> None:
         console.print(f"rig hub settings: username={h.username or '(signed-in account)'} private={h.private} datasets={h.datasets}")
 
 
+@app.command("bundle-rollout")
+def bundle_rollout(
+    run_dir: Annotated[Path, typer.Argument(exists=True, file_okay=False, help="Finalized dashboard run directory")],
+    trace_dir: Annotated[Path | None, typer.Option(exists=True, file_okay=False, help="Original trace directory containing RGB frames")] = None,
+    metadata: Annotated[Path | None, typer.Option(exists=True, dir_okay=False, help="Optional provenance JSON for a historical run")] = None,
+    upload_to: Annotated[str | None, typer.Option(help="Upload to this private HF dataset, under runs/<run-id>/")] = None,
+) -> None:
+    """Bundle a finalized rollout for inspection; optionally upload it. Never opens hardware."""
+    import json
+
+    from .rollout_artifacts import package_rollout, upload_rollout
+
+    try:
+        provenance = json.loads(metadata.read_text()) if metadata else None
+        if provenance is not None and not isinstance(provenance, dict):
+            raise ValueError("Provenance must be a JSON object")
+        bundle = package_rollout(run_dir, trace_dir=trace_dir, metadata=provenance)
+        console.print(f"Bundle: {bundle}", markup=False)
+        if upload_to:
+            result = upload_rollout(bundle, repo_id=upload_to)
+            console.print(json.dumps(result, allow_nan=False), markup=False)
+    except Exception as exc:  # noqa: BLE001 — network exceptions may contain credentials
+        err.print(f"Rollout bundle/upload failed ({type(exc).__name__}). Local originals are retained.", markup=False)
+        raise typer.Exit(1) from None
+
+
 @app.command("push-dataset")
 def push_dataset(
     name: str,
