@@ -1,17 +1,49 @@
 # HTTP rollout preparation — 2026-09-08
 
-**The bounded TLS tunnel passed qualification on the Lenovo**, using the real
-H100 model and LeRobot control loop with simulated arms and cameras. Direct warm
-p95 was 284 ms; integrated warm p95 was 281 ms. There were no queue underruns or
-commands after Stop. Physical rollout remains untested and requires separate
-approval. The measured container was retired, so a supervised session must
-qualify its newly retained container again.
+**The first live policy rollout is still pending.** Bounded TLS tunnel sessions
+have passed Lenovo qualification using the real H100 model and LeRobot control
+loop with simulated arms and cameras. Intermittent latency stalls subsequently
+recurred and drained the simulated action queue. Historical passes do not qualify
+a new container: the next supervised session needs a current passing qualification
+for its retained container and the user's fresh GO after returning.
+
+The most recent approved physical attempt homed both followers, then failed to
+acquire the top camera before any policy actions ran. Both followers released.
+Commit `39696eb` moves camera acquisition before arm activation; it is pushed and
+deployed on the Lenovo. Validation passed 1,804 software tests and 9 subtests,
+Ruff, and 177 targeted tests on the Lenovo. A separate camera-only check read all
+three camera streams without connecting an arm; this does not establish physical
+policy execution.
+
+The rollout task is to place the orange lid into the black circular container.
+The water jugs stay on the table for stability; the user accepts their possible
+effect on policy performance and prioritizes the first bounded live rollout.
 
 The HTTP transport and production `cuda_graph10` runtime are available on
 `codex/yamkit-integration-validation`, implemented in `cfdcce9`; `06cc5cd` adds
 one-container retention for bounded sessions. Conductor deploys the cloud GPU;
 the Lenovo runs the LeRobot observation, queue and action loop.
-The Mac is not involved. No physical motors or cameras were opened for these checks.
+The Mac is not involved. The historical measurements below distinguish synthetic
+qualification from saved observations and the later physical startup attempt.
+
+## Hardware-free check while the operator was away
+
+A bounded client-trace diagnostic on a fresh H100 in `us-west4` completed 50 warm
+native-fixture requests and 50 warm integrated requests. Integrated p95 was
+292 ms, with 420 simulated actions, a minimum executing queue of 11 actions,
+zero underruns, zero commands after Stop, and all fake arms released. Direct
+p95 was 496 ms, with a 944 ms maximum. The slow direct requests waited for HTTP
+response headers while measured server runtime stayed near 200 ms; their client
+TCP counters showed no retransmissions, and the two slowest had no client GC.
+The observations do not isolate the remaining delay to a specific network or
+server stage.
+
+Instrumentation changes the client, so this is diagnostic evidence only and
+cannot qualify physical rollout. App `ap-zcDxVkLKKs2scJtJZ9RWh4` was stopped with
+zero containers. The source snapshots, full report and compact summary are in
+`.context/validation/coffee-trace-20260908/` (git-ignored). No arm or camera was
+opened during this check. A separate uninstrumented session must qualify before
+the next approved physical command.
 
 ## Execution and software checks
 
