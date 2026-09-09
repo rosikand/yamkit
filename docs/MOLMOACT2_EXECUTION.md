@@ -95,8 +95,9 @@ Startup now corrects only the arm joints and preserves the gripper's raw calibra
 All six joints remain eligible for correction on followers, teaching handles and bare arms.
 Factory tests cover both signs of raw gripper coordinates, closed/open/intermediate positions,
 joint wrapping and normalized observation/command round trips. Existing calibration, strict
-measured-state rejection, command limits and motor timeout remain unchanged. Physical recovery
-and the complete task still require supervised validation.
+measured-state rejection, command limits and motor timeout remain unchanged. The later open-gripper
+read and bimanual rollout below connected and released normally; closed-aperture reconnect remains
+physically unverified.
 
 ## First-dispatch pose correction
 
@@ -118,4 +119,34 @@ The [1.24-second failure recording](https://huggingface.co/datasets/rohanlux/yam
 contains 38 frames per camera and one bimanual send. Its full metrics were not exported, and
 the historical report has a broken metrics link; the archive flags that omission. Future
 fault traces preserve the metrics attached by runner cleanup, including command-shaping faults,
-while retaining the original failure and release gate. Physical validation remains pending.
+while retaining the original failure and release gate. The subsequent physical run below completed
+the first-dispatch path without a clamp intervention. Its first-observation-to-dispatch joint change
+was only 0.00038 rad: the larger startup-drift regression remains validated by hardware-free tests,
+not reproduced on the rig in that run.
+
+## Thirty-second validation and release diagnosis
+
+Run `20260909-024246-rollout-bdf21f72` on source `ea0a447` completed 859 policy commands in
+the 30-second phase, followed by normal home and release. There were no queue underruns,
+expired dispatches, postclamp joint interventions or capture drops. The
+[pinned private recording](https://huggingface.co/datasets/rohanlux/yamkit-rollouts/tree/e3b5bef2b19055b23c939031046ed96e1aeb9d8a/runs/20260909-024246-rollout-bdf21f72)
+contains three videos, 898 original RGB frames per camera and complete metrics.
+
+The task still failed. The left arm grasped and transported the cube twice, with losses visible
+around 13.18–13.21 seconds and 24.08–24.15 seconds. Both followed partial model-requested
+opening past the held-cube aperture of approximately 0.31, before placement over the bin.
+The cube landed outside the container; a separate post-home image confirmed it beside the left
+outer wall. An intermediate brief grip/contact also ended on the table. Saved measured joints
+and forward kinematics quantify pose disagreement, but provide neither a calibrated bin pose
+nor contact force. They cannot establish whether an unfiltered requested pose would have placed
+the cube correctly, or which controller change would preserve the grasp.
+
+An offline replay reproduced all 73 merges and 859 actual sent commands exactly, then applied
+incoming queue replacement and a 0.3-old/0.7-new overlap blend to the complete saved history.
+Both advanced the opening commands too: the first held-aperture crossing moved 167 ms earlier,
+and the second 233 ms earlier. Nearest-time alignment removed positional blend mismatches of
+up to 36.46 ms without changing those crossing times. Original deadlines, the dequeued prefix,
+joint shaping and the 0.03 gripper step were preserved. These results reject queue replacement
+or blending as an evidence-backed retention fix here. They are fixed-prediction counterfactuals;
+changed physical motion would produce different observations and predictions, so no task-success
+or physical-safety conclusion follows from their passing command-space checks.
