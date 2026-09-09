@@ -278,7 +278,7 @@ as in teleop bound every commanded step.
 
 For optional Modal GPU inference and browser deployment, see [docs/MODAL.md](docs/MODAL.md).
 Local remains the default. MolmoAct2-YAM has a reviewed source mapping and a local synchronous
-path. The latest supervised five-second trial completed 131 bimanual policy dispatches at
+path. Supervised five-second run `20260908-220559-rollout-81cf2f4d` completed 131 bimanual policy dispatches at
 29.9 Hz, with zero queue underruns, all three 30 fps recordings intact, and return home
 completed in 2.1 seconds before release. Remote joint command shaping removed the earlier
 sharp command reversals; the operator said it “seemed ok.” These command-space results
@@ -286,6 +286,10 @@ do not guarantee measured robot dynamics. **The orange-lid task still failed: no
 was requested or observed.** Videos, original RGB frames, traces and full metrics are in
 **Runs → `20260908-220559-rollout-81cf2f4d`** and its
 [private archive](https://huggingface.co/datasets/rohanlux/yamkit-rollouts/tree/e3d6f1a641cdab6aabdd125fd57568b6e28b6b33/runs/20260908-220559-rollout-81cf2f4d).
+The subsequent ten-second attempt stopped early after a slow first response left only
+eight valid actions. Startup now requires half a chunk of fresh actions before its
+first policy dispatch; short initial queues are discarded without retiming targets.
+The fix passed a hardware-free failure reproduction; physical validation is pending.
 Model plans still vary; see the
 [physical trial evidence and limits](docs/VLA_HTTP_ROLLOUT.md).
 

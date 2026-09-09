@@ -1,5 +1,31 @@
 # HTTP rollout validation — 2026-09-09
 
+## Ten-second attempt and startup admission fix
+
+Run **`20260908-222613-rollout-6a7f7a12`** failed after eight policy actions,
+about one second into the requested ten-second phase. Its first live RPC took
+671 ms (206 ms of reported server work), leaving only 269 ms of valid action
+horizon. The second prediction was still in flight when this queue emptied.
+The underrun guard released the followers in 497 ms without attempting home.
+All 31 observation triplets and the failed-run evidence were retained in the
+[private archive](https://huggingface.co/datasets/rohanlux/yamkit-rollouts/tree/0e9c428cd6d35a4a8af0b675f53a372a7d47354b/runs/20260908-222613-rollout-6a7f7a12).
+The task was not accomplished. These timings do not isolate the source of delay
+outside the reported server work.
+
+Remote startup now requires at least half the usable chunk horizon (0.5 seconds
+for MolmoAct2) before the first policy dispatch, measured against both remaining
+action count and original deadlines. A shorter first queue is discarded while
+the worker obtains a fresh observation within the existing startup timeout.
+No action timestamps are extended, and post-start underruns still release.
+`metrics.json.startup_queue` records admission and discarded queues. This is
+startup headroom, not a guarantee against future latency spikes.
+
+A hardware-free reproduction of the slow first response failed after eight
+actions without the reserve. With it, the same injected delays completed ten
+seconds and 268 fake actions with no underrun, discarding the initial eight
+targets. Physical validation of this change remains pending. Evidence:
+`.context/validation/smooth-rollout/ten-second-failed/`.
+
 ## Physical command-shaping trial
 
 Run **`20260908-220559-rollout-81cf2f4d`**, on commit `a480f42`, completed the

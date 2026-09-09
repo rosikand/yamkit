@@ -34,7 +34,7 @@ class InvalidatableActionQueue(ActionQueue):
     """Upstream action queue with a finite size and permanent invalidation."""
 
     def __init__(self, *, max_steps: int, max_age_s: float, observation_time=None, on_fault=None,
-                 on_depth=None, fps: float = 30.0, on_merge=None):
+                 on_depth=None, fps: float = 30.0, on_merge=None, startup_horizon_s: float = 0.0):
         super().__init__(RTCConfig(enabled=False))
         self.lock = RLock()
         self.max_steps = max_steps
@@ -53,6 +53,12 @@ class InvalidatableActionQueue(ActionQueue):
         self.expired_chunks = 0
         self.expired_queued_actions = 0
         self.redundant_chunks = 0
+        self.startup_horizon_s = startup_horizon_s
+        self._startup_pending = True
+        self.startup_discarded_chunks = 0
+        self.startup_discarded_actions = 0
+        self.startup_discard_samples = deque(maxlen=32)
+        self.startup_accepted_horizon_s = None
 
     def timing_snapshot(self, now=None):
         """Report actual queued deadlines, separately from depth divided by FPS."""
@@ -136,9 +142,30 @@ class InvalidatableActionQueue(ActionQueue):
         with self.lock:
             if not self.valid:
                 return None
-            if self.last_index < len(self._deadlines) and time.monotonic() >= self._deadlines[self.last_index]:
+            now = time.monotonic()
+            if self.last_index < len(self._deadlines) and now >= self._deadlines[self.last_index]:
                 self.expired_queued_actions += 1
                 raise RemoteFault("Queued remote actions expired")
+            depth = self.qsize()
+            if self._startup_pending and depth:
+                horizon = min(depth / self.fps, self._deadlines[-1] - now)
+                if horizon < self.startup_horizon_s:
+                    # No action has left this queue. Decline a short first tail
+                    # and let the existing worker predict from a fresh observation.
+                    # Clearing under the append/get lock prevents a concurrent
+                    # merge from resurrecting these targets. Deadlines never move.
+                    self.startup_discarded_chunks += 1
+                    self.startup_discarded_actions += depth
+                    self.startup_discard_samples.append({"monotonic_s": now, "actions": depth,
+                                                         "horizon_s": horizon})
+                    self.queue = self.original_queue = None
+                    self.last_index = 0
+                    self._deadlines.clear()
+                    self.last_action_deadline = None
+                    self.inserted_at = None
+                    return None
+                self._startup_pending = False
+                self.startup_accepted_horizon_s = horizon
             self.last_action_deadline = self._deadlines[self.last_index] if self.last_index < len(self._deadlines) else None
             return super().get()
 
@@ -173,6 +200,9 @@ class UnguidedRemoteInferenceEngine(RTCInferenceEngine):
         self.max_steps = policy.profile.chunk_size + max(1, policy.profile.chunk_size // 2)
         self.max_age_s = policy.config.max_observation_age_s
         self.startup_timeout_s = policy.config.request_timeout_s
+        # Reserve half the usable chunk before the first policy dispatch. This
+        # adds startup headroom, not a guarantee against later latency spikes.
+        self.startup_min_horizon_s = min(policy.profile.chunk_size / fps, self.max_age_s) / 2
         self.underruns = 0
         self.peak_queue_depth = 0
         self.last_queue_depth_before_stop = 0
@@ -255,7 +285,8 @@ class UnguidedRemoteInferenceEngine(RTCInferenceEngine):
         return InvalidatableActionQueue(max_steps=self.max_steps, max_age_s=self.max_age_s,
                                         observation_time=lambda: self._policy._observation_time
                                         or time.monotonic(), on_fault=self._fault, on_depth=self._record_depth,
-                                        fps=self._fps, on_merge=self._record_merge)
+                                        fps=self._fps, on_merge=self._record_merge,
+                                        startup_horizon_s=self.startup_min_horizon_s)
 
     def _record_depth(self, depth):
         self.peak_queue_depth = max(self.peak_queue_depth, depth)
@@ -291,6 +322,11 @@ class UnguidedRemoteInferenceEngine(RTCInferenceEngine):
             if self._global_shutdown_event is not None:
                 self._global_shutdown_event.set()
 
+    def _check_startup_deadline(self):
+        if (not self._ever_had_action and self._started_at is not None
+                and time.monotonic() - self._started_at > self.startup_timeout_s):
+            raise RemoteFault("Remote startup timed out before sufficient fresh actions were available")
+
     def get_action(self, obs_frame):
         if self.failed:
             raise RemoteFault("Remote inference failed; local execution stopped")
@@ -301,10 +337,11 @@ class UnguidedRemoteInferenceEngine(RTCInferenceEngine):
             session_check = getattr(self._policy.transport, "ensure_session_active", None)
             if session_check is not None:
                 session_check()
+            self._check_startup_deadline()
             result = super().get_action(obs_frame)
+            self._check_startup_deadline()  # Queue-lock contention cannot extend startup.
             if result is None:
-                if self._ever_had_action or (self._started_at is not None and
-                                             time.monotonic() - self._started_at > self.startup_timeout_s):
+                if self._ever_had_action:
                     self.underruns += 1
                     raise RemoteFault("Remote action queue underrun; no replay or CPU takeover")
                 return None
@@ -627,6 +664,9 @@ def run_remote_rollout(cfg, *, shutdown_event: Event | None = None):
         strategy.run(ctx)
         if engine.failed:
             raise RemoteFault("Remote rollout stopped after an inference fault")
+        if not shutdown_event.is_set() and engine.executed_actions == 0:
+            engine._fault()
+            raise RemoteFault("Remote rollout ended before startup admitted any policy actions")
         if (not shutdown_event.is_set() and cfg.duration > 0 and engine.executed_actions > 0
                 and time.perf_counter() - started_at >= cfg.duration):
             session_check = ctx.hardware.robot_wrapper.session_check
@@ -676,6 +716,11 @@ def _rollout_metrics(ctx, engine):
                          if engine.robot_released_at is not None and release_stop_at is not None else None)
     failed = engine.failed or (engine.home_aborted and engine.home_abort_reason != "operator_stop")
     return {"inference": "unguided_async", "failed": failed, "underruns": engine.underruns,
+            "startup_queue": {"minimum_horizon_s": engine.startup_min_horizon_s,
+                              "accepted_horizon_s": queue.startup_accepted_horizon_s if queue is not None else None,
+                              "discarded_chunks": queue.startup_discarded_chunks if queue is not None else 0,
+                              "discarded_actions": queue.startup_discarded_actions if queue is not None else 0,
+                              "discard_samples": list(queue.startup_discard_samples) if queue is not None else []},
             "command_shaping": ctx.hardware.robot_wrapper.command_shaper.metrics()
             if getattr(ctx.hardware.robot_wrapper, "command_shaper", None) is not None else None,
             "queue_depth": queue.qsize() if queue is not None else 0, "peak_queue_depth": engine.peak_queue_depth,

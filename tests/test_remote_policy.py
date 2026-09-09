@@ -403,7 +403,10 @@ def test_duration_without_dispatched_actions_never_initiates_return_home(
     _enable_rollout_home(rollout_config)
     transport.hook = lambda: time.sleep(0.2)
     monkeypatch.setattr(arm, "go_home_all", lambda *a, **kw: pytest.fail("No successful policy phase to return from"))
-    result = run_remote_rollout(rollout_config, shutdown_event=threading.Event())
+    with pytest.raises(RemoteFault, match="before startup admitted") as exc:
+        run_remote_rollout(rollout_config, shutdown_event=threading.Event())
+    result = exc.value.metrics
+    assert result["failed"]
     assert result["executed_actions"] == 0
     assert not result["duration_completed"] and not result["home_attempted"]
     assert all(fake.closed for fake in fake_connect.values())
@@ -718,9 +721,10 @@ def test_underrun_stops_instead_of_replaying(transport):
                                           robot_wrapper=SimpleNamespace(), hw_features={}, task="task", fps=30,
                                           shutdown_event=stop)
     engine._action_queue = engine._new_queue()
-    chunk = torch.ones((1, 14))
+    chunk = torch.ones((30, 14))
     engine.action_queue.merge(chunk, chunk, 0)
-    assert engine.get_action(None).shape == (14,)
+    while engine.action_queue.qsize():
+        assert engine.get_action(None).shape == (14,)
     with pytest.raises(RemoteFault, match="underrun"):
         engine.get_action(None)
     assert engine.underruns == 1 and engine.failed and stop.is_set()
