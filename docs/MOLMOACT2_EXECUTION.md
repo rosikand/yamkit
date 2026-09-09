@@ -140,6 +140,24 @@ summary's `auxiliary_observation_scope` states. Initial and post-step RGB remain
 explicit missing-frame counts and original receipt timestamps. Video gaps preserve those
 timestamps; footage and measured positions establish physical outcomes separately.
 
+### Physical validation of literal execution
+
+Run `20260909-050720-rollout-8c1d5dba` on commit `28012421` completed all 330 model
+rows from 11 chunks as exactly 659 reference commands. Every recorded point matched
+the literal formula and the requested/shaped/SDK-returned values were identical.
+Median arm-send spacing was 33.42 ms; the expected short post-RPC intervals and
+blocking inference gaps remain. The 30-second phase completed normally, followed
+by 8.53 seconds of return home and release.
+
+Top and left-wrist video show a grasp, lift and retained transport toward the
+container at approximately 22–29 seconds. The cube was still gripped at the final
+observation: policy-controlled release and placement are unproven. A 45-second
+capture is supported for the next separately approved trial, using the same
+controller/model with a larger bounded recording allocation. The
+[original archive](https://huggingface.co/datasets/rohanlux/yamkit-rollouts/tree/41528fac2f660bacd38b3e740ee640da68328151/runs/20260909-050720-rollout-8c1d5dba)
+retains the full evidence. Its report's generic easing/hold paragraph is stale;
+the recorded literal contract, trace and bundle README describe the actual run.
+
 ## First supervised validation after target braking
 
 Run `20260909-014413-rollout-1559398b` on source `929180c` shows the left gripper grasping,

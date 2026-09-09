@@ -48,8 +48,11 @@ def test_default_plan_does_not_execute(monkeypatch, capsys):
     assert module.plan(10)["max_frame_bytes"] == 837734400
     longer = module.plan(30)
     assert longer["max_frame_triplets"] == 903 and longer["max_frame_bytes"] == 2496614400
-    assert longer["maximum_rollout_wall_s"] == 120 and longer["maximum_export_wall_s"] == 90
-    assert longer["max_events"] == 8192 and longer["max_chunks"] == 128
+    assert longer["maximum_rollout_wall_s"] == 120 and longer["maximum_export_wall_s"] == 120
+    assert longer["max_events"] == 12288 and longer["max_chunks"] == 128
+    longest = module.plan(45)
+    assert longest["max_frame_triplets"] == 1353 and longest["max_frame_bytes"] == 3740774400
+    assert longest["max_events"] > 8 * 1350 + 2
     assert result["video_fps"] == 30 and result["max_frame_triplets"] == 153
     assert "return home" in result["run_effects"] and "Stop" in result["run_effects"]
 
@@ -61,6 +64,8 @@ def test_default_plan_does_not_execute(monkeypatch, capsys):
     ["--run", "--confirm-supervised", "--modal-app", "yamkit-vla-test", "--duration", "11"],
     ["--run", "--confirm-supervised", "--modal-app", "yamkit-vla-test", "--duration", "21"],
     ["--run", "--confirm-supervised", "--modal-app", "yamkit-vla-test", "--duration", "31"],
+    ["--run", "--confirm-supervised", "--modal-app", "yamkit-vla-test", "--duration", "46"],
+    ["--run", "--confirm-supervised", "--modal-app", "yamkit-vla-test", "--duration", "60"],
     ["--plan", "--run"],
 ])
 def test_invalid_run_never_executes(args, monkeypatch):
@@ -69,14 +74,15 @@ def test_invalid_run_never_executes(args, monkeypatch):
         module.main(args)
 
 
-def test_explicit_run_keeps_canonical_flags(monkeypatch):
+@pytest.mark.parametrize("duration", [5, 10, 20, 30, 45])
+def test_explicit_run_keeps_canonical_flags(monkeypatch, duration):
     seen = []
     monkeypatch.setattr(module, "execute", lambda args: seen.append(module.rollout_arguments(args)) or 0)
-    assert module.main(["--run", "--duration", "10", "--modal-app", "yamkit-vla-test",
+    assert module.main(["--run", "--duration", str(duration), "--modal-app", "yamkit-vla-test",
                         "--confirm-supervised"]) == 0
     argv = seen[0]
     assert argv[argv.index("--task") + 1] == module.TASK
-    assert argv[argv.index("--duration") + 1] == "10"
+    assert argv[argv.index("--duration") + 1] == str(duration)
     assert "--accept-mapping" in argv and "--confirm-supervised" in argv
     assert "--no-home" not in argv and "--prediction-queue-threshold" not in argv
 
@@ -204,6 +210,27 @@ def test_reserved_pool_is_checked_and_prefaulted_before_capture(monkeypatch):
         assert np.shares_memory(copied, collector.frame_pool)
         assert not np.shares_memory(copied, frame)
         assert copied.min() == 71
+
+
+def test_45_second_capture_checks_complete_memory_budget_before_allocation(monkeypatch):
+    collector = module.Collector(45)
+    required = 3740774400 + module.MEMORY_HEADROOM_BYTES
+    allocations, fills = [], []
+
+    def allocate(shape, *, dtype):
+        allocations.append((shape, dtype))
+        return SimpleNamespace(fill=fills.append, nbytes=3740774400)
+
+    monkeypatch.setattr(np, "empty", allocate)
+    monkeypatch.setattr(module, "available_memory_bytes", lambda: required - 1)
+    with pytest.raises(MemoryError):
+        reserve_frames(collector)
+    assert collector.frame_capacity == 1353 and not allocations and collector.frame_pool is None
+    monkeypatch.setattr(module, "available_memory_bytes", lambda: required)
+    reserve_frames(collector)
+    assert allocations == [((1353, 3, 480, 640, 3), np.uint8)] and fills == [0]
+    assert collector.memory_preflight["frame_bytes"] == 3740774400
+    assert collector.memory_preflight["headroom_bytes"] == 512 * 1024 * 1024
 
 
 @pytest.mark.parametrize("cgroup_version", [1, 2])
@@ -406,7 +433,7 @@ def test_actual_encoder_preserves_irregular_pts_all_original_frames_and_duration
     assert [row["duration_ticks"] for row in timeline["frames"]] == [33000, 87000, 60000]
 
 
-@pytest.mark.parametrize("duration", [5, 10, 20, 30])
+@pytest.mark.parametrize("duration", [5, 10, 20, 30, 45])
 def test_full_30hz_video_keeps_every_frame_and_real_duration(tmp_path, duration):
     import av
 

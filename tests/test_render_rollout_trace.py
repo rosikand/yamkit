@@ -47,12 +47,12 @@ def test_series_preserves_missing_samples_and_failed_sends():
     assert merges == pytest.approx([.3]) and errors == pytest.approx([.4])
 
 
-@pytest.mark.parametrize("count", [8192, 8193])
+@pytest.mark.parametrize("count", [8192, 10802, 12288, 12289])
 def test_renderer_accepts_collector_event_capacity_but_rejects_overflow(count):
     summary, trace = fixture()
-    trace["events"] = [{"kind": "observation", "monotonic_s": 100 + index / count * 30,
+    trace["events"] = [{"kind": "observation", "monotonic_s": 100 + index / count * 45,
                         "positions": [0.0] * 14} for index in range(count)]
-    if count > 8192:
+    if count > 12288:
         with pytest.raises(ValueError, match="event count"):
             module.series(summary, trace)
     else:
@@ -159,6 +159,11 @@ def test_html_escaped_synthetic_labeled_and_samples_never_connected(tmp_path, mo
     assert "<script>" not in document and "&lt;script&gt;" in document
     assert "<img onerror=test>" not in document and "&lt;img onerror=test&gt;" in document
     assert "Synthetic software fixture" in document and "No arms were connected" in document
+    assert "yam_upstream_literal_v1" in document and "Historical reference runs" in document
+    assert "disables the policy target-speed clamp" in document
+    assert "Returned SDK targets are commands, not proof of movement" in document
+    assert "Targets after the yamkit clamp" not in document
+    assert "extra timing and endpoint holds for existing limits" not in document
     assert f"Nominal video capture rate: {fps} fps" in document
     assert '<img onerror=bad>' not in document and '<script>bad</script>' not in document
     if fps == 30:

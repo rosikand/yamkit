@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SIDES = ('left', 'right')
 JOINTS = tuple(f'joint_{i}.pos' for i in range(1, 7)) + ('gripper.pos',)
 MAX_JSON_BYTES = 16 * 1024 * 1024
-MAX_EVENTS = 8192  # Match the existing collector cap, including 30-second captures.
+MAX_EVENTS = 12288  # Match the collector cap, including 45-second captures.
 
 
 def repo_path(path, *, directory=False):
@@ -187,8 +187,8 @@ def render(directory):
     document = f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>{title}</title><style>body{{font:16px system-ui;max-width:1100px;margin:32px auto;padding:0 20px;color:#111827}}img{{width:100%}}video{{width:100%;max-width:640px}}figure{{margin:16px 0}}code{{overflow-wrap:anywhere}}</style>
 <h1>{title}</h1><p>{'Generated test data only. No arms were connected; this is not evidence of a physical rollout.' if summary.get('synthetic_fixture') is True else ''}</p><p>{html.escape(str(summary.get('task', '')))}</p>
-<p>Gray vertical lines mark async chunk merges; red dashed lines mark failed sends. Targets after the yamkit clamp are commands, not proof of movement. SDK gripper force limiting may modify the gripper target further.</p>
-<p>Check <code>metrics.json → controller_mode</code>. Async mode shapes joint targets from a queued model row. Reference mode executes all 30 rows sequentially with shared joint/gripper interpolation, extra timing and endpoint holds for existing limits; it does not overlap inference or use async row deadlines. Its bounded request admission and fixed plan lease are recorded separately.</p>
+<p>Gray vertical lines mark async chunk merges; red dashed lines mark failed sends. Returned SDK targets are commands, not proof of movement. SDK gripper force limiting may modify the gripper target further.</p>
+<p>Check <code>metrics.json → controller_mode</code> and <code>reference_execution.reference_contract.id</code>. Async mode shapes joint targets from a queued model row. The reference contract <code>yam_upstream_literal_v1</code> executes all 30 rows sequentially with literal joint/gripper linear samples, the upstream post-send 30 Hz rate wait, then observation and an extra 1 ms sleep for multipoint rows. It adds no further smoothing or extra endpoint holds and disables the policy target-speed clamp; finite position bounds, Stop, request freshness and phase/session deadlines still apply. Historical reference runs may use slower interpolation or inference maintenance holds. Read each run's recorded contract and settings; current behavior must not be assumed for older recordings.</p>
 <p><code>metrics.json → command_shaping.samples</code> joins requested, shaped and returned sent commands. In reference mode, <code>requested</code> is an interpolated point, not an original model row. <code>reference_execution.dispatch_samples</code> joins <code>dispatch_index</code> to <code>chunk_index</code>, <code>row_index</code>, <code>point_index</code>, <code>progress</code> and <code>endpoint</code>. Original predictions remain in <code>trace.json → chunks</code>. Check sample-drop and partial-chunk counters before reconstructing execution.</p>
 <p>Measured positions remain encoder observations. After initialization, the reference model uses the last committed 14D command as state; that cached policy state is distinct from the measured curves shown here. New chunks store the actual 14D robot-unit input after client preprocessing in <code>trace.json → chunks[].policy_state</code>; historical recordings may lack it. Model input images are unchanged.</p>
 <p>Points show recorded samples only. Camera exposure timestamps are unavailable. These plots do not establish the cause of jitter or task success.</p>

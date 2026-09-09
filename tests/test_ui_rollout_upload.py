@@ -169,12 +169,33 @@ def test_invalid_destinations_are_rejected_before_child(attached_modal, repo_id)
     assert attached_modal.ui.manager._proc is None
 
 
-def test_upload_requires_supported_complete_capture(attached_modal):
+@pytest.mark.parametrize("duration", [31, 46, 60])
+def test_upload_requires_supported_complete_capture(attached_modal, duration):
     attached_modal.expected_override["task"] = server.TRACE_TASK
-    result = launch(attached_modal.ui, upload_repo_id="owner/private-rollouts", duration=31)
+    result = launch(attached_modal.ui, upload_repo_id="owner/private-rollouts", duration=duration)
     assert result.status_code == 422
-    assert "5, 10, 20 or 30" in result.text
+    assert "5, 10, 20, 30 or 45" in result.text
     assert attached_modal.ui.manager._proc is None
+
+
+@pytest.mark.parametrize("duration", [30, 45])
+def test_upload_capture_keeps_supported_duration_in_trace_command(attached_modal, monkeypatch, duration):
+    state = attached_modal
+    state.expected_override["task"] = server.TRACE_TASK
+    launched = []
+
+    def start(mode, argv, meta):
+        launched.append((mode, argv, meta))
+        return {"active": True, "mode": mode, "meta": meta}
+
+    monkeypatch.setattr(state.ui.manager, "start", start)
+    result = launch(state.ui, upload_repo_id="owner/private-rollouts", duration=duration)
+    assert result.status_code == 200, result.text
+    mode, argv, meta = launched[0]
+    assert mode == "rollout" and Path(argv[1]).name == "trace_rollout.py"
+    assert argv[argv.index("--duration") + 1] == str(duration)
+    assert meta["capture_trace"] and meta["upload_repo_id"] == "owner/private-rollouts"
+    assert state.ui.manager._proc is None  # The test never starts a control child.
 
 
 def test_browser_upload_implies_capture_and_can_be_opted_out(attached_browser):
