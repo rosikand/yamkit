@@ -76,3 +76,24 @@ the existing 120-second rollout and 90-second export wall limits. Its 903-slot f
 2,496,614,400 bytes plus the existing 512 MiB headroom before hardware can connect. The report
 renderer accepts the collector's existing 8,192-event limit. A longer trial requires fresh
 supervised approval; it is an experiment, not a claim that additional time guarantees placement.
+
+## Gripper reconnect correction
+
+The next attempt, `20260909-020727-rollout-ab339b57`, stopped during left-follower
+connection because its measured gripper state was outside [0, 1]. The policy never started;
+cleanup released the left follower before the right connected. Its
+[failure archive](https://huggingface.co/datasets/rohanlux/yamkit-rollouts/tree/3a14ec9d0f59739abed5d40803e7e4e4ed77ddd7/runs/20260909-020727-rollout-ab339b57)
+retains the error and explicitly flags absent policy frames, videos and report.
+
+Inspection found the SDK startup loop applying arm angle wrapping to the gripper motor as
+well, without shifting its saved calibration. With the left gripper's [6.44979782, 1.23235676]
+raw endpoints, a valid normalized opening of 0.309 has raw angle 4.837608532 radians. Folding
+it by −2π makes the reported opening 1.513265699. This is a hardware-free counterexample,
+not the measured value from the failed attempt: that value was not logged.
+
+Startup now corrects only the arm joints and preserves the gripper's raw calibrated frame.
+All six joints remain eligible for correction on followers, teaching handles and bare arms.
+Factory tests cover both signs of raw gripper coordinates, closed/open/intermediate positions,
+joint wrapping and normalized observation/command round trips. Existing calibration, strict
+measured-state rejection, command limits and motor timeout remain unchanged. Physical recovery
+and the complete task still require supervised validation.

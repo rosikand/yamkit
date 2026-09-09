@@ -35,8 +35,60 @@ def test_wrap_correction_uses_joint_limits():
     elbow = np.array([0.0 - 0.15, 3.1416 + 0.15])
     assert wrap_correction(-3.0, elbow) == two_pi  # -172° on a 0..180° joint can only be +188° (inside the buffered limit)
     assert wrap_correction(-1.0, elbow) == 0.0  # below the limit and shifting a turn does not help: leave it (the SDK then reports the violation)
-    # no limits known (e.g. the gripper motor): original ±π behaviour
+    # Standalone helper fallback; calibrated grippers must not use this fold.
     assert wrap_correction(-3.3) == two_pi and wrap_correction(3.3) == -two_pi and wrap_correction(3.0) == 0.0
+
+
+@pytest.mark.parametrize("gripper_name", ["linear_4310", "yam_teaching_handle", "no_gripper"])
+@pytest.mark.parametrize("aperture", [0.0, 0.309, 0.5, 0.75, 1.0])
+@pytest.mark.parametrize("limits", [(6.44979782, 1.23235676), (0.0, -5.2)])
+def test_factory_preserves_gripper_calibration_frame(monkeypatch, gripper_name, aperture, limits):
+    """Reconnect at any aperture without shifting the saved raw gripper frame by a turn."""
+    from i2rt.robots import get_robot
+    from i2rt.robots.utils import GripperType, JointMapper
+
+    has_gripper = gripper_name == "linear_4310"
+    raw = np.array([-3.0885, 0.0, 0.0, 0.0, 0.0, 6.0])
+    if has_gripper:
+        raw = np.append(raw, limits[0] + aperture * (limits[1] - limits[0]))
+
+    class Chain:
+        started = False
+
+        def __init__(self, motors, offsets, directions, *args, **kwargs):
+            assert len(motors) == len(raw)
+            self.motor_offset = np.array(offsets)
+
+        def read_states(self):
+            return [SimpleNamespace(pos=p) for p in raw - self.motor_offset]
+
+        def start_thread(self):
+            self.started = True
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(get_robot, "DMChainCanInterface", Chain)
+    monkeypatch.setattr(get_robot, "combine_arm_and_gripper_xml", lambda *a, **kw: "unused")
+    monkeypatch.setattr(get_robot, "MotorChainRobot", lambda **kw: SimpleNamespace(**kw))
+    robot = get_robot.get_yam_robot(
+        gripper_type=GripperType.from_string_name(gripper_name),
+        gripper_limits_override=np.array(limits) if has_gripper else None,
+    )
+    chain = robot.motor_chain
+    assert chain.started
+    # Both the base and the final arm joint still receive their own limit correction,
+    # including when the chain has no motorized gripper.
+    np.testing.assert_allclose(chain.motor_offset[:6], [-2 * np.pi, 0, 0, 0, 0, 2 * np.pi])
+    if has_gripper:
+        assert chain.motor_offset[6] == 0.0
+        assert not robot.enable_gripper_calibration
+        np.testing.assert_array_equal(robot.gripper_limits, limits)
+        mapper = JointMapper({6: limits}, total_dofs=7)
+        measured = np.array([state.pos for state in chain.read_states()])
+        command = mapper.to_command_joint_pos_space(measured)
+        assert command[6] == pytest.approx(aperture)
+        np.testing.assert_allclose(mapper.to_robot_joint_pos_space(command), measured)
 
 
 @pytest.mark.parametrize("arm_name", ["yam", "yam_pro", "yam_ultra", "yam_ultra_2", "big_yam"])

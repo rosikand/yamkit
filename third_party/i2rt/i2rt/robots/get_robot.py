@@ -317,7 +317,10 @@ def get_yam_robot(
         logging.debug(f"motor_states: {motor_states}")
 
         logging.info(f"current_pos: {[m.pos for m in motor_states]}")
-        for idx, state in enumerate(motor_states):
+        # Only arm joints have angular wrap correction. The gripper's saved
+        # [closed, open] limits use its raw motor frame, which can span beyond ±π;
+        # folding that position alone invalidates calibration on reconnect.
+        for idx, state in enumerate(motor_states[:n_arm_joints]):
             limits = joint_limits[idx] if joint_limits is not None and idx < len(joint_limits) else None
             turn = wrap_correction(state.pos, limits)
             if turn:
