@@ -287,6 +287,7 @@ def test_export_reuses_lerobot_after_release_and_preserves_timestamp_gaps(tmp_pa
     monkeypatch.setattr(module, "render_report", lambda *_: calls.append(("render", 0)))
     summary = module.export(collector, tmp_path)
     assert summary["resources_released"] is True
+    assert summary["rollout_error"] is None
     assert len(calls) == 10 and sum(call[0] == "video" for call in calls) == 3
     assert calls[-1][0] == "render"
     assert json.loads((tmp_path / "frame_timestamps.json").read_text()) == [1, 1.6]
@@ -412,7 +413,80 @@ def test_execute_uses_canonical_cli_and_preserves_full_metrics_after_fault(tmp_p
     monkeypatch.setattr(cli, "app", fake_cli)
     assert module.execute(args) == int(fault)
     assert json.loads((output / "metrics.json").read_text()) == metrics
+    summary = json.loads((output / "summary.json").read_text())
+    assert summary["rollout_error"] == (
+        {"type": "RemoteFault", "message": "fake inference fault after normal cleanup"} if fault else None)
     assert json.loads(capsys.readouterr().out)["trace_directory"] == str(output)
+
+
+@pytest.mark.parametrize("export_failure", [None, "before_summary", "after_summary"])
+def test_camera_timeout_keeps_sanitized_cause_after_cleanup_even_if_export_fails(
+        tmp_path, monkeypatch, caplog, capsys, export_failure):
+    from lerobot_robot_yamkit.yam_follower import BiYamFollower
+
+    from yamkit import cli, paths
+
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    output = tmp_path / ".context" / "rollout-traces" / "camera-timeout"
+    args = module.parse_args(["--run", "--modal-app", "yamkit-vla-test", "--confirm-supervised",
+                              "--output-dir", str(output)])
+    fake_url = "https://private-camera.example.invalid/read?key=synthetic-private-value"
+    fake_token = "hf_" + "SyntheticCredentialForSanitizationOnly123456789"
+    reason = "left_wrist camera did not deliver a frame within 200 ms"
+    message = f"{reason}; source {fake_url}; credential {fake_token}"
+    robot = SimpleNamespace(_sides={"left": SimpleNamespace(arm=object())},
+                            _opened_cameras=[object()], _camera_lease=object())
+    calls = []
+    monkeypatch.setattr(BiYamFollower, "connect", lambda _robot: calls.append("connect"))
+
+    def camera_read(_robot):
+        calls.append("camera_read")
+        raise TimeoutError(message)
+
+    def fake_cli(**_kwargs):
+        BiYamFollower.connect(robot)  # The real tracing hook registers this fake robot.
+        try:
+            BiYamFollower.get_observation(robot)
+        finally:
+            robot._sides["left"].arm = None
+            robot._opened_cameras.clear()
+            robot._camera_lease = None
+            calls.append("released")
+
+    original_export = module.export
+
+    def export_after_cleanup(collector, directory):
+        assert collector.robots == [robot] and collector.released()
+        assert calls == ["connect", "camera_read", "released"]
+        if export_failure is not None:
+            if export_failure == "after_summary":
+                module.write_json(directory / "summary.json", {"status": "EXPORTING", "frame_count": 0})
+            raise OSError("synthetic export failure after robot cleanup")
+        return original_export(collector, directory)
+
+    monkeypatch.setattr(BiYamFollower, "get_observation", camera_read)
+    monkeypatch.setattr(cli, "app", fake_cli)
+    monkeypatch.setattr(module, "export", export_after_cleanup)
+    with caplog.at_level(logging.ERROR, logger=module.__name__):
+        assert module.execute(args) == 1
+    summary = json.loads((output / "summary.json").read_text())
+    error = summary["rollout_error"]
+    assert error["type"] == "TimeoutError" and reason in error["message"]
+    assert summary["resources_released"] is True
+    logs = [record for record in caplog.records if record.name == module.__name__]
+    assert len(logs) == 1 and logs[0].levelno == logging.ERROR
+    assert reason in logs[0].getMessage() and "TimeoutError" in logs[0].getMessage()
+    assert "camera_read" in logs[0].getMessage()  # A usable traceback, beyond only the exception type.
+    public_output = capsys.readouterr().out
+    assert json.loads(public_output)["exit_status"] == 1
+    evidence = (output / "summary.json").read_text() + logs[0].getMessage() + public_output
+    if export_failure is not None:
+        assert summary["status"] == "EXPORT_FAILED" and summary["error_type"] == "OSError"
+        export_error = json.loads((output / "export-error.json").read_text())
+        assert export_error["rollout_error"] == error and export_error["resources_released"] is True
+        evidence += (output / "export-error.json").read_text()
+    for secret in (fake_url, "private-camera.example.invalid", "synthetic-private-value", fake_token):
+        assert secret not in evidence
 
 
 def test_execute_marks_interrupted_export_without_losing_summary(tmp_path, monkeypatch):

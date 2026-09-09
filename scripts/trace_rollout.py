@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
 from fractions import Fraction
@@ -108,6 +109,7 @@ class Collector:
         self.duration, self.clock = duration, clock
         self.events, self.frames, self.chunks, self.robots = [], [], [], []
         self.metrics = None
+        self.rollout_error = None
         self.active = False
         self.phase_started = self.phase_ended = None
         self.frame_capacity = duration * VIDEO_FPS + 3
@@ -421,6 +423,7 @@ def export(collector, outdir):
     summary = {"status": "EXPORTING", "qualification_evidence": False,
                "instrumented_rollout": True, "task": TASK, "duration_s": collector.duration,
                "resources_released": released, "production_guards_unchanged": True,
+               "rollout_error": collector.rollout_error,
                "phase_started_monotonic_s": collector.phase_started,
                "phase_ended_monotonic_s": collector.phase_ended,
                "action_names": ACTION_NAMES, "camera_names": CAMERAS,
@@ -529,7 +532,13 @@ def execute(args):
             collector.reserve_frames()
             cli.app(args=rollout_arguments(args), standalone_mode=False)
     except BaseException as exc:  # noqa: BLE001 — preserve partial trace after normal runner cleanup.
+        from yamkit.rollout_artifacts import sanitize_text
+
         status, error_type = 1, type(exc).__name__
+        collector.rollout_error = {"type": error_type, "message": sanitize_text(str(exc))[:2048]}
+        logging.getLogger(__name__).error(
+            "Rollout failed before artifact export:\n%s",
+            sanitize_text("".join(traceback.format_exception(exc)))[-12000:])
     try:
         with wall_limit(MAX_EXPORT_WALL_S):
             summary = export(collector, outdir)
@@ -539,7 +548,7 @@ def execute(args):
         except (OSError, ValueError):
             summary = {}
         summary.update(status="EXPORT_FAILED", error_type=type(exc).__name__,
-                       resources_released=collector.released())
+                       resources_released=collector.released(), rollout_error=collector.rollout_error)
         write_json(outdir / "summary.json", summary)
         write_json(outdir / "export-error.json", summary)
         status = 1
