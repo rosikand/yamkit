@@ -738,7 +738,7 @@ pages.inference = {
           <label class="field">preset<select id="inf-preset"><option value="smolvla">SmolVLA base · forward check</option><option value="molmoact2">MolmoAct2 · bimanual YAM</option><option value="pi05">pi05 base · forward check</option><option value="custom">Custom compatible local checkpoint</option></select></label>
           <label class="field">backend<select id="inf-backend"><option value="local">Local (default)</option><option value="modal">Modal · retained MolmoAct2 session</option><option value="external">Lambda / own GPU host · SSH</option></select></label>
           <label class="field">checkpoint<input type="text" id="inf-policy" value="smolvla" list="policy-list" /></label>
-          <label class="field">task<input type="text" id="inf-task" value="pick up the object" /></label>
+          <label class="field">task<input type="text" id="inf-task" value="put the red cube into the black container" /></label>
           <label class="field">followers<select id="inf-arms"><option value="">Both arms</option><option value="left">Left only (compatible local model)</option><option value="right">Right only (compatible local model)</option></select></label>
           <label class="field">duration (seconds)<input type="number" id="inf-duration" value="5" min="1" max="3600" /></label>
           <label class="field">local device<select id="inf-device"><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="mps">MPS</option></select></label>
@@ -750,7 +750,7 @@ pages.inference = {
         <div id="inf-attach-controls">
           <div class="hint">Conductor prepares and qualifies the cloud session. Enter its exact warmed task above. This page attaches over HTTP using ten-step inference and raw RGB.</div>
           <label class="check"><input type="checkbox" id="inf-mapping" /> I verified left/right arms, cameras and gripper calibration and accept this policy's YAM mapping.</label>
-          <label class="check"><input type="checkbox" id="inf-trace" /> Save 30 fps video and joint traces (orange-lid task, 5 or 10 seconds).</label>
+          <label class="check"><input type="checkbox" id="inf-trace" /> Save 30 fps video and joint traces (put the red cube into the black container, 5 or 10 seconds).</label>
           <label class="check"><input type="checkbox" id="inf-upload" /> Upload finalized rollout to a private Hugging Face dataset.</label>
           <label class="field">rollout dataset<input type="text" id="inf-upload-repo" placeholder="your-namespace/yamkit-rollouts" /></label>
           <div class="hint">Upload saves all debug data after the arms are released and video export finishes. Local originals are kept. Requires 5 or 10 second capture.</div>

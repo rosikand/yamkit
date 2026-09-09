@@ -1012,7 +1012,7 @@ def policy_check(
     policy: Annotated[str, typer.Option(help="checkpoint dir or HF id (e.g. lerobot/smolvla_base)")],
     rig: RigOpt = DEFAULT_RIG,
     arms: Annotated[list[str] | None, typer.Option("--arms")] = None,
-    task: str = "pick up the object",
+    task: str = "put the red cube into the black container",
     device: str = "cpu",
     steps: int = 3,
     keep_policy_features: Annotated[bool, typer.Option(help="use the checkpoint's own input features instead of this rig's")] = False,
@@ -1075,7 +1075,7 @@ def modal_qualify(policy: str = "molmoact2", requests: int = 50, modal_app: str 
                   rig: RigOpt = DEFAULT_RIG, image_encoding: str = "rgb8", jpeg_quality: int = 85,
                   call_mode: str = "remote", center_crop: bool = False,
                   prediction_queue_threshold: int | None = None,
-                  execution_mode: str = "eager", task: str = "pick up the red cube") -> None:
+                  execution_mode: str = "eager", task: str = "put the red cube into the black container") -> None:
     """Measure this host's existing Modal service with generated frames and fake arms only."""
     from .modal_qualification import collect_qualification
 
@@ -1157,7 +1157,7 @@ def modal_shutdown() -> None:
 
 @app.command("policy-probe")
 def policy_probe(
-    policy: str = "molmoact2", task: str = "pick up the object", backend: str = "local",
+    policy: str = "molmoact2", task: str = "put the red cube into the black container", backend: str = "local",
     device: str = "cpu", gpu: str = "L40S", modal_app: str | None = None,
     center_crop: bool = False, saved: Path | None = None, live: bool = False,
     approve_active_read: bool = False, rig: RigOpt = DEFAULT_RIG,

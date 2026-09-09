@@ -325,7 +325,7 @@ def test_attached_rollout_denies_child_when_preview_retains_camera(attached_moda
 ])
 def test_attached_debug_capture_rejects_options_outside_reviewed_bounds(attached_modal, route, changes):
     body = attached_payload(capture_trace=True,
-                            task="pick up the orange lid and place it into the black circular container")
+                            task="put the red cube into the black container")
     body.update(changes)
     # Let ordinary qualification accept the selected settings: the debug guard must still reject them.
     attached_modal.expected_override.update(
@@ -641,7 +641,7 @@ def attached_browser(inference_js):
       pages.inference._profiles=[{id:'molmoact2',mapping_verified:true,
         physical_modal_rollout_allowed:false,physical_modal_rollout_reason:'Host qualification required'}];
       $('#inf-backend').value='modal'; $('#inf-modal-app').value='yamkit-vla-session-ui-test';
-      $('#inf-task').value='pick up the orange lid and place it into the black circular container';
+      $('#inf-task').value='put the red cube into the black container';
       $('#inf-duration').value='5'; $('#inf-mapping').checked=false;
       pages.inference.syncForm();
     """)

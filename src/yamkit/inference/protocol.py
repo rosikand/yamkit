@@ -224,7 +224,7 @@ def native_fixture_request(profile: str | ModelProfile, *, sequence_id: int = 0,
         "protocol_version": PROTOCOL_VERSION, "profile": profile.id, "model_revision": profile.revision,
         "session_id": session_id or str(uuid.uuid4()), "sequence_id": sequence_id,
         "observation_time": time.monotonic(), "observation_age_s": 0.0, "timeout_s": MAX_TIMEOUT_S,
-        "task": "pick up the red cube", "state": [0.0] * len(profile.state_names),
+        "task": "put the red cube into the black container", "state": [0.0] * len(profile.state_names),
         "state_names": list(profile.state_names), "images": {
             key: encode_image(rng.integers(0, 256, (h, w, 3), dtype=np.uint8), encoding=encoding, quality=quality)
             for key in profile.native_image_keys

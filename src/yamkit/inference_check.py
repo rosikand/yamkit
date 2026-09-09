@@ -16,7 +16,7 @@ def percentiles(samples: list[float]) -> dict:
             for q in (50, 95, 99)} if samples else {})}
 
 
-def run_check(policy: str, *, backend: str = "local", device: str = "cpu", task: str = "pick up the object",
+def run_check(policy: str, *, backend: str = "local", device: str = "cpu", task: str = "put the red cube into the black container",
               steps: int = 3, modal_app: str | None = None, center_crop: bool = False) -> dict:
     if not 3 <= steps <= 20:
         raise ValueError("fresh-chunk check requires 3–20 predictions")

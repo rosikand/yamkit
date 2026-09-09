@@ -24,7 +24,7 @@ def _benchmark_module():
 def collect_qualification(policy="molmoact2", *, requests=50, modal_app=None, rig_path=DEFAULT_RIG,
                           image_encoding="rgb8", jpeg_quality=85, call_mode="remote", center_crop=False,
                           prediction_queue_threshold=None, execution_mode="eager",
-                          task="pick up the red cube", backend="modal", external_service=None) -> dict:
+                          task="put the red cube into the black container", backend="modal", external_service=None) -> dict:
     from .config import RigConfig
     from .inference.profiles import get_profile
     from .inference.qualification import build_qualification, qualification_settings, save_qualification

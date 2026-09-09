@@ -26,7 +26,7 @@ from itertools import pairwise
 from pathlib import Path
 from unittest.mock import patch
 
-TASK = "pick up the orange lid and place it into the black circular container"
+TASK = "put the red cube into the black container"
 CAMERAS = ("top", "left_wrist", "right_wrist")
 ACTION_NAMES = tuple(f"{side}_{joint}.pos" for side in ("left", "right")
                      for joint in (*[f"joint_{i}" for i in range(1, 7)], "gripper"))

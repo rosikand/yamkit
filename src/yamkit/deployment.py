@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 @dataclass(frozen=True)
 class InferenceOptions:
     policy: str
-    task: str = "pick up the object"
+    task: str = "put the red cube into the black container"
     backend: str = "local"
     device: str = "cpu"
     gpu: str = "L40S"

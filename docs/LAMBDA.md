@@ -74,7 +74,7 @@ Start the service in a terminal that remains connected:
 CUDA_VISIBLE_DEVICES=0 .venv-inference/bin/python -m yamkit.inference.standalone_service \
   --service-id lambda-georgia --provider lambda --region Georgia --port 8765 \
   --token-file data/inference/lambda-georgia.token --session-seconds 28800 \
-  --task 'pick up the orange lid and place it into the black circular container'
+  --task 'put the red cube into the black container'
 ```
 
 The service binds only to `127.0.0.1`. It loads the pinned MolmoAct2 checkpoint/backbone, warms
@@ -134,7 +134,7 @@ yamkit external-attach --name lambda-georgia --endpoint http://127.0.0.1:8765 \
   --token-file data/inference/lambda-georgia.token
 yamkit external-status --service lambda-georgia
 yamkit external-qualify --service lambda-georgia \
-  --task 'pick up the orange lid and place it into the black circular container' --requests 50
+  --task 'put the red cube into the black container' --requests 50
 ```
 
 Qualification must pass on Lenovo through this exact tunnel and current source/model identity.
@@ -151,11 +151,11 @@ run returns home, then followers release. Stop, faults and expiry abort movement
 ```bash
 yamkit rollout --policy molmoact2 --backend external --external-service lambda-georgia \
   --call-mode http --execution-mode cuda_graph10 --image-encoding rgb8 \
-  --task 'pick up the orange lid and place it into the black circular container' \
+  --task 'put the red cube into the black container' \
   --arms left_follower --arms right_follower --duration 5 --accept-mapping --confirm-supervised
 ```
 
-An attached server or passing qualification does not prove the orange-lid task will succeed.
+An attached server or passing qualification does not prove the red-cube task will succeed.
 Inspect observations, predictions, executed actions and video after each supervised trial.
 Existing command shaping, original action deadlines and Stop/release behavior still apply.
 

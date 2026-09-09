@@ -37,7 +37,7 @@ from .preview_proxy import PreviewStreamingResponse, PreviewUnavailable, fetch_s
 from .sessions import DeploymentLog, SessionManager
 
 FRONTEND_DIR = ROOT / "ui"
-TRACE_TASK = "pick up the orange lid and place it into the black circular container"
+TRACE_TASK = "put the red cube into the black container"
 TRACE_FILES = frozenset({"summary.json", "trace.json", "metrics.json", "frame_timestamps.json", "video_timeline.json", "export-error.json",
                          "top.mp4", "left_wrist.mp4", "right_wrist.mp4",
                          "report.html", "joints-left.png", "joints-right.png"})
@@ -128,7 +128,7 @@ class HubTransferBody(BaseModel):
 class InferenceBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     policy: str
-    task: str = "pick up the object"
+    task: str = "put the red cube into the black container"
     backend: str = "local"
     device: str = "cpu"
     gpu: str = "L40S"
@@ -615,7 +615,7 @@ def create_app(
                 or body.image_encoding != "rgb8" or body.center_crop or body.rtc or not body.async_chunks
                 or body.prediction_queue_threshold not in (None, 30)
                 or body.arms not in (None, ["left_follower", "right_follower"])):
-            raise ValueError("Debug capture requires the orange-lid task, 5 or 10 seconds, both named followers, and the unchanged raw-RGB HTTP graph settings")
+            raise ValueError("Debug capture requires the task 'put the red cube into the black container', 5 or 10 seconds, both named followers, and the unchanged raw-RGB HTTP graph settings")
         if (body.capture_trace and body.arms is None
                 and [pair.follower for pair in require_rig().pairs] != ["left_follower", "right_follower"]):
             raise ValueError("Debug capture requires the rig's default followers to be left_follower then right_follower")

@@ -20,7 +20,7 @@ class YamkitRemoteConfig(PreTrainedConfig):
     jpeg_quality: int = 85
     call_mode: str = "remote"
     execution_mode: str = "eager"
-    task: str = "pick up the red cube"
+    task: str = "put the red cube into the black container"
     prediction_queue_threshold: int | None = None
     supervised_confirmed: bool = False
     mapping_accepted: bool = False

@@ -120,7 +120,7 @@ def make_benchmark_transport(app_name, profile_name="molmoact2", *, shutdown_eve
 
 def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(480, 640),
                  transport_factory=None, target_warm_samples: int | None = None, policy_options=None,
-                 task: str = "synthetic timing diagnostic") -> dict:
+                 task: str = "put the red cube into the black container") -> dict:
     from lerobot.rollout.configs import RolloutConfig
     from lerobot_robot_yamkit import BiYamFollowerConfig
 
@@ -363,7 +363,7 @@ def profile_modal(transport, *, profile_name="molmoact2", warm_samples=100,
                   max_wall_s=600.0, image_hw=(480, 640), on_sample=None,
                   image_encoding="rgb8", jpeg_quality=85, center_crop=False,
                   diagnostic_num_inference_steps=None, diagnostic_cuda_graph=None,
-                  execution_mode="eager", task="pick up the red cube", backend="modal") -> dict:
+                  execution_mode="eager", task="put the red cube into the black container", backend="modal") -> dict:
     """Bounded direct protocol profiling; generated fixture results never enter a queue.
 
     In contrast to rollout, non-executable native fixtures can be measured after
@@ -595,7 +595,7 @@ def compare_encodings(transport, *, pairs=4, image_hw=(480, 640), jpeg_quality=8
                            "sequence_id": pair * 2 + (encoding == "jpeg"),
                            "observation_time": observation_time,
                            "observation_age_s": time.monotonic() - observation_time,
-                           "timeout_s": 30.0, "task": "pick up the red cube",
+                           "timeout_s": 30.0, "task": "put the red cube into the black container",
                            "state": [0.0] * len(profile.state_names), "state_names": list(profile.state_names),
                            "images": images, "mode": "native_fixture", "diagnostic_seed": pair,
                            "crop": "center_16_9" if center_crop else "none", "continuation": None}
@@ -688,7 +688,7 @@ def _compare_variants(transport, variants, *, pairs, image_hw, center_crop=False
                            "sequence_id": pair * len(variants) + variant_index,
                            "observation_time": observation_time,
                            "observation_age_s": time.monotonic() - observation_time,
-                           "timeout_s": min(30.0, remaining), "task": "pick up the red cube",
+                           "timeout_s": min(30.0, remaining), "task": "put the red cube into the black container",
                            "state": [0.0] * len(profile.state_names), "state_names": list(profile.state_names),
                            "images": images, "mode": "native_fixture", "diagnostic_seed": pair,
                            "crop": "center_16_9" if center_crop else "none", "continuation": None}
@@ -870,7 +870,7 @@ def main():
     parser.add_argument("--jpeg-quality", type=int, default=85)
     parser.add_argument("--call-mode", choices=("remote", "spawn", "http"), default="remote")
     parser.add_argument("--execution-mode", choices=("eager", "cuda_graph10"), default="eager")
-    parser.add_argument("--task", default="pick up the red cube")
+    parser.add_argument("--task", default="put the red cube into the black container")
     parser.add_argument("--center-crop", action="store_true")
     parser.add_argument("--encoding-pairs", type=int, default=0,
                         help="optional 1–6 seeded raw/JPEG pairs before warm profiling")

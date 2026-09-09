@@ -260,7 +260,7 @@ First check a checkpoint without activating hardware. Reviewed base-model checks
 checkpoint-native fixtures; compatible custom checkpoint checks use the rig's feature spec:
 
 ```bash
-yamkit policy-check --policy lerobot/smolvla_base --task "pick up the red cube"
+yamkit policy-check --policy lerobot/smolvla_base --task "put the red cube into the black container"
 # smolvla base: three fresh 50-step chunks, native 6-d state/action; no physical YAM mapping implied
 ```
 
@@ -268,7 +268,7 @@ Then deploy:
 
 ```bash
 yamkit rollout --policy outputs/train/smolvla_pick_cube/checkpoints/last/pretrained_model \
-               --task "pick up the red cube" --duration 60 --rtc
+               --task "put the red cube into the black container" --duration 60 --rtc
 yamkit rollout --policy outputs/train/my_policy/checkpoints/last/pretrained_model --task "..." --dry-run
 ```
 
