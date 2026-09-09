@@ -26,7 +26,7 @@ ARTIFACTS = (
 REQUIRED = tuple(name for name in ARTIFACTS if name not in ("export-error.json", "run_metadata.json", "plan.json"))
 METADATA_FIELDS = frozenset({
     "source", "model", "rig", "configuration", "runtime", "packages", "provenance",
-    "original_paths", "operator_feedback", "known_missing_data", "capture", "software", "environment",
+    "original_paths", "operator_feedback", "known_missing_data", "capture", "software", "environment", "remote_runtime",
 })
 _SENSITIVE_KEY = re.compile(
     r"token|secret|password|passwd|credential|authorization|authentication|api.?key|"
@@ -57,12 +57,19 @@ def sanitize_text(value: str, *, secrets: tuple[str, ...] = ()) -> str:
     return _ASSIGNMENT.sub(r"\1[REDACTED_SECRET]", value)
 
 
-def sanitize(value: Any, *, secrets: tuple[str, ...] = ()) -> Any:
+def sanitize(value: Any, *, secrets: tuple[str, ...] = (), _path: tuple[str, ...] = ()) -> Any:
     if isinstance(value, dict):
-        return {sanitize_text(str(key), secrets=secrets): sanitize(item, secrets=secrets) for key, item in value.items()
-                if not _SENSITIVE_KEY.search(str(key))}
+        def allowed(key, item):
+            # This package name contains "token" but a bounded numeric version
+            # is provenance, not a credential. Keep the exception at its schema path.
+            package_version = (key == "tokenizers" and _path[-2:] == ("runtime_provenance", "packages")
+                               and type(item) is str and re.fullmatch(r"[0-9]{1,3}(?:\.[0-9]{1,3}){1,3}", item))
+            return package_version or not _SENSITIVE_KEY.search(str(key))
+
+        return {sanitize_text(str(key), secrets=secrets): sanitize(item, secrets=secrets, _path=(*_path, str(key)))
+                for key, item in value.items() if allowed(key, item)}
     if isinstance(value, list):
-        return [sanitize(item, secrets=secrets) for item in value]
+        return [sanitize(item, secrets=secrets, _path=(*_path, "[]")) for item in value]
     if isinstance(value, str):
         return sanitize_text(value, secrets=secrets)
     return value
