@@ -334,7 +334,7 @@ pages.record = {
         </div></div>
         <div class="sect"><div class="sect-head">Recording</div><div class="panel pad">
           <label class="field">dataset name<input type="text" id="rec-name" placeholder="pick_cube" /></label>
-          <label class="field">task instruction<input type="text" id="rec-task" placeholder="pick up the red cube and place it in the bowl" /></label>
+          <label class="field">task instruction<input type="text" id="rec-task" placeholder="put the red cube into the black container" /></label>
           <div class="form-grid">
             <label class="field">episodes<input type="number" id="rec-episodes" value="10" min="1" /></label>
             <label class="field">episode duration (s)<input type="number" id="rec-episode-s" value="30" /></label>

@@ -32,9 +32,10 @@ from yamkit.camera_ownership import claim_from_env
 p=argparse.ArgumentParser()
 p.add_argument('--run',action='store_true');p.add_argument('--duration',type=int)
 p.add_argument('--modal-app');p.add_argument('--rig');p.add_argument('--output-dir')
+p.add_argument('--backend',choices=['modal','external'],default='modal')
 p.add_argument('--confirm-supervised',action='store_true')
 a=p.parse_args()
-assert a.run and a.confirm_supervised and a.duration==5
+assert a.run and a.confirm_supervised and a.duration==5 and a.backend=='modal'
 assert pathlib.Path(a.rig).is_file()
 lease=claim_from_env(['top','left_wrist','right_wrist'])
 print('FAKE_TRACE_CAMERA_ACQUIRED',flush=True)

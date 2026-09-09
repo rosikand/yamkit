@@ -164,7 +164,7 @@ can drop frames at 640x480@30 when it shares the hub with another camera.
 ## 5. Record datasets (LeRobot)
 
 ```bash
-yamkit record --name pick_cube --task "pick up the red cube and place it in the bowl" \
+yamkit record --name pick_cube --task "put the red cube into the black container" \
               --episodes 20 --episode-s 30 --reset-s 10 --fps 30
 # → data/datasets/pick_cube  (LeRobot v3 dataset; --push to upload to the Hub)
 yamkit teleoperate                    # same plugins, LeRobot's teleop loop (no recording)
@@ -183,7 +183,7 @@ guidance to use these wrappers. A single-arm recording is:
 
 ```bash
 yamkit record --arms left_follower --name pick_cube \
-              --task "pick up the red cube" --episodes 20
+              --task "put the red cube into the black container" --episodes 20
 ```
 
 During recording or reset, the first Stop / Ctrl-C ends the acquisition loop and saves the
