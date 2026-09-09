@@ -1,6 +1,26 @@
 # HTTP rollout validation — 2026-09-09
 
-## Smooth-motion investigation and pending physical validation
+## Physical command-shaping trial
+
+Run **`20260908-220559-rollout-81cf2f4d`**, on commit `a480f42`, completed the
+supervised five-second trial with **131 actions at 29.9 Hz**, zero underruns or
+expired dispatches, and all **150 frames per camera** retained without export
+errors. Warm inference p95 was 338 ms. Normal home completed in **2.112 seconds**,
+followed by confirmed resource release. The operator said it “seemed ok.”
+
+Sharp command reversals disappeared on both arms. The recorded preparation-time
+command slopes respected 0.6 rad/s and 2 rad/s², and every shaped target matched
+the actual postclamp target. These are command-space measurements, not guarantees
+of measured robot dynamics. **The task failed:** visual review shows the lid
+remaining on the table; no grasp was requested or observed. Raw predicted chunk
+joins still reached 1.413 rad, so the policy problem remains.
+
+The [complete private archive](https://huggingface.co/datasets/rohanlux/yamkit-rollouts/tree/e3d6f1a641cdab6aabdd125fd57568b6e28b6b33/runs/20260908-220559-rollout-81cf2f4d)
+contains videos, original RGB frames and requested/shaped/sent command records.
+Local analysis is in `.context/validation/smooth-rollout/first-physical-analysis.md`
+and `.json`, with visual evidence in `first-physical/visual-outcome.md` and `.json`.
+
+## Investigation preceding the shaping trial
 
 The automatic-upload trial `20260908-195737-rollout-1c73c0d4` at commit
 `1e4e580` completed five seconds, normal home and release, and uploaded its
@@ -26,20 +46,20 @@ saved command sequences (74 and 67 events). It increased lag behind the model's
 requested targets; neither replay nor those limits establish physical smoothness,
 Cartesian clearance or task success.
 
-The pending remote-rollout change applies joint shaping before the existing
+The remote-rollout change applies joint shaping before the existing
 hardware speed clamp. Original model targets are validated before shaping;
 all action deadlines, session expiry, Stop and fault release remain enforced.
 Gripper targets, normal home behavior, teleop and recording are unchanged.
 `metrics.json.command_shaping` retains limits and timestamped original, shaped
 and sent commands so filtering cannot be mistaken for a model prediction.
-The change still requires a fresh qualified service and supervised physical trial.
+The supervised trial above tested this change after a fresh service qualification.
 
 Visual review found no supported reason to swap cameras or invert joint/gripper
 values. The objects changed sides between the two archived runs. The overhead
 view currently clips the grippers at its horizontal edges; the reference sample
 shows both clearly. This is a possible scene improvement, not a proven cause.
 Camera exposure timestamps remain unavailable, and one selected wrist frame is
-visibly blurred. The initial smoothing trial keeps the scene and camera settings
+visibly blurred. The initial smoothing trial kept the scene and camera settings
 fixed to isolate the execution change.
 
 Local diagnostic evidence is under `.context/validation/smooth-rollout/`:
