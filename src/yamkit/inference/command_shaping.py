@@ -118,7 +118,18 @@ class JointCommandShaper:
                                    self.velocity + MAX_ACCELERATION * budget))
         if np.any(lower > upper + TOLERANCE):
             raise CommandShapingFault("Insufficient joint-boundary or step-budget room for bounded braking")
-        desired_velocity = (target - self.position) / dt
+        delta = target - self.position
+        distance = np.abs(delta)
+        # Brake for the requested pose as well as the physical boundaries.
+        # v*hold + v²/(2*braking) <= distance reserves discrete stopping room;
+        # the equivalent quotient avoids cancellation close to the target.
+        target_velocity = 2 * braking * distance / (
+            np.sqrt((braking * hold) ** 2 + 2 * braking * distance) + braking * hold
+        )
+        desired_velocity = np.sign(delta) * np.minimum(distance / dt, target_velocity)
+        # This is a soft target, not another hard bound: a suddenly nearer or
+        # reversed target may require unavoidable overshoot while decelerating.
+        # Existing acceleration, step and physical-bound protections still win.
         velocity = np.minimum(np.maximum(desired_velocity, lower), upper)
         position = self.position + velocity * dt
         self._check_bounds(position)

@@ -63,6 +63,79 @@ def test_joint_boundary_braking_stays_inside_original_bounds():
     assert np.all(shaper.position > 0.095)
 
 
+@pytest.mark.parametrize("initial,target", [(0.0, 0.05), (0.0, 0.2), (0.0, -0.05),
+                                            (0.0, -0.2), (0.8, 0.85), (-0.8, -0.6),
+                                            (0.0, 1.2), (0.0, -1.2)])
+def test_stationary_target_from_rest_converges_without_overshoot_or_reversal(initial, target):
+    shaper = JointCommandShaper(action(initial), limits())
+    direction = np.sign(target - initial)
+    for index in range(180):
+        previous = shaper.position.copy()
+        advance(shaper, action(target, gripper=0.1), 10 + index / 30)
+        assert np.all(direction * (shaper.position - previous) >= -1e-12)
+        assert np.all(direction * (target - shaper.position) >= -1e-12)
+        assert np.max(np.abs(shaper.position - previous)) <= 0.03 + 1e-8
+    np.testing.assert_allclose(shaper.position, target, atol=1e-6)
+    assert np.max(np.abs(shaper.velocity)) < 1e-6
+    assert shaper.metrics()["maximum_command_velocity_rad_s"] <= 0.6 + 1e-8
+    assert shaper.metrics()["maximum_command_acceleration_rad_s2"] <= 2.0 + 1e-8
+    assert all(row["shaped"]["left_gripper.pos"] == 0.1 for row in shaper.metrics()["samples"])
+
+
+@pytest.mark.parametrize("target", [0.05, -0.05, 0.2, -0.2])
+@pytest.mark.parametrize("intervals", [(0.02, 0.035, 0.049, 0.08, 0.099),
+                                     (0.099, 0.007, 0.013, 0.097, 0.025)])
+def test_stationary_target_braking_tolerates_variable_dispatch_intervals(target, intervals):
+    shaper = JointCommandShaper(action(), limits())
+    now = 10.0
+    for index in range(160):
+        now += intervals[index % len(intervals)]
+        previous, velocity = shaper.position.copy(), shaper.velocity.copy()
+        step = advance(shaper, action(target), now)
+        assert np.all(np.sign(target) * (shaper.position - previous) >= -1e-12)
+        assert np.all(np.sign(target) * (target - shaper.position) >= -1e-12)
+        assert np.max(np.abs(shaper.position - previous)) <= 0.03 + 1e-8
+        assert np.max(np.abs(shaper.velocity - velocity)) <= 2 * min(step.dt_s, 0.05) + 1e-8
+    np.testing.assert_allclose(shaper.position, target, atol=1e-6)
+    assert np.max(np.abs(shaper.velocity)) < 1e-6
+
+
+@pytest.mark.parametrize("remaining_distance", [0.0, 0.001])
+def test_suddenly_nearer_target_inside_stopping_distance_keeps_acceleration_protection(remaining_distance):
+    shaper = JointCommandShaper(action(), limits())
+    for index in range(20):
+        advance(shaper, action(1.5), 10 + index / 30)
+    previous, velocity = shaper.position.copy(), shaper.velocity.copy()
+    target = shaper.position[0] + remaining_distance
+    step = advance(shaper, action(target), shaper.last_at + 1 / 30)
+    assert np.all(shaper.position > target)  # Stopping in 1 mrad would violate acceleration.
+    assert np.all(shaper.position > previous)
+    np.testing.assert_allclose(shaper.velocity, velocity - 2 * step.dt_s, atol=1e-8)
+    assert shaper.valid
+    for _ in range(160):
+        advance(shaper, action(target), shaper.last_at + 1 / 30)
+    np.testing.assert_allclose(shaper.position, target, atol=1e-6)
+    assert shaper.metrics()["maximum_command_acceleration_rad_s2"] <= 2 + 1e-8
+
+
+def test_zero_and_tiny_target_errors_stay_finite_and_do_not_generate_jitter():
+    shaper = JointCommandShaper(action(0.3), limits())
+    target = action(0.3)
+    target[JOINT_NAMES[1]] += 1e-9
+    target[JOINT_NAMES[2]] -= 1e-9
+    expected = np.array([target[name] for name in JOINT_NAMES])
+    direction = np.sign(expected - shaper.position)
+    for index in range(120):
+        previous = shaper.position.copy()
+        advance(shaper, target, 10 + index / 30)
+        assert np.all(np.isfinite(shaper.velocity))
+        assert np.all(direction * (shaper.position - previous) >= 0)
+        assert np.all(direction * (expected - shaper.position) >= 0)
+        assert shaper.position[0] == 0.3 and shaper.velocity[0] == 0
+    np.testing.assert_allclose(shaper.position, expected, atol=1e-14, rtol=0)
+    assert np.max(np.abs(shaper.velocity)) < 1e-12
+
+
 def test_infeasible_joint_boundary_braking_fails_before_candidate_is_returned():
     shaper = JointCommandShaper(action(0.099), limits(lower=-0.1, upper=0.1))
     shaper.velocity.fill(0.6)  # An inconsistent incoming controller state must not be clamped away.

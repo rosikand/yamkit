@@ -158,6 +158,8 @@ yamkit rollout --policy molmoact2 --backend external --external-service lambda-g
 An attached server or passing qualification does not prove the red-cube task will succeed.
 Inspect observations, predictions, executed actions and video after each supervised trial.
 Existing command shaping, original action deadlines and Stop/release behavior still apply.
+See [MolmoAct2 execution diagnosis](MOLMOACT2_EXECUTION.md) for the target-braking correction,
+saved-command validation, and remaining differences from the linked reference runners.
 
 When finished, stop the service supervisor on Lambda and close the Lenovo tunnel. Detaching a
 local service registration is not VM shutdown; neither this guide's commands nor the model's
