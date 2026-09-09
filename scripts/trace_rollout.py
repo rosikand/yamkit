@@ -31,10 +31,11 @@ CAMERAS = ("top", "left_wrist", "right_wrist")
 ACTION_NAMES = tuple(f"{side}_{joint}.pos" for side in ("left", "right")
                      for joint in (*[f"joint_{i}" for i in range(1, 7)], "gripper"))
 VIDEO_FPS = 30
+MAX_DURATION_S = 20
 VIDEO_TIME_BASE = Fraction(1, 1_000_000)
 FRAME_TRIPLET_BYTES = 3 * 480 * 640 * 3
 MEMORY_HEADROOM_BYTES = 512 * 1024 * 1024
-MAX_EVENTS = 4096
+MAX_EVENTS = 8192  # Covers 20 seconds of observation, shaping and both arm-send events.
 MAX_CHUNKS = 128
 MAX_ROLLOUT_WALL_S = 120
 MAX_EXPORT_WALL_S = 90
@@ -61,7 +62,7 @@ def parse_args(argv=None):
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--plan", action="store_true")
     mode.add_argument("--run", action="store_true")
-    parser.add_argument("--duration", type=int, choices=(5, 10), default=5)
+    parser.add_argument("--duration", type=int, choices=(5, 10, MAX_DURATION_S), default=5)
     parser.add_argument("--modal-app")
     parser.add_argument("--backend", choices=("modal", "external"), default="modal")
     parser.add_argument("--external-service")
@@ -348,7 +349,7 @@ def video_timeline(timestamps, phase_start, phase_end, observation_indices=None)
     if not timestamps:
         return {"nominal_fps": VIDEO_FPS, "time_base": [1, 1_000_000], "frames": [],
                 "origin_monotonic_s": None, "policy_phase_offset_s": None, "duration_s": 0.0}
-    if (len(timestamps) > 10 * VIDEO_FPS + 3
+    if (len(timestamps) > MAX_DURATION_S * VIDEO_FPS + 3
             or any(type(value) not in (int, float) or not math.isfinite(value)
                    for value in [phase_start, phase_end, *timestamps])
             or phase_end <= phase_start or phase_end - phase_start > MAX_ROLLOUT_WALL_S

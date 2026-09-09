@@ -610,12 +610,12 @@ def create_app(
             body.capture_trace = True  # All camera frames and trace data must exist for the upload.
         if body.capture_trace and (
                 body.backend not in ("modal", "external") or body.policy not in ("molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot")
-                or body.task != TRACE_TASK or body.duration not in (5, 10)
+                or body.task != TRACE_TASK or body.duration not in (5, 10, 20)
                 or body.call_mode != "http" or body.execution_mode != "cuda_graph10"
                 or body.image_encoding != "rgb8" or body.center_crop or body.rtc or not body.async_chunks
                 or body.prediction_queue_threshold not in (None, 30)
                 or body.arms not in (None, ["left_follower", "right_follower"])):
-            raise ValueError("Debug capture requires the task 'put the red cube into the black container', 5 or 10 seconds, both named followers, and the unchanged raw-RGB HTTP graph settings")
+            raise ValueError("Debug capture requires the task 'put the red cube into the black container', 5, 10 or 20 seconds, both named followers, and the unchanged raw-RGB HTTP graph settings")
         if (body.capture_trace and body.arms is None
                 and [pair.follower for pair in require_rig().pairs] != ["left_follower", "right_follower"]):
             raise ValueError("Debug capture requires the rig's default followers to be left_follower then right_follower")

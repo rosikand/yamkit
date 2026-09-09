@@ -43,15 +43,16 @@ def test_external_service_is_bound_into_exact_selection_and_cli():
     assert "--modal-app" not in args and "--gpu" not in args
 
 
-def test_external_trace_preserves_canonical_task_duration_and_supervision():
+@pytest.mark.parametrize("duration", [10, 20])
+def test_external_trace_preserves_canonical_task_duration_and_supervision(duration):
     from tests.test_trace_rollout import module
 
     args = module.parse_args(["--run", "--backend", "external", "--external-service", "lambda-georgia",
-                              "--duration", "10", "--confirm-supervised"])
+                              "--duration", str(duration), "--confirm-supervised"])
     argv = module.rollout_arguments(args)
     assert argv[argv.index("--external-service") + 1] == "lambda-georgia"
     assert argv[argv.index("--task") + 1] == module.TASK
-    assert argv[argv.index("--duration") + 1] == "10"
+    assert argv[argv.index("--duration") + 1] == str(duration)
     assert "--modal-app" not in argv
     assert "--confirm-supervised" in argv and "--accept-mapping" in argv
     with pytest.raises(SystemExit):

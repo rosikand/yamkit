@@ -55,6 +55,7 @@ def test_default_plan_does_not_execute(monkeypatch, capsys):
     ["--run", "--confirm-supervised"],
     ["--run", "--confirm-supervised", "--modal-app", "bad/app"],
     ["--run", "--confirm-supervised", "--modal-app", "yamkit-vla-test", "--duration", "11"],
+    ["--run", "--confirm-supervised", "--modal-app", "yamkit-vla-test", "--duration", "21"],
     ["--plan", "--run"],
 ])
 def test_invalid_run_never_executes(args, monkeypatch):
@@ -340,7 +341,7 @@ def test_actual_encoder_preserves_irregular_pts_all_original_frames_and_duration
     assert [row["duration_ticks"] for row in timeline["frames"]] == [33000, 87000, 60000]
 
 
-@pytest.mark.parametrize("duration", [5, 10])
+@pytest.mark.parametrize("duration", [5, 10, 20])
 def test_full_30hz_video_keeps_every_frame_and_real_duration(tmp_path, duration):
     import av
 
