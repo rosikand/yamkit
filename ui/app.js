@@ -727,18 +727,30 @@ pages.inference = {
     if (args.length) return renderRunDetail(el, decodeURIComponent(args[0]));
     this._submitted = null;
     this._previews = false;
+    this._qualification = null;
+    this._checking = false;
+    this._checkSequence = 0;
     el.innerHTML = `
-      ${pageHead("Inference", "check, prepare, probe, then explicitly start a policy run")}
+      ${pageHead("Inference", "attach a qualified session, inspect the scene, then start a supervised rollout")}
       <div class="sect"><div class="sect-head">Policy deployment</div><div class="panel pad">
         <div class="form-grid">
           <label class="field">preset<select id="inf-preset"><option value="smolvla">SmolVLA base · forward check</option><option value="molmoact2">MolmoAct2 · bimanual YAM</option><option value="pi05">pi05 base · forward check</option><option value="custom">Custom compatible local checkpoint</option></select></label>
-          <label class="field">backend<select id="inf-backend"><option value="local">Local (default)</option><option value="modal">Modal GPU</option></select></label>
+          <label class="field">backend<select id="inf-backend"><option value="local">Local (default)</option><option value="modal">Modal · retained MolmoAct2 session</option></select></label>
           <label class="field">checkpoint<input type="text" id="inf-policy" value="smolvla" list="policy-list" /></label>
           <label class="field">task<input type="text" id="inf-task" value="pick up the object" /></label>
           <label class="field">followers<select id="inf-arms"><option value="">Both arms</option><option value="left">Left only (compatible local model)</option><option value="right">Right only (compatible local model)</option></select></label>
-          <label class="field">duration (seconds)<input type="number" id="inf-duration" value="60" min="1" max="3600" /></label>
+          <label class="field">duration (seconds)<input type="number" id="inf-duration" value="5" min="1" max="3600" /></label>
           <label class="field">local device<select id="inf-device"><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="mps">MPS</option></select></label>
-          <label class="field">Modal GPU<select id="inf-gpu"><option value="L40S">L40S · one container</option></select></label>
+          <label class="field">Modal GPU<select id="inf-gpu"><option value="L40S">L40S · one container</option><option value="H100!">H100 · one retained container</option></select></label>
+          <label class="field">Retained session<input type="text" id="inf-modal-app" placeholder="yamkit-vla-session-…" /></label>
+        </div>
+        <div class="toolbar"><button id="btn-attach-owned">Use owned MolmoAct2 session</button></div>
+        <div id="inf-attach-controls">
+          <div class="hint">Conductor prepares and qualifies the cloud session. Enter its exact warmed task above. This page attaches over HTTP using ten-step inference and raw RGB.</div>
+          <label class="check"><input type="checkbox" id="inf-mapping" /> I verified left/right arms, cameras and gripper calibration and accept this policy's YAM mapping.</label>
+          <label class="check"><input type="checkbox" id="inf-trace" /> Save debug video and joint traces (orange-lid task, 5 or 10 seconds).</label>
+          <div class="toolbar"><button id="btn-inf-preflight">Check retained session (no hardware)</button></div>
+          <div id="inf-qualification-status" class="hint"></div>
         </div>
         <datalist id="policy-list"></datalist>
         <div class="toolbar"><label class="check"><input type="checkbox" id="inf-rtc" /> Local RTC (policy must support guidance)</label>
@@ -751,7 +763,7 @@ pages.inference = {
           <button id="btn-cloud-stop">Shut down owned cloud service</button>
         </div>
         <div class="hint warn">Start rollout enables motors and moves the followers. Stop halts local execution; cloud shutdown is separate. Closing this browser is not Stop.</div>
-        <div class="hint">Prepared Modal GPUs scale to zero after up to 300 seconds idle (development tests: 15 seconds). Idle warm time is billable. No permanent heartbeat.</div>
+        <div class="hint">Retained sessions expire automatically. Conductor manages their preparation and shutdown. Check the session again after changing any rollout option.</div>
       </div></div>
       <div class="sect"><div class="sect-head">Action probe · never executes predicted positions</div><div class="panel pad">
         <label class="field">saved observation (.npz path inside this repository)<input type="text" id="inf-saved" placeholder="data/probes/observation.npz" /></label>
@@ -765,20 +777,42 @@ pages.inference = {
         <div id="inf-cams-content"></div></div>
       <div class="sect"><div class="sect-head">Runs</div><div id="run-list">loading…</div></div>`;
     this._profiles = [];
-    api("/inference/profiles").then((data) => { this._profiles = data.profiles; this.syncForm(); }).catch(() => {});
+    api("/inference/profiles").then((data) => { this._profiles = data.profiles; this._ownedService = data.owned_service; this.syncForm(); }).catch(() => {});
     api("/models").then((list) => {
       const dl = $("#policy-list");
       if (dl) dl.innerHTML = list.map((m) => `<option value="${esc(m.where === "cloud" ? m.repo_id : "outputs/" + m.path)}">${esc(m.policy_type ?? "")}</option>`).join("");
     }).catch(() => {});
     $("#inf-preset").onchange = () => { $("#inf-policy").value = $("#inf-preset").value === "custom" ? "" : $("#inf-preset").value; this.syncForm(); };
-    ["inf-backend", "inf-policy", "inf-task", "inf-arms", "inf-duration", "inf-device", "inf-gpu", "inf-rtc", "inf-crop", "inf-saved"].forEach((id) => {
+    ["inf-backend", "inf-policy", "inf-task", "inf-arms", "inf-duration", "inf-device", "inf-gpu", "inf-rtc", "inf-crop", "inf-saved", "inf-modal-app", "inf-mapping", "inf-trace"].forEach((id) => {
       document.getElementById(id).addEventListener("input", () => this.syncForm());
     });
     $("#btn-pc").onclick = (e) => this.launch("/session/policy-check", {}, e.target);
     $("#btn-prepare").onclick = (e) => this.launch("/session/modal-prepare", {}, e.target);
     $("#btn-ro").onclick = (e) => {
+      this.syncForm();
+      if ($("#btn-ro").disabled) return;
       if (!confirm("Start rollout? Motors will be enabled and the follower arms WILL move. Clear the workspace and supervise the run.")) return;
-      this.launch("/session/rollout", { confirm_motion: true }, e.target);
+      this.launch("/session/rollout", { confirm_motion: true, supervised_confirmed: true }, e.target);
+    };
+    $("#btn-inf-preflight").onclick = () => this.checkAttachment();
+    $("#btn-attach-owned").onclick = async () => {
+      if (session.active) return;
+      try { this._ownedService = (await api("/inference/profiles")).owned_service; }
+      catch (e) { alert(e.message); return; }
+      const owned = this._ownedService;
+      if (!owned || owned.status !== "ready" || owned.profile_id !== "molmoact2"
+          || owned.transport !== "http" || owned.execution_mode !== "cuda_graph10") {
+        alert("No retained MolmoAct2 HTTP session is ready. Prepare and qualify it in Conductor first.");
+        return;
+      }
+      $("#inf-backend").value = "modal";
+      $("#inf-preset").value = $("#inf-policy").value = "molmoact2";
+      $("#inf-modal-app").value = owned.app_name;
+      $("#inf-gpu").value = "H100!";
+      $("#inf-arms").value = "";
+      $("#inf-mapping").checked = false;
+      this._qualification = null;
+      this.syncForm();
     };
     $("#btn-probe-saved").onclick = (e) => this.launch("/session/policy-probe", { saved: $("#inf-saved").value.trim() }, e.target);
     $("#btn-probe-live").onclick = (e) => {
@@ -798,34 +832,78 @@ pages.inference = {
     this.refreshList();
   },
   selection() {
+    const modal = $("#inf-backend").value === "modal";
     return { policy: $("#inf-policy").value.trim(), task: $("#inf-task").value.trim(),
       backend: $("#inf-backend").value, device: $("#inf-device").value, gpu: $("#inf-gpu").value,
       duration: Number($("#inf-duration").value), fps: 30, rtc: $("#inf-rtc").checked,
       center_crop: $("#inf-crop").checked, async_chunks: true,
+      modal_app: modal ? $("#inf-modal-app").value.trim() || null : null,
+      call_mode: modal ? "http" : "remote", execution_mode: modal ? "cuda_graph10" : "eager",
+      mapping_accepted: modal && $("#inf-mapping").checked,
+      capture_trace: modal && $("#inf-trace").checked,
       arms: $("#inf-arms").value ? [$("#inf-arms").value] : null };
+  },
+  async checkAttachment() {
+    if (this._checking || session.active) return;
+    const selected = this.selection(), key = JSON.stringify(selected), sequence = ++this._checkSequence;
+    const requestedAt = Date.now();
+    this._checking = true;
+    this._qualification = null;
+    this.syncForm();
+    try {
+      const result = await post("/inference/preflight", selected);
+      if (sequence !== this._checkSequence || JSON.stringify(this.selection()) !== key) return;
+      this._qualification = { ...result, key,
+        deadline: requestedAt + Math.max(0, (result.expires_at - result.checked_at - selected.duration - 30) * 1000) };
+    } catch (e) {
+      if (sequence === this._checkSequence && JSON.stringify(this.selection()) === key)
+        this._qualification = { key, ready: false, reason: e.message };
+    } finally {
+      this._checking = false;
+      this.syncForm();
+    }
   },
   syncForm() {
     if (!$("#inf-policy")) return;
     const modal = $("#inf-backend").value === "modal";
     $("#inf-device").disabled = modal;
     $("#inf-gpu").disabled = !modal;
+    $("#inf-modal-app").disabled = !modal;
+    $("#inf-attach-controls").hidden = !modal;
+    $("#btn-attach-owned").disabled = session.active || this._launching;
     $("#inf-rtc").disabled = modal;
     if (modal) $("#inf-rtc").checked = false;
     $("#inf-crop").disabled = !modal;
     if (!modal) $("#inf-crop").checked = false;
     const selected = this.selection();
     const profile = this._profiles.find((p) => p.id === selected.policy || p.repo_id === selected.policy);
-    const modalBlocked = modal && profile?.physical_modal_rollout_allowed !== true;
+    const qualification = this._qualification?.key === JSON.stringify(selected) ? this._qualification : null;
+    const qualified = qualification?.ready === true && Number.isFinite(qualification.deadline) && Date.now() < qualification.deadline;
+    const modalBlocked = modal && (!qualified || !selected.mapping_accepted);
+    $("#inf-qualification-status").textContent = this._checking ? "Checking local qualification…"
+      : qualified ? `Qualified for this selection. Start within ${Math.ceil((qualification.deadline - Date.now()) / 1000)} seconds; the server checks again before launch.`
+      : qualification?.ready ? "Session expires too soon. Refresh it in Conductor and check again."
+      : qualification?.reason || "Check this exact session and task before Start. No hardware or cloud call is made by this check.";
     const profileNote = profile ? `Revision ${profile.revision}. ${profile.mapping_note}` : "Custom checkpoints use the existing local LeRobot path; verify their rig compatibility before motion.";
-    $("#inf-profile-note").textContent = profileNote + (modalBlocked ? ` ${profile?.physical_modal_rollout_reason || "Physical Modal rollout is blocked pending queue performance qualification."}` : "");
+    const blockedReason = qualified ? "Accept the verified YAM mapping before supervised Start."
+      : qualification?.reason || "Physical Modal rollout BLOCKED until this exact retained session passes the local check.";
+    $("#inf-profile-note").textContent = profileNote + (modalBlocked ? ` ${blockedReason}` : "");
     ["btn-pc", "btn-prepare", "btn-ro", "btn-probe-saved", "btn-probe-live", "btn-cloud-stop"].forEach((id) => { document.getElementById(id).disabled = session.active || this._launching; });
-    $("#btn-prepare").disabled ||= !modal;
+    $("#btn-pc").hidden = modal;
+    $("#btn-prepare").hidden = modal;
+    $("#btn-cloud-stop").hidden = modal;
+    $("#btn-prepare").disabled = true;
+    $("#btn-cloud-stop").disabled = true;
+    $("#btn-inf-preflight").disabled = session.active || this._checking || this._launching || !modal;
     $("#btn-ro").disabled ||= modalBlocked || !!profile && (!profile.mapping_verified || (profile.id === "molmoact2" && selected.rtc));
     $("#btn-inf-stop").disabled = !session.active;
     const submitted = this._submitted;
     const matches = submitted && submitted.selection === JSON.stringify(selected) && submitted.saved === $("#inf-saved").value && submitted.id === session.meta?.operation_id;
     $("#inf-status").textContent = matches ? `${session.mode}: ${session.active ? (session.stopping ? "stopping local process…" : "running…") : session.stop_requested ? "stopped by user" : session.returncode === 0 ? "completed" : "failed or stopped"} · operation ${submitted.id}` : "No completed operation for this selection. Changing options invalidates the displayed readiness result.";
-    $("#inf-result").textContent = matches ? (session.parsed?.result ? JSON.stringify(session.parsed.result, null, 2) : (session.log || []).join("\n")) : "";
+    const managedRollout = session.active && session.mode === "rollout";
+    if (managedRollout && !matches) $("#inf-status").textContent = `rollout: ${session.stopping ? "stopping local process…" : "running…"} · ${session.meta?.task || ""}`;
+    $("#inf-result").textContent = matches || managedRollout ? (session.log || []).join("\n") +
+      (session.parsed?.result ? "\n" + JSON.stringify(session.parsed.result, null, 2) : "") : "";
     syncCams();
   },
   async launch(path, extra, button) {
@@ -881,6 +959,8 @@ async function renderRunDetail(el, id) {
     ${(d.videos || []).length ? `<div class="sect"><div class="sect-head">Replay</div><div class="cams">` + d.videos.map((v) => `
       <div class="cam"><span class="label">${esc(v)}</span>
         <video controls src="/api/deployments/${encodeURIComponent(id)}/video/${encodeURIComponent(v)}"></video></div>`).join("") + `</div></div>` : ""}
+    ${(d.artifacts || []).length ? `<div class="sect"><div class="sect-head">Debug artifacts</div><div class="panel pad">` + d.artifacts.map((name) =>
+      `<a href="/api/deployments/${encodeURIComponent(id)}/artifact/${encodeURIComponent(name)}" target="_blank" rel="noopener">${esc(name)}</a>`).join(" · ") + `</div></div>` : ""}
     <div class="sect"><div class="sect-head">Log</div><pre class="log tall">${esc((d.log || []).join("\n")) || "(empty)"}</pre></div>`;
 }
 

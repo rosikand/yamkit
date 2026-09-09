@@ -8,7 +8,10 @@ or opening any page never connects to (and never energises) an arm.
 from __future__ import annotations
 
 import dataclasses
+import shutil
+import sys
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,9 +19,9 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StrictBool
 
 from .. import hub
 from ..can import bringup_commands, list_can_interfaces
@@ -31,6 +34,10 @@ from .preview_proxy import PreviewStreamingResponse, PreviewUnavailable, fetch_s
 from .sessions import DeploymentLog, SessionManager
 
 FRONTEND_DIR = ROOT / "ui"
+TRACE_TASK = "pick up the orange lid and place it into the black circular container"
+TRACE_FILES = frozenset({"summary.json", "trace.json", "metrics.json", "frame_timestamps.json", "export-error.json",
+                         "top.mp4", "left_wrist.mp4", "right_wrist.mp4",
+                         "report.html", "joints-left.png", "joints-right.png"})
 
 
 # --------------------------------------------------------------------------- request bodies --
@@ -79,6 +86,14 @@ class InferenceBody(BaseModel):
     device: str = "cpu"
     gpu: str = "L40S"
     modal_app: str | None = None
+    call_mode: str = "remote"
+    execution_mode: str = "eager"
+    image_encoding: str = "rgb8"
+    jpeg_quality: int = 85
+    prediction_queue_threshold: int | None = None
+    mapping_accepted: StrictBool = False
+    supervised_confirmed: StrictBool = False
+    capture_trace: StrictBool = False
     center_crop: bool = False
     async_chunks: bool = True
     duration: float = 60.0
@@ -155,11 +170,32 @@ def create_app(
     run_dir_box: dict[str, Path | None] = {"dir": None}
     inference_launch_lock = threading.Lock()
 
+    def finalize_run(run_dir: Path, status: dict) -> None:
+        """Import known debug artifacts after the managed child and descendants exit."""
+        try:
+            source_value = status.get("meta", {}).get("debug_trace_dir")
+            if source_value:
+                source = Path(source_value)
+                trace_root = ROOT / ".context" / "rollout-traces"
+                if (source.parent == trace_root and not source.is_symlink()
+                        and not trace_root.is_symlink() and not trace_root.parent.is_symlink()
+                        and source.resolve().parent == trace_root.resolve()
+                        and len(source.name) == 32 and all(c in "0123456789abcdef" for c in source.name)):
+                    for name in TRACE_FILES:
+                        artifact = source / name
+                        if artifact.is_file() and not artifact.is_symlink() and artifact.stat().st_size <= 256 * 1024 * 1024:
+                            shutil.copyfile(artifact, run_dir / name)
+        except OSError:
+            status = {**status, "log": [*status.get("log", []),
+                                       "Debug artifact import incomplete; original files remain in the trace directory."]}
+        finally:
+            deployments.finalize(run_dir, status)
+
     def on_exit(status: dict[str, Any]) -> None:
         if status.get("mode") in ("push", "pull", "record"):
             hub.clear_cache()  # what is on the Hub may just have changed
         if run_dir_box["dir"] is not None:
-            deployments.finalize(run_dir_box["dir"], status)
+            finalize_run(run_dir_box["dir"], status)
             run_dir_box["dir"] = None
 
     sessions = session_manager or SessionManager()
@@ -391,29 +427,102 @@ def create_app(
     def inference_options(body: InferenceBody, *, motion: bool = False):
         from ..deployment import InferenceOptions
 
-        # CLI qualification controls are intentionally absent from the browser
-        # request schema. Preserve their safe defaults when building shared options.
         values = {field.name: getattr(body, field.name) for field in dataclasses.fields(InferenceOptions)
                   if hasattr(body, field.name)}
         values["arms"] = tuple(body.arms or ())
+        values["rig_path"] = str(rig_path)
         try:
             return InferenceOptions(**values).validate(motion=motion)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
 
-    def inference_start(mode: str, args: list[str], options) -> dict:
+    def modal_attachment(options, rig: RigConfig) -> dict:
+        """Inspect an exact retained session locally; never contact cloud or open hardware."""
+        from ..inference.profiles import get_profile
+        from ..inference.qualification import (
+            MAX_AGE_S,
+            is_cloud_host,
+            settings_from_rig,
+            validate_qualification,
+        )
+        from ..modal_ops import http_credentials
+        from ..probes import preflight_live_probe
+
+        if (options.backend != "modal" or get_profile(options.policy).id != "molmoact2"
+                or not options.modal_app or options.call_mode != "http"
+                or options.execution_mode != "cuda_graph10" or options.image_encoding != "rgb8"):
+            raise ValueError("Attach the exact Conductor-prepared MolmoAct2 HTTP cuda_graph10 session with raw RGB")
+        if is_cloud_host():
+            raise ValueError("Check and start the retained session on the Lenovo robot host")
+        profile = get_profile(options.policy)
+        specs, _ = preflight_live_probe(rig, options.arms or None, expected_state_names=profile.state_names)
+        if (len(specs) != 2 or any(spec.side != side or spec.arm_type != "yam"
+                                 or spec.gripper != "linear_4310"
+                                 for side, spec in zip(("left", "right"), specs))):
+            raise ValueError("Select the physically verified left and right YAM followers with LINEAR_4310 grippers")
+        if set(rig.cameras) != set(profile.image_keys):
+            raise ValueError("Rig cameras must exactly match the retained policy profile")
+        if options.fps != profile.fps:
+            raise ValueError("The retained policy requires 30 Hz actions")
+        settings = settings_from_rig(options)
+        if settings.get("http_ingress") != "tunnel":
+            raise ValueError("Browser attachment requires a bounded retained HTTP tunnel")
+        record = validate_qualification(settings)
+        http_credentials(options.modal_app)  # Verify locally; never include this private object in the response.
+        expires = min(settings["http_session_expires_at"], record["created_unix_s"] + MAX_AGE_S)
+        checked = time.time()
+        if checked + options.duration + 30 >= expires:
+            raise ValueError("Retained session expires too soon for this duration and 30 seconds of startup; refresh it in Conductor")
+        return {"ready": True, "reason": "Qualified for these settings; mapping acceptance and supervised Start are still required",
+                "selection_key": options.operation_key, "checked_at": checked,
+                "expires_at": expires, "modal_app": options.modal_app}
+
+    def validate_trace(body: InferenceBody) -> None:
+        if body.capture_trace and (
+                body.backend != "modal" or body.policy not in ("molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot")
+                or body.task != TRACE_TASK or body.duration not in (5, 10)
+                or body.call_mode != "http" or body.execution_mode != "cuda_graph10"
+                or body.image_encoding != "rgb8" or body.center_crop or body.rtc or not body.async_chunks
+                or body.prediction_queue_threshold not in (None, 30)
+                or body.arms not in (None, ["left_follower", "right_follower"])):
+            raise ValueError("Debug capture requires the orange-lid task, 5 or 10 seconds, both named followers, and the unchanged raw-RGB HTTP graph settings")
+        if (body.capture_trace and body.arms is None
+                and [pair.follower for pair in require_rig().pairs] != ["left_follower", "right_follower"]):
+            raise ValueError("Debug capture requires the rig's default followers to be left_follower then right_follower")
+
+    @app.post("/api/inference/preflight")
+    def inference_preflight(body: InferenceBody) -> dict:
+        """Read-only exact-form qualification check, without operator approval or a child process."""
+        options = None
+        try:
+            options = inference_options(body)
+            validate_trace(body)
+            if sessions.active:
+                raise ValueError("Wait for the current UI session to finish before checking another rollout")
+            return modal_attachment(options, require_rig())
+        except HTTPException as exc:
+            if exc.status_code != 422:
+                raise
+            return {"ready": False, "reason": exc.detail, "selection_key": None,
+                    "checked_at": time.time(), "expires_at": None}
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            reason = str(exc) if isinstance(exc, ValueError) else "Retained session metadata or qualification is unavailable"
+            return {"ready": False, "reason": reason, "selection_key": options.operation_key,
+                    "checked_at": time.time(), "expires_at": None}
+
+    def inference_start(mode: str, args: list[str], options, *, argv_override=None, extra_meta=None) -> dict:
         with inference_launch_lock:
             operation_id = uuid.uuid4().hex
             meta = {**dataclasses.asdict(options), "operation_id": operation_id,
-                    "profile_key": options.operation_key}
-            st = start(mode, sessions.yamkit_argv(*args), meta)
+                    "profile_key": options.operation_key, **(extra_meta or {})}
+            st = start(mode, argv_override if argv_override is not None else sessions.yamkit_argv(*args), meta)
             # The child can exit between start() and writing its history record. Finalize that
             # snapshot here too so an immediate failure cannot stay marked as running.
             run_dir = deployments.create(st)
             run_dir_box["dir"] = run_dir
             current = sessions.status()
             if not current["active"]:
-                deployments.finalize(run_dir, current)
+                finalize_run(run_dir, current)
                 run_dir_box["dir"] = None
             return st
 
@@ -431,6 +540,16 @@ def create_app(
         options = inference_options(body, motion=True)
         if not body.confirm_motion:
             raise HTTPException(422, "explicit motion confirmation is required")
+        try:
+            validate_trace(body)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        if body.backend == "modal":
+            try:
+                modal_attachment(options, rig)
+            except (ValueError, KeyError, TypeError, OSError) as exc:
+                reason = str(exc) if isinstance(exc, ValueError) else "Retained session metadata or qualification is unavailable"
+                raise HTTPException(422, reason) from None
         if body.backend == "modal" or body.policy in ("molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot"):
             from ..inference.profiles import get_profile
             from ..probes import preflight_live_probe
@@ -446,6 +565,13 @@ def create_app(
             args.append("--rtc")
         for a in body.arms or []:
             args += ["--arms", a]
+        if body.capture_trace:
+            trace_dir = ROOT / ".context" / "rollout-traces" / uuid.uuid4().hex
+            trace_args = [sys.executable, str(ROOT / "scripts" / "trace_rollout.py"), "--run",
+                          "--duration", str(int(body.duration)), "--modal-app", str(body.modal_app),
+                          "--rig", str(rig_path), "--output-dir", str(trace_dir), "--confirm-supervised"]
+            return inference_start("rollout", args, options, argv_override=trace_args,
+                                   extra_meta={"capture_trace": True, "debug_trace_dir": str(trace_dir)})
         return inference_start("rollout", args, options)
 
     @app.post("/api/session/policy-check")
@@ -461,6 +587,8 @@ def create_app(
         options = inference_options(body)
         if options.backend != "modal":
             raise HTTPException(422, "select Modal before preparing a cloud service")
+        if options.call_mode == "http" or options.execution_mode == "cuda_graph10":
+            raise HTTPException(422, "Prepare and qualify the retained HTTP session in Conductor, then attach here")
         return inference_start("modal-prepare", ["modal-prepare", "--policy", options.policy,
                                                 "--gpu", options.gpu], options)
 
@@ -637,7 +765,22 @@ def create_app(
         d = catalog.deployment_detail(deployments.root, run_id)
         if d is None:
             raise HTTPException(404, f"no deployment {run_id!r}")
+        directory = deployments.root / run_id
+        d["artifacts"] = sorted(name for name in TRACE_FILES if not name.endswith(".mp4")
+                                and (directory / name).is_file() and not (directory / name).is_symlink())
         return d
+
+    @app.get("/api/deployments/{run_id}/artifact/{filename}")
+    def deployment_artifact(run_id: str, filename: str) -> FileResponse:
+        directory = (deployments.root / run_id).resolve()
+        path = directory / filename
+        if (directory.parent != deployments.root.resolve() or filename not in TRACE_FILES
+                or path.is_symlink() or not path.is_file() or path.resolve().parent != directory):
+            raise HTTPException(404, "no such debug artifact")
+        headers = {"X-Content-Type-Options": "nosniff"}
+        if filename.endswith(".html"):
+            headers["Content-Security-Policy"] = "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'"
+        return FileResponse(path, headers=headers)
 
     @app.get("/api/deployments/{run_id}/video/{filename}")
     def deployment_video(run_id: str, filename: str, request: Request) -> Response:

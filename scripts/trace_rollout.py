@@ -1,0 +1,408 @@
+"""Plan by default; an explicitly approved run traces the unchanged physical rollout.
+
+This helper does not provision cloud compute, bypass qualification, or open extra
+cameras/arms. --run DOES energize/home both followers and run policy actions.
+All image persistence/encoding and full metrics export happen after robot release.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import re
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from contextlib import ExitStack, contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+from unittest.mock import patch
+
+TASK = "pick up the orange lid and place it into the black circular container"
+CAMERAS = ("top", "left_wrist", "right_wrist")
+ACTION_NAMES = tuple(f"{side}_{joint}.pos" for side in ("left", "right")
+                     for joint in (*[f"joint_{i}" for i in range(1, 7)], "gripper"))
+VIDEO_FPS = 5
+MAX_EVENTS = 4096
+MAX_CHUNKS = 128
+MAX_ROLLOUT_WALL_S = 120
+MAX_EXPORT_WALL_S = 90
+
+
+def plan(duration=5):
+    return {"status": "PLAN_ONLY", "hardware_opened": False, "task": TASK,
+            "duration_s": duration, "maximum_rollout_wall_s": MAX_ROLLOUT_WALL_S,
+            "maximum_export_wall_s": MAX_EXPORT_WALL_S,
+            "video_fps": VIDEO_FPS, "max_frame_triplets": duration * VIDEO_FPS + 3,
+            "max_frame_bytes": (duration * VIDEO_FPS + 3) * 3 * 480 * 640 * 3,
+            "max_events": MAX_EVENTS, "max_chunks": MAX_CHUNKS,
+            "observations": "Existing robot observations; local receipt timestamps, not camera exposure",
+            "commands": "Requested and completed per-side post-clamp targets; failed sends are retained",
+            "production_guards_unchanged": True, "qualification_evidence": False,
+            "video_encoding": "LeRobot image/video utilities only after confirmed robot release",
+            "run_effects": "Connect cameras, energize/home both followers, run policy phase, release without homing"}
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--plan", action="store_true")
+    mode.add_argument("--run", action="store_true")
+    parser.add_argument("--duration", type=int, choices=(5, 10), default=5)
+    parser.add_argument("--modal-app")
+    parser.add_argument("--confirm-supervised", action="store_true")
+    parser.add_argument("--rig", type=Path, help="Selected rig inside this repository; normal CLI validation still applies")
+    parser.add_argument("--output-dir", type=Path, help="New directory inside this repository's .context/rollout-traces")
+    args = parser.parse_args(argv)
+    if args.run and (not args.confirm_supervised or not args.modal_app
+                     or re.fullmatch(r"yamkit-vla-[a-z0-9-]{1,80}", args.modal_app) is None):
+        parser.error("--run requires an exact owned --modal-app and --confirm-supervised")
+    return args
+
+
+class Collector:
+    def __init__(self, duration, *, clock=time.monotonic):
+        self.duration, self.clock = duration, clock
+        self.events, self.frames, self.chunks, self.robots = [], [], [], []
+        self.metrics = None
+        self.active = False
+        self.phase_started = self.phase_ended = None
+        self.next_frame_at = None
+        self.frame_capacity = duration * VIDEO_FPS + 3
+        self.lock = threading.RLock()
+        self.counts = {"events_dropped": 0, "frames_dropped": 0, "chunks_dropped": 0,
+                       "video_sample_slots_missed": 0, "trace_errors": 0}
+        self.trace_error_types = set()
+
+    def safely(self, operation, *args, **kwargs):
+        """Instrumentation failures cannot change command results or mask faults."""
+        try:
+            return operation(*args, **kwargs)
+        except TimeoutError:
+            raise  # Preserve the helper's absolute wall alarm and normal runner cleanup.
+        except Exception as exc:  # noqa: BLE001 — trace failures are counted, never propagated into control.
+            with self.lock:
+                self.counts["trace_errors"] += 1
+                if len(self.trace_error_types) < 16:
+                    self.trace_error_types.add(type(exc).__name__)
+            return None
+
+    def event(self, kind, **values):
+        with self.lock:
+            if len(self.events) >= MAX_EVENTS:
+                self.counts["events_dropped"] += 1
+                return
+            self.events.append({"kind": kind, "monotonic_s": self.clock(), **values})
+
+    def start_phase(self):
+        self.phase_started = self.clock()
+        self.next_frame_at = self.phase_started
+        self.active = True
+        self.event("policy_phase_started")
+
+    def end_phase(self):
+        self.active = False
+        self.phase_ended = self.clock()
+        self.event("policy_phase_ended")
+
+    def observation(self, obs):
+        if not self.active:
+            return
+        import numpy as np
+
+        started = self.clock()
+        self.event("observation", positions=[float(obs[key]) for key in ACTION_NAMES])
+        if self.next_frame_at is None or started < self.next_frame_at:
+            return
+        missed = max(0, math.floor((started - self.next_frame_at) * VIDEO_FPS))
+        self.counts["video_sample_slots_missed"] += missed
+        self.next_frame_at += (missed + 1) / VIDEO_FPS
+        if len(self.frames) >= self.frame_capacity:
+            self.counts["frames_dropped"] += 1
+            return
+        images = [obs[name] for name in CAMERAS]
+        if any(not isinstance(frame, np.ndarray) or frame.shape != (480, 640, 3)
+               or frame.dtype != np.uint8 for frame in images):
+            self.counts["frames_dropped"] += 1
+            raise ValueError("Unexpected trace image shape or dtype")
+        # Only bounded copies here; no compression, disk I/O, extra reads or video workers.
+        self.frames.append((started, tuple(frame.copy() for frame in images)))
+        self.event("video_sample", frame_index=len(self.frames) - 1,
+                   observation_receipt_monotonic_s=started, copy_s=self.clock() - started)
+
+    def capture_chunk(self, result, observation_time):
+        if not self.active:
+            return
+        if len(self.chunks) >= MAX_CHUNKS:
+            self.counts["chunks_dropped"] += 1
+            return
+        if tuple(result.shape) != (1, 30, 14) or result.device.type != "cpu":
+            raise ValueError("Trace requires the unchanged CPU 30x14 policy boundary")
+        self.chunks.append({"chunk_index": len(self.chunks), "returned_monotonic_s": self.clock(),
+                            "observation_monotonic_s": observation_time,
+                            "actions": result.detach().numpy().copy()[0]})
+
+    def register_robot(self, robot):
+        if all(robot is not existing for existing in self.robots):
+            self.robots.append(robot)
+
+    def released(self):
+        return all(all(h.arm is None for h in robot._sides.values())
+                   and not robot._opened_cameras and robot._camera_lease is None
+                   for robot in self.robots)
+
+
+@contextmanager
+def install_hooks(collector):
+    """Scoped observation hooks; every production operation is called exactly once."""
+    from lerobot.rollout.strategies.base import BaseStrategy
+    from lerobot_robot_yamkit.yam_follower import BiYamFollower, _FollowerHandle
+
+    from yamkit import cli
+    from yamkit.remote_policy.modeling_yamkit_remote import YamkitRemotePolicy
+    from yamkit.remote_rollout import InvalidatableActionQueue, UnguidedRemoteInferenceEngine
+
+    original_run = BaseStrategy.run
+    original_connect = BiYamFollower.connect
+    original_observation = BiYamFollower.get_observation
+    original_send = _FollowerHandle.send
+    original_predict = YamkitRemotePolicy.predict_action_chunk
+    original_merge = UnguidedRemoteInferenceEngine._record_merge
+    original_get = InvalidatableActionQueue.get
+
+    def run(strategy, ctx):
+        collector.safely(collector.start_phase)
+        try:
+            return original_run(strategy, ctx)
+        finally:
+            collector.safely(collector.end_phase)
+
+    def connect(robot, *args, **kwargs):
+        collector.register_robot(robot)
+        return original_connect(robot, *args, **kwargs)
+
+    def observation(robot):
+        result = original_observation(robot)
+        collector.safely(collector.observation, result)
+        return result
+
+    def send(handle, action, **kwargs):
+        active = collector.active
+        if active:
+            collector.safely(lambda: collector.event("send_start", arm=handle.spec.name,
+                requested={key: float(value) for key, value in action.items()}))
+        try:
+            result = original_send(handle, action, **kwargs)
+        except BaseException as exc:
+            if active:
+                collector.safely(collector.event, "send_error", arm=handle.spec.name,
+                                 error_type=type(exc).__name__, partial_dispatch_possible=True)
+            raise
+        if active:
+            collector.safely(lambda: collector.event("send_end", arm=handle.spec.name,
+                postclamp={key: float(value) for key, value in result.items()}))
+        return result
+
+    def predict(policy, *args, **kwargs):
+        observation_time = policy._observation_time
+        result = original_predict(policy, *args, **kwargs)
+        collector.safely(collector.capture_chunk, result, observation_time)
+        return result
+
+    def merge(engine, metrics):
+        result = original_merge(engine, metrics)
+        collector.safely(collector.event, "chunk_merge", **metrics)
+        return result
+
+    def get(queue):
+        result = original_get(queue)
+        if result is not None and collector.active:
+            collector.safely(collector.event, "action_dequeued", deadline_monotonic_s=queue.last_action_deadline)
+        return result
+
+    def result(metrics):
+        # CLI invokes this only after run_remote_rollout's complete cleanup.
+        collector.metrics = metrics
+
+    with ExitStack() as stack:
+        for target, name, replacement in (
+            (BaseStrategy, "run", run), (BiYamFollower, "connect", connect),
+            (BiYamFollower, "get_observation", observation), (_FollowerHandle, "send", send),
+            (YamkitRemotePolicy, "predict_action_chunk", predict),
+            (UnguidedRemoteInferenceEngine, "_record_merge", merge),
+            (InvalidatableActionQueue, "get", get), (cli, "_print_inference_result", result),
+        ):
+            stack.enter_context(patch.object(target, name, replacement))
+        yield
+
+
+def write_json(path, value):
+    def array(value):
+        if hasattr(value, "tolist"):
+            return value.tolist()
+        raise TypeError("Trace export contains an unsupported value")
+
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=".trace-json-", delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(json.dumps(value, default=array, allow_nan=False) + "\n")
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def wall_limit(seconds):
+    def expired(*args):
+        raise TimeoutError("Bounded trace phase expired")
+
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def export(collector, outdir):
+    """Only call after rollout unwound; no image writes until resources are released."""
+    released = collector.released()
+    summary = {"status": "EXPORTING", "qualification_evidence": False,
+               "instrumented_rollout": True, "task": TASK, "duration_s": collector.duration,
+               "resources_released": released, "production_guards_unchanged": True,
+               "phase_started_monotonic_s": collector.phase_started,
+               "phase_ended_monotonic_s": collector.phase_ended,
+               "action_names": ACTION_NAMES, "camera_names": CAMERAS,
+               "timestamps": "Host monotonic receipt/dispatch times; camera exposure unobserved",
+               "counts": collector.counts, "trace_error_types": sorted(collector.trace_error_types),
+               "overflow": any(collector.counts[key] for key in ("events_dropped", "frames_dropped", "chunks_dropped")),
+               "frame_count": len(collector.frames), "video_fps": VIDEO_FPS,
+               "video_timing": "Frames are sampled at at most 5 fps; use frame_timestamps.json for true timing and gaps",
+               "full_metrics_available": collector.metrics is not None, "video_export_errors": {},
+               "report_available": False, "render_error_type": None}
+    write_json(outdir / "trace.json", {"events": collector.events, "chunks": collector.chunks})
+    write_json(outdir / "frame_timestamps.json", [at for at, _ in collector.frames])
+    if collector.metrics is not None:
+        write_json(outdir / "metrics.json", collector.metrics)
+    write_json(outdir / "summary.json", summary)
+    if not released:
+        summary["status"] = "EXPORT_SKIPPED_RESOURCES_OPEN"
+        write_json(outdir / "summary.json", summary)
+        return summary
+    from lerobot.configs.video import RGBEncoderConfig
+    from lerobot.datasets.image_writer import write_image
+    from lerobot.datasets.video_utils import encode_video_frames
+
+    for camera_index, name in enumerate(CAMERAS if collector.frames else ()):
+        try:
+            directory = outdir / "frames" / name
+            directory.mkdir(parents=True)
+            for index, (_, images) in enumerate(collector.frames):
+                write_image(images[camera_index], directory / f"frame-{index:06d}.png", compress_level=1)
+            encode_video_frames(directory, outdir / f"{name}.mp4", VIDEO_FPS,
+                                video_encoder=RGBEncoderConfig(vcodec="h264", crf=23, preset="veryfast"), encoder_threads=1)
+        except TimeoutError:
+            raise  # The export alarm is absolute; never continue into another encoder after it fires.
+        except Exception as exc:  # noqa: BLE001 — artifacts survive an encoder error after hardware release.
+            summary["video_export_errors"][name] = type(exc).__name__
+    write_json(outdir / "summary.json", summary)
+    try:
+        render_report(outdir)
+        summary["report_available"] = True
+    except TimeoutError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — rendering cannot alter the completed arm run or its saved evidence.
+        summary["render_error_type"] = type(exc).__name__
+    summary["status"] = ("TRACE_SAVED_WITH_EXPORT_ERRORS"
+                         if summary["video_export_errors"] or summary["render_error_type"] else "TRACE_SAVED")
+    write_json(outdir / "summary.json", summary)
+    return summary
+
+
+def render_report(outdir):
+    # A fresh, bounded process avoids inherited Matplotlib caches and globals.
+    completed = subprocess.run([sys.executable, str(Path(__file__).with_name("render_rollout_trace.py")),
+                                str(outdir)], capture_output=True, timeout=45, check=False)
+    if completed.returncode or not (outdir / "report.html").is_file():
+        raise RuntimeError("Saved trace report rendering failed")
+
+
+def rollout_arguments(args):
+    result = ["rollout", "--policy", "molmoact2", "--backend", "modal", "--call-mode", "http",
+            "--execution-mode", "cuda_graph10", "--task", TASK, "--arms", "left_follower",
+            "--arms", "right_follower", "--duration", str(args.duration), "--modal-app", args.modal_app,
+            "--accept-mapping", "--confirm-supervised"]
+    if args.rig is not None:
+        result.extend(["--rig", str(args.rig)])
+    return result
+
+
+def artifact_directory(root, requested, stamp):
+    root = root.resolve()
+    base = (root / ".context" / "rollout-traces").resolve()
+    selected = (requested if requested is not None else base / stamp).resolve()
+    if (not base.is_relative_to(root) or not selected.is_relative_to(base)
+            or selected == base or selected.exists()):
+        raise ValueError("Trace output must be a new directory inside this repository's .context/rollout-traces")
+    return selected
+
+
+def execute(args):
+    from yamkit import cli
+    from yamkit.paths import ROOT
+
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+    outdir = artifact_directory(ROOT, args.output_dir, stamp)
+    if args.rig is not None:
+        args.rig = args.rig.resolve()
+        if not args.rig.is_relative_to(ROOT.resolve()) or not args.rig.is_file():
+            raise ValueError("Selected rig must be an existing file inside this repository")
+    outdir.mkdir(parents=True, exist_ok=False)
+    collector = Collector(args.duration)
+    write_json(outdir / "plan.json", {**plan(args.duration), "argv": rollout_arguments(args)})
+    status, error_type = 0, None
+    try:
+        with install_hooks(collector), wall_limit(MAX_ROLLOUT_WALL_S):
+            cli.app(args=rollout_arguments(args), standalone_mode=False)
+    except BaseException as exc:  # noqa: BLE001 — preserve partial trace after normal runner cleanup.
+        status, error_type = 1, type(exc).__name__
+    try:
+        with wall_limit(MAX_EXPORT_WALL_S):
+            summary = export(collector, outdir)
+    except BaseException as exc:  # noqa: BLE001 — export errors cannot trigger another robot operation.
+        try:
+            summary = json.loads((outdir / "summary.json").read_text())
+        except (OSError, ValueError):
+            summary = {}
+        summary.update(status="EXPORT_FAILED", error_type=type(exc).__name__,
+                       resources_released=collector.released())
+        write_json(outdir / "summary.json", summary)
+        write_json(outdir / "export-error.json", summary)
+        status = 1
+    if not summary["resources_released"]:
+        status = 1
+    print(json.dumps({"trace_directory": str(outdir), "rollout_error_type": error_type,
+                      "resources_released": summary["resources_released"], "exit_status": status}), flush=True)
+    return status
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    if not args.run:
+        print(json.dumps(plan(args.duration)), flush=True)
+        return 0
+    return execute(args)
+
+
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    raise SystemExit(main())

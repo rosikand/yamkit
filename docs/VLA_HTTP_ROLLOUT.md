@@ -1,30 +1,42 @@
-# HTTP rollout preparation — 2026-09-08
+# HTTP rollout validation — 2026-09-09
 
-**The first live policy rollout is still pending.** Bounded TLS tunnel sessions
-have passed Lenovo qualification using the real H100 model and LeRobot control
-loop with simulated arms and cameras. Intermittent latency stalls subsequently
-recurred and drained the simulated action queue. Historical passes do not qualify
-a new container: the next supervised session needs a current passing qualification
-for its retained container and the user's fresh GO after returning.
+**The first real VLA control rollout completed; the manipulation task failed.**
+On 2026-09-09 at 00:23 UTC, the Lenovo ran the pinned MolmoAct2 policy with live
+camera images and both follower arms. The five-second policy phase completed
+132 bimanual action dispatches with zero queue underruns or expired dispatches.
+Both followers released normally at the duration limit. The operator reported
+that the left arm lifted itself, jittered briefly, and never approached the
+orange lid. It did not pick up the lid or place it in the black container.
 
-The most recent approved physical attempt homed both followers, then failed to
-acquire the top camera before any policy actions ran. Both followers released.
-Commit `39696eb` moves camera acquisition before arm activation; it is pushed and
-deployed on the Lenovo. Validation passed 1,804 software tests and 9 subtests,
-Ruff, and 177 targeted tests on the Lenovo. A separate camera-only check read all
-three camera streams without connecting an arm; this does not establish physical
-policy execution.
+This establishes live observation → cloud inference → physical command flow.
+It does not establish useful task behavior. The cause of the jitter is unknown:
+we did not record measured/requested joint trajectories or video for this run.
+The tool output was truncated, so the preserved leading metrics do not support
+aggregate physical-run latency claims. Full current-session qualification,
+partial console output, metric summary and operator feedback are in
+`.context/validation/returned-approved-rollout/` (git-ignored). The partial log
+was imported into the Lenovo dashboard as `20260909-002337-rollout-first-live`.
 
-The rollout task is to place the orange lid into the black circular container.
-The water jugs stay on the table for stability; the user accepts their possible
-effect on policy performance and prioritizes the first bounded live rollout.
+The retained H100 session passed a fresh, uninstrumented qualification before
+motion: 50 integrated warm requests, 269 ms p95 and zero simulated underruns.
+The physical run used app `ap-bOj3JjiSuNMS0mGxiWwiMQ`, instance
+`a7b906fa-252a-406c-b8b2-a6b11834e644`, and commit `791804f`. The app subsequently
+expired, was stopped with zero containers, and its Lenovo credential was retired.
+A new supervised trial needs a freshly qualified retained session and approval.
 
-The HTTP transport and production `cuda_graph10` runtime are available on
-`codex/yamkit-integration-validation`, implemented in `cfdcce9`; `06cc5cd` adds
-one-container retention for bounded sessions. Conductor deploys the cloud GPU;
-the Lenovo runs the LeRobot observation, queue and action loop.
-The Mac is not involved. The historical measurements below distinguish synthetic
-qualification from saved observations and the later physical startup attempt.
+An earlier physical startup homed both followers but failed camera acquisition
+before policy execution. Commit `39696eb` corrected the ordering: acquire all
+cameras before enabling either follower. That fix passed 1,804 software tests,
+9 subtests and Ruff, plus 177 targeted tests on the Lenovo; the completed physical
+trial confirmed the corrected camera-before-arm startup order.
+
+The water jugs stay on the table for stability. The user accepts their possible
+effect on policy performance. Conductor prepares the GPU, and the Lenovo owns
+camera acquisition and robot control. The Mac is not involved.
+
+See [the debugging workflow](VLA_DEBUGGING.md) for live previews, managed session
+logs, saved video, and measured-versus-commanded joint traces. The historical
+measurements below retain their original scopes and do not establish task success.
 
 ## Hardware-free check while the operator was away
 
