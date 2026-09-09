@@ -44,6 +44,21 @@ prediction continuity as an investigation target; it does not establish why the
 predictions differ or justify changing safety clamps. No smoothing change has
 been deployed or physically tested.
 
+The pinned Ai2 YAM example also uses different execution semantics: its
+[client](https://github.com/allenai/molmoact2/blob/66b87e64efd99dfd103241418113955cf64dfa9c/examples/yam/molmoact_client.py#L81)
+selects 25 actions, and its
+[runner](https://github.com/allenai/molmoact2/blob/66b87e64efd99dfd103241418113955cf64dfa9c/examples/yam/launch_yaml_eval_molmoact.py#L187)
+queries synchronously, executes the fresh prefix, and interpolates from measured
+joints. Each interpolation command consumes an environment tick, extending target
+timing. Our remote adapter continuously replans and appends the unexpired,
+nonoverlapping tail. Matching 30 Hz and checkpoint chunk length does not reproduce
+the reference's behavior. This difference merits investigation; copying its
+interpolation would change the current action-freshness assumptions. RTC disabled
+matches the released checkpoint default and is not itself an identified defect.
+The next diagnostic is repeated inference on saved observations around the
+contradictory chunks, with no robot connection, to separate variability for identical
+inputs from changes caused by successive observations.
+
 After completion, the UI was idle and both follower CAN transmit counters were
 unchanged during a two-second read-only check. The retained GPU was stopped with
 zero containers verified. No additional physical run was performed. The improved
