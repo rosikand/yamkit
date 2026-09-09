@@ -752,7 +752,8 @@ def rollout(
     modal_app: str | None = None,
     external_service: str | None = None,
     center_crop: bool = False,
-    async_chunks: Annotated[bool, typer.Option("--async/--no-async", help="unguided background chunks (Modal)")] = True,
+    async_chunks: Annotated[bool, typer.Option("--async/--no-async", help="legacy async toggle; controller-mode selects the remote controller")] = True,
+    controller_mode: Annotated[str, typer.Option(help="remote controller: async (experimental) or reference (full chunks); overrides the legacy async toggle for reference")] = "async",
     image_encoding: str = "rgb8",
     jpeg_quality: int = 85,
     call_mode: str = "remote",
@@ -766,7 +767,8 @@ def rollout(
 
     options = InferenceOptions(policy=policy, task=task, backend=backend, device=device or "cpu", gpu=gpu,
                                modal_app=modal_app, external_service=external_service, center_crop=center_crop, rtc=rtc,
-                               async_chunks=async_chunks, duration=duration, fps=fps, arms=tuple(arms or ()),
+                               async_chunks=async_chunks, controller_mode=controller_mode,
+                               duration=duration, fps=fps, arms=tuple(arms or ()),
                                image_encoding=image_encoding, jpeg_quality=jpeg_quality, call_mode=call_mode,
                                execution_mode=execution_mode,
                                prediction_queue_threshold=prediction_queue_threshold,
@@ -793,7 +795,7 @@ def rollout(
         if not app_name:
             raise typer.BadParameter("attach the external service or prepare the selected Modal app first")
         if dry_run:
-            console.print(f"{backend} unguided async via LeRobot context: {policy}, {app_name}, {fps:g} Hz")
+            console.print(f"{backend} unguided {controller_mode} controller via LeRobot context: {policy}, {app_name}, {fps:g} Hz")
             return
         from lerobot.rollout.configs import RolloutConfig
         from lerobot_robot_yamkit import BiYamFollowerConfig
@@ -812,7 +814,7 @@ def rollout(
                                      external_service=external_service,
                                      center_crop=center_crop, image_encoding=image_encoding,
                                      jpeg_quality=jpeg_quality, call_mode=call_mode,
-                                     execution_mode=execution_mode, task=task,
+                                     execution_mode=execution_mode, controller_mode=controller_mode, task=task,
                                      prediction_queue_threshold=prediction_queue_threshold,
                                      supervised_confirmed=confirm_supervised, mapping_accepted=accept_mapping),
             task=task, duration=duration, fps=fps, device="cpu", play_sounds=False,
@@ -1075,7 +1077,8 @@ def modal_qualify(policy: str = "molmoact2", requests: int = 50, modal_app: str 
                   rig: RigOpt = DEFAULT_RIG, image_encoding: str = "rgb8", jpeg_quality: int = 85,
                   call_mode: str = "remote", center_crop: bool = False,
                   prediction_queue_threshold: int | None = None,
-                  execution_mode: str = "eager", task: str = "put the red cube into the black container") -> None:
+                  execution_mode: str = "eager", task: str = "put the red cube into the black container",
+                  controller_mode: str = "async") -> None:
     """Measure this host's existing Modal service with generated frames and fake arms only."""
     from .modal_qualification import collect_qualification
 
@@ -1084,7 +1087,7 @@ def modal_qualify(policy: str = "molmoact2", requests: int = 50, modal_app: str 
                                        image_encoding=image_encoding, jpeg_quality=jpeg_quality,
                                        call_mode=call_mode, center_crop=center_crop,
                                        prediction_queue_threshold=prediction_queue_threshold,
-                                       execution_mode=execution_mode, task=task)
+                                       execution_mode=execution_mode, task=task, controller_mode=controller_mode)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from None
     _print_inference_result(result)
@@ -1132,7 +1135,7 @@ def external_qualify(service: Annotated[str, typer.Option()], task: Annotated[st
                      policy: str = "molmoact2", requests: int = 50, rig: RigOpt = DEFAULT_RIG,
                      image_encoding: str = "rgb8", jpeg_quality: int = 85,
                      center_crop: bool = False, prediction_queue_threshold: int | None = None,
-                     execution_mode: str = "cuda_graph10") -> None:
+                     execution_mode: str = "cuda_graph10", controller_mode: str = "async") -> None:
     """Measure an attached GPU service through this host using generated frames and fake arms."""
     from .modal_qualification import collect_qualification
 
@@ -1141,7 +1144,7 @@ def external_qualify(service: Annotated[str, typer.Option()], task: Annotated[st
                                        external_service=service, image_encoding=image_encoding,
                                        jpeg_quality=jpeg_quality, call_mode="http", center_crop=center_crop,
                                        prediction_queue_threshold=prediction_queue_threshold,
-                                       execution_mode=execution_mode, task=task)
+                                       execution_mode=execution_mode, task=task, controller_mode=controller_mode)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from None
     _print_inference_result(result)

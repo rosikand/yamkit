@@ -280,6 +280,31 @@ For optional Modal GPU inference and browser deployment, see [docs/MODAL.md](doc
 For an existing Lambda GPU with a direct, private Lenovo SSH tunnel, use
 [docs/LAMBDA.md](docs/LAMBDA.md). Its separate inference setup keeps CUDA dependencies inside
 the GPU checkout and retains host qualification before any supervised robot rollout.
+
+Remote MolmoAct2 also supports `--controller-mode reference`: complete 30-row chunks run
+sequentially, with coordinated joint/gripper interpolation and added timing for the existing
+command limits. `--controller-mode async` retains the experimental asynchronous controller and
+remains the default. Each mode requires its own current host qualification. For an attached
+Lambda service, qualify without opening hardware:
+
+```bash
+yamkit external-qualify --service lambda-georgia --controller-mode reference \
+  --task 'put the red cube into the black container' --requests 50
+```
+
+After that qualification passes and the operator approves the exact motion command:
+
+```bash
+yamkit rollout --policy molmoact2 --backend external --external-service lambda-georgia \
+  --call-mode http --execution-mode cuda_graph10 --image-encoding rgb8 --controller-mode reference \
+  --task 'put the red cube into the black container' --duration 5 \
+  --arms left_follower --arms right_follower --accept-mapping --confirm-supervised
+```
+
+This energizes both followers, runs the policy and homes after healthy completion before release.
+See the [reference execution contract and trace schema](docs/MOLMOACT2_EXECUTION.md#reference-controller-mode)
+for timing differences from the upstream runner and the experimental validation scope.
+
 Local remains the default. MolmoAct2-YAM has a reviewed source mapping and a local synchronous
 path. Supervised five-second run `20260908-220559-rollout-81cf2f4d` completed 131 bimanual policy dispatches at
 29.9 Hz, with zero queue underruns, all three 30 fps recordings intact, and return home

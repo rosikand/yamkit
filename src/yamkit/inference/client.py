@@ -177,17 +177,25 @@ class RemoteSession:
         self.transport.cancel()
 
     def predict(self, *, state: list[float], images: dict, task: str, observation_time: float,
-                crop: str = "none", mode: str = "robot") -> dict:
+                crop: str = "none", mode: str = "robot", deadline_monotonic_s: float | None = None) -> dict:
         from .protocol import validate_request, validate_response
 
         if not self._flight_lock.acquire(blocking=False):
             raise RemoteFault("Only one chunk request may be in flight per session")
         attempt_started = time.monotonic()
+        request_deadline = attempt_started + self.timeout_s
         response = None
         elapsed = None
         dispatch_attempted = False
         self.request_count += 1
         try:
+            if deadline_monotonic_s is not None:
+                import math
+
+                if (type(deadline_monotonic_s) not in (int, float)
+                        or not math.isfinite(deadline_monotonic_s)):
+                    raise RemoteFault("Invalid absolute remote request deadline")
+                request_deadline = min(request_deadline, deadline_monotonic_s)
             with self._lock:
                 if self._closed:
                     raise InvalidatedRequest("Remote session is stopped")
@@ -198,12 +206,18 @@ class RemoteSession:
             age = now - observation_time
             if age < 0 or age > self.max_observation_age_s:
                 raise RemoteFault("Observation is stale or has an invalid local timestamp")
+            if now >= request_deadline:
+                raise RemoteFault("Remote request deadline expired before dispatch")
+            timeout_s = self.timeout_s if deadline_monotonic_s is None else min(
+                self.timeout_s, request_deadline - now)
+            if deadline_monotonic_s is not None and timeout_s < 0.01:
+                raise RemoteFault("Remote request deadline expired before the minimum protocol budget")
             request = {
                 "protocol_version": 1, "profile": self.profile.id,
                 "model_revision": self.profile.revision,
                 "session_id": session_id, "sequence_id": sequence_id,
                 "observation_time": observation_time, "observation_age_s": age,
-                "timeout_s": self.timeout_s, "task": task, "state": state,
+                "timeout_s": timeout_s, "task": task, "state": state,
                 "state_names": list(self.profile.state_names), "images": images,
                 "mode": mode, "crop": crop, "continuation": None,
             }
@@ -212,13 +226,19 @@ class RemoteSession:
             validate_request(request, self.profile)
             request_validation_s = time.monotonic() - now
             start = time.monotonic()
+            if deadline_monotonic_s is None:
+                request_deadline = start + self.timeout_s
+            timeout_s = request_deadline - start
+            if timeout_s <= 0 or (deadline_monotonic_s is not None and timeout_s < 0.01):
+                raise RemoteFault("Remote request deadline expired during validation")
+            request["timeout_s"] = min(request["timeout_s"], timeout_s)
             dispatch_attempted = True
-            response = self.transport.predict_chunk(request, self.timeout_s)
+            response = self.transport.predict_chunk(request, timeout_s)
             elapsed = time.monotonic() - start
             with self._lock:
                 if self._closed or self.session_id != session_id:
                     raise InvalidatedRequest("Late response rejected after pause/reset/stop")
-            if elapsed >= self.timeout_s or time.monotonic() - observation_time > self.max_observation_age_s:
+            if time.monotonic() >= request_deadline or time.monotonic() - observation_time > self.max_observation_age_s:
                 raise RemoteFault("Response expired before local execution")
             decode_started = time.monotonic()
             validate_response(response, request, self.profile)
@@ -237,6 +257,8 @@ class RemoteSession:
                 if (execution.get("cuda_graph_used") is not True
                         or execution.get("effective_num_inference_steps") != 10):
                     raise RemoteFault("Remote response did not use the prepared 10-step graph")
+            if time.monotonic() >= request_deadline or time.monotonic() - observation_time > self.max_observation_age_s:
+                raise RemoteFault("Response expired during local validation")
             self.samples.append({"round_trip_s": elapsed,
                                  "observation_timestamp_monotonic_s": observation_time,
                                  "observation_age_at_dispatch_s": start - observation_time,

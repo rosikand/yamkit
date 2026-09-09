@@ -103,6 +103,7 @@ def attached_modal(inference_ui, monkeypatch):
             "profile": "molmoact2", "task": options.task, "modal_app": options.modal_app,
             "image_hw": list(image_hw), "image_encoding": options.image_encoding,
             "call_mode": options.call_mode, "execution_mode": options.execution_mode,
+            "controller_mode": options.controller_mode,
             "crop": "center_16_9" if options.center_crop else "none",
             "prediction_queue_threshold": options.prediction_queue_threshold,
             "http_ingress": receipt["http_ingress"],
@@ -115,6 +116,7 @@ def attached_modal(inference_ui, monkeypatch):
         expected = {
             "task": payload()["task"], "modal_app": app_name, "image_hw": [480, 640],
             "image_encoding": "rgb8", "call_mode": "http", "execution_mode": "cuda_graph10",
+            "controller_mode": "async",
             "crop": "none", "prediction_queue_threshold": None,
             "instance_id": "ui-fixture-instance", **state.expected_override,
         }
@@ -609,6 +611,7 @@ def inference_js():
         meta:{operation_id:'op1'},parsed:{result:{passed:true}}};return Promise.resolve();}
       $('#inf-policy').value='molmoact2'; $('#inf-task').value='pick';
       $('#inf-backend').value='local'; $('#inf-device').value='cpu'; $('#inf-gpu').value='L40S';
+      $('#inf-controller').value='async';
       $('#inf-duration').value='60'; $('#inf-saved').value='data/old.npz';
     """)
     ctx.eval(page)

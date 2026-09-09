@@ -81,6 +81,33 @@ def test_explicit_run_keeps_canonical_flags(monkeypatch):
     assert "--no-home" not in argv and "--prediction-queue-threshold" not in argv
 
 
+def test_reference_plan_flags_and_startup_failure_preserve_controller(tmp_path):
+    args = module.parse_args(["--plan", "--controller-mode", "reference"])
+    argv = module.rollout_arguments(args)
+    assert argv[argv.index("--controller-mode") + 1] == "reference"
+    collector = module.Collector(5, controller_mode="reference")
+    summary = module.export(collector, tmp_path)
+    assert summary["controller_mode"] == "reference"
+    assert summary["full_metrics_available"] is False
+
+
+def test_reference_trace_links_each_dispatch_to_original_chunk_and_row():
+    from yamkit.reference_rollout import ReferenceRemoteInferenceEngine
+
+    collector = module.Collector(5, controller_mode="reference")
+    engine = object.__new__(ReferenceRemoteInferenceEngine)
+    with module.install_hooks(collector):
+        engine.trace_event("reference_dispatch", chunk_index=0, row_index=0)
+        assert collector.events == []
+        collector.start_phase()
+        engine.trace_event("reference_dispatch", chunk_index=3, row_index=29,
+                           point_index=8, progress=1.0, endpoint=True, dispatch_index=100)
+    event = collector.events[-1]
+    assert event["kind"] == "reference_dispatch"
+    assert (event["chunk_index"], event["row_index"], event["point_index"]) == (3, 29, 8)
+    assert event["endpoint"] is True and event["progress"] == 1.0
+
+
 def test_explicit_rig_is_forwarded_without_environment_changes(monkeypatch):
     monkeypatch.setenv("YAMKIT_PREVIEW_TEST", "managed-session")
     import os
@@ -188,10 +215,13 @@ def test_trace_overflow_and_faults_are_explicit(monkeypatch):
     for _ in range(4):
         collector.event("extra")
     result = torch.zeros((1, 30, 14))
-    collector.capture_chunk(result, 1)
+    state = torch.arange(14, dtype=torch.float32).unsqueeze(0)
+    collector.capture_chunk(result, 1, state)
+    state[:] = -1
     result[:] = 2
     collector.capture_chunk(result, 2)
     assert collector.chunks[0]["actions"].max() == 0
+    assert collector.chunks[0]["policy_state"].tolist() == list(range(14))
     assert collector.counts["events_dropped"] == 3 and collector.counts["chunks_dropped"] == 1
     collector.safely(lambda: (_ for _ in ()).throw(ValueError("trace error")))
     assert collector.counts["trace_errors"] == 1

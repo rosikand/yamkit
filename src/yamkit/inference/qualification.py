@@ -69,8 +69,13 @@ def qualification_settings(profile, *, modal_app: str | None = None, call_mode: 
                            max_observation_age_s: float = 2.0, execution_mode: str = "eager",
                            task: str | None = None, metadata: dict | None = None,
                            endpoint_url: str | None = None, backend: str = "modal",
-                           external_service: str | None = None) -> dict:
+                           external_service: str | None = None, controller_mode: str = "async") -> dict:
     profile = get_profile(profile)
+    if controller_mode not in ("async", "reference"):
+        raise QualificationError("Unknown remote controller mode")
+    if controller_mode == "reference" and (profile.id != "molmoact2" or call_mode != "http"
+            or execution_mode != "cuda_graph10" or image_encoding != "rgb8" or crop != "none"):
+        raise QualificationError("Reference qualification requires MolmoAct2 HTTP graph10, raw RGB and no crop")
     if backend not in ("modal", "external"):
         raise QualificationError("Unknown remote inference backend")
     if backend == "external":
@@ -101,7 +106,7 @@ def qualification_settings(profile, *, modal_app: str | None = None, call_mode: 
         raise QualificationError("Qualification must retain the production observation-age guard")
     result = {"profile": profile.id, "model_revision": profile.revision,
             "dependency_revision": profile.dependency_revision, "modal_app": modal_app,
-            "call_mode": call_mode, "image_encoding": image_encoding,
+            "call_mode": call_mode, "controller_mode": controller_mode, "image_encoding": image_encoding,
             "jpeg_quality": jpeg_quality if image_encoding == "jpeg" else None,
             "image_hw": list(image_hw), "crop": crop, "requested_region": requested_region,
             "observed_region": observed_region, "routing_region": routing_region,
@@ -189,6 +194,7 @@ def current_settings(config, *, image_hw, metadata=None) -> dict:
         prediction_queue_threshold=config.prediction_queue_threshold,
         max_observation_age_s=getattr(config, "max_observation_age_s", 2.0),
         execution_mode=getattr(config, "execution_mode", "eager"), task=getattr(config, "task", None),
+        controller_mode=getattr(config, "controller_mode", "async"),
         metadata=metadata, endpoint_url=receipt.get("http_endpoint"),
         **({"backend": backend, "external_service": name} if backend == "external" else {}))
 
@@ -371,10 +377,64 @@ def _check_http_evidence(settings, direct, integrated, reasons, requested):
                 break
 
 
+def _check_reference_evidence(settings, integrated, completed, reasons, counter):
+    """Check full response consumption, not just successful RPC completion."""
+    proof = _mapping(integrated.get("reference_execution"), "reference execution", reasons)
+    chunk_steps = settings["chunk_steps"]
+    if (settings.get("call_mode") != "http" or settings.get("execution_mode") != "cuda_graph10"
+            or settings.get("image_encoding") != "rgb8" or settings.get("crop") != "none"
+            or proof.get("controller_mode") != "reference"):
+        reasons.append("Reference evidence lacks its reviewed controller and model execution binding")
+    for key in ("expired_prefix_dropped", "overlap_prefix_dropped", "prefix_drop",
+                "coherence_violations", "expired_plans", "uncompleted_steps_at_stop"):
+        if counter(proof.get(key), f"reference {key}") != 0:
+            reasons.append(f"Reference execution reported {key} or omitted its measurement")
+    for key in ("expired_prefix_dropped", "overlap_prefix_dropped"):
+        if counter(integrated.get(key), key) != 0:
+            reasons.append("Reference execution must not discard an action prefix")
+    if (proof.get("next_observation_after_full_chunk") is not True
+            or proof.get("partial_chunk_at_stop") is not False):
+        reasons.append("Reference qualification must finish each full chunk before the next observation and Stop probe")
+    for key, expected in (("predicted_steps", len(completed) * chunk_steps),
+                          ("completed_steps", len(completed) * chunk_steps),
+                          ("completed_chunks", len(completed))):
+        if counter(proof.get(key), f"reference {key}") != expected:
+            reasons.append(f"Reference {key} does not match every accepted full response")
+    planned_dispatches = 0
+    for index, event in enumerate(completed):
+        if (counter(event.get("accepted_steps"), "reference accepted_steps") != chunk_steps
+                or counter(event.get("completed_chunks_at_start"), "reference completed_chunks_at_start") != index
+                or counter(event.get("completed_steps_at_start"), "reference completed_steps_at_start") != index * chunk_steps
+                or counter(event.get("actions_executed_during_prediction"), "reference inference overlap") != 0):
+            reasons.append("Reference requests did not follow complete, ordered chunk consumption")
+        points = counter(event.get("plan_dispatches"), "reference plan_dispatches", minimum=chunk_steps)
+        if points is not None:
+            planned_dispatches += points
+        try:
+            age = _number(event.get("observation_age_at_return_s"), "reference observation age")
+            duration = _number(event.get("planned_duration_s"), "reference planned duration")
+            deadline = _number(event.get("plan_deadline_monotonic_s"), "reference plan deadline")
+            started = _number(event.get("prediction_started_monotonic_s"), "reference request start")
+            prediction_s = _number(event.get("prediction_s"), "reference prediction duration")
+            if (age > settings["max_observation_age_s"] or points is None
+                    or not math.isclose(duration, points / settings["fps"], rel_tol=1e-9, abs_tol=1e-9)
+                    or not started + prediction_s < deadline <= started + prediction_s + duration * 1.1 + 0.1 + 1e-8):
+                reasons.append("Reference request freshness or fixed plan lease is invalid")
+        except QualificationError as exc:
+            reasons.append(str(exc))
+    dispatches = counter(proof.get("interpolation_dispatches"), "reference interpolation_dispatches", minimum=1)
+    if dispatches != planned_dispatches or dispatches != integrated.get("executed_actions"):
+        reasons.append("Reference dispatch count does not exhaust every accepted interpolation plan")
+
+
 def _assess(settings, direct, integrated, requested):
     if type(requested) is not int or not MIN_WARM_SAMPLES <= requested <= 500:
         raise QualificationError("Qualification requires 50–500 warm requests")
     reasons = []
+    mode = settings.get("controller_mode", "async")
+    reference = mode == "reference"
+    if mode not in ("async", "reference"):
+        reasons.append("Unknown qualification controller mode")
     direct = _mapping(direct, "direct report", reasons)
     integrated = _mapping(integrated, "integrated report", reasons)
     production_graph = settings.get("call_mode") == "http" and settings.get("execution_mode") == "cuda_graph10"
@@ -436,7 +496,8 @@ def _assess(settings, direct, integrated, requested):
     for event in warm:
         try:
             ages.append(_number(event.get("observation_age_at_return_s"), "integrated observation age"))
-            measured_horizons.append(_number(event.get("remaining_valid_action_horizon_s"), "actual merged horizon"))
+            if not reference:
+                measured_horizons.append(_number(event.get("remaining_valid_action_horizon_s"), "actual merged horizon"))
         except QualificationError as exc:
             reasons.append(str(exc))
     age_p95 = percentile_summary(ages).get("p95")
@@ -446,6 +507,11 @@ def _assess(settings, direct, integrated, requested):
     # This also accounts for shorter returned chunks and postprocessing time.
     actual_horizon_p05 = -percentile_summary(-value for value in measured_horizons)["p95"] if measured_horizons else 0.0
     usable_horizon = min(usable_horizon, actual_horizon_p05)
+    if reference:
+        # There is deliberately no prediction/actuation overlap. Measure RPC
+        # against its admission budget, not the asynchronous action queue.
+        horizon = usable_horizon = settings["max_observation_age_s"]
+        actual_horizon_p05 = None
     external = settings.get("backend") == "external"
     if external:
         expected_provenance = {"backend": "external", "external_service": settings.get("external_service"),
@@ -480,6 +546,8 @@ def _assess(settings, direct, integrated, requested):
         if direct.get(key) != settings[key]:
             reasons.append(f"Direct measurement {key} differs from the qualification settings")
     policy_options = _mapping(integrated.get("policy_options"), "integrated policy options", reasons)
+    if policy_options.get("controller_mode", "async") != mode:
+        reasons.append("Integrated controller mode differs from the qualification settings")
     for key in ("image_encoding", "call_mode"):
         if policy_options.get(key) != settings[key]:
             reasons.append(f"Integrated measurement {key} differs from the qualification settings")
@@ -506,7 +574,9 @@ def _assess(settings, direct, integrated, requested):
     for key in ("underruns", "expired_chunks", "expired_queued_actions", "expired_before_dispatch"):
         if counter(integrated.get(key), key) != 0:
             reasons.append(f"Integrated execution reported {key} or omitted its measurement")
-    if counter(integrated.get("minimum_execution_queue_depth"), "minimum_execution_queue_depth", minimum=1) is None:
+    if reference:
+        _check_reference_evidence(settings, integrated, completed, reasons, counter)
+    elif counter(integrated.get("minimum_execution_queue_depth"), "minimum_execution_queue_depth", minimum=1) is None:
         reasons.append("The executing queue drained")
     if (integrated.get("stop_requested_during_inflight_rpc") is not True
             or counter(integrated.get("commands_after_stop"), "commands_after_stop") != 0):
@@ -516,7 +586,11 @@ def _assess(settings, direct, integrated, requested):
         reasons.append("A non-Stop request failure occurred during integrated execution")
     if p95 is None or not usable_horizon or p95 > usable_horizon * 0.8:
         reasons.append("Warm RPC p95 does not fit the effective usable horizon with 20% margin")
+    if reference and (age_p95 is None or age_p95 > usable_horizon * 0.8):
+        reasons.append("Reference observation-age p95 does not fit its admission budget with 20% margin")
     return {"qualified": not reasons, "reasons": reasons, "requested_warm_samples": requested,
+            "controller_mode": mode,
+            "latency_budget_basis": "synchronous RPC admission" if reference else "asynchronous remaining queue",
             "completed_integrated_warm_samples": len(warm), "nominal_action_horizon_s": horizon,
             "integrated_observation_age_p95_s": age_p95,
             "integrated_merged_horizon_p05_s": actual_horizon_p05,
@@ -540,19 +614,23 @@ def build_qualification(settings: dict, *, direct: dict, integrated: dict,
             "direct": direct, "integrated": integrated}
 
 
-def _path(profile: str, *, backend="modal", external_service=None) -> Path:
+def _path(profile: str, *, backend="modal", external_service=None, controller_mode="async") -> Path:
+    if controller_mode not in ("async", "reference"):
+        raise QualificationError("Unknown qualification controller mode")
+    suffix = "-reference" if controller_mode == "reference" else ""
     if backend == "external":
         from yamkit.external_ops import _name
 
-        return DATA_DIR / "qualifications" / f"external-{_name(external_service)}-{get_profile(profile).id}.json"
+        return DATA_DIR / "qualifications" / f"external-{_name(external_service)}-{get_profile(profile).id}{suffix}.json"
     if backend != "modal":
         raise QualificationError("Unknown qualification backend")
-    return DATA_DIR / "qualifications" / f"modal-{get_profile(profile).id}.json"
+    return DATA_DIR / "qualifications" / f"modal-{get_profile(profile).id}{suffix}.json"
 
 
 def _settings_path(settings: dict) -> Path:
     return _path(settings["profile"], backend=settings.get("backend", "modal"),
-                 external_service=settings.get("external_service_name"))
+                 external_service=settings.get("external_service_name"),
+                 controller_mode=settings.get("controller_mode", "async"))
 
 
 def save_qualification(record: dict, path: Path | None = None) -> Path:

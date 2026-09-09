@@ -150,8 +150,9 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
     execution_times = []
     transport = None
 
-    if duration <= 0 or not delays or any(delay < 0 for delay in delays):
-        raise ValueError("Scenario requires a positive duration and nonnegative RPC delays")
+    if (not np.isfinite(duration) or not 0 < duration <= 1800 or not delays
+            or any(not np.isfinite(delay) or delay < 0 for delay in delays)):
+        raise ValueError("Scenario requires a duration in (0, 1800] and finite nonnegative RPC delays")
     if target_warm_samples is not None and target_warm_samples < 1:
         raise ValueError("target_warm_samples must be positive")
 
@@ -300,8 +301,9 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
         monitor_done = threading.Event()
 
         def stop_at_target():
-            # Observe completed responses only. The worker still validates/merges
-            # normally; Stop invalidates any final unconsumed response as usual.
+            # Observe completed responses only. In reference mode the next RPC
+            # starts only after every prior chunk's endpoint was committed, so
+            # the same limit also proves full consumption before the Stop probe.
             while not monitor_done.wait(0.05):
                 # Pre-hardware native warm-up does not count toward accepted
                 # predictions by the actual rollout worker and queue.
@@ -341,7 +343,8 @@ def run_scenario(name: str, delays: list[float], *, duration: float, image_hw=(4
             "fixture_pattern": "fixed seeded random RGB per camera; fake measured state follows commanded actions",
             "policy_options": {"image_encoding": cfg.policy.image_encoding, "jpeg_quality": cfg.policy.jpeg_quality,
                                "call_mode": cfg.policy.call_mode, "center_crop": cfg.policy.center_crop,
-                               "execution_mode": cfg.policy.execution_mode, "task": cfg.policy.task,
+                               "execution_mode": cfg.policy.execution_mode,
+                               "controller_mode": cfg.policy.controller_mode, "task": cfg.policy.task,
                                "modal_app": cfg.policy.modal_app,
                                **({"backend": "external", "external_service": cfg.policy.external_service}
                                   if external else {}),
@@ -838,7 +841,8 @@ def compact_report(report: dict) -> dict:
                     "next_action_margin_at_start_s", "next_action_margin_at_return_s"):
             summary[f"{key}_range"] = bounds(key, events)
         for key in ("minimum_execution_queue_depth", "minimum_dispatch_margin_s", "expired_queued_actions",
-                    "expired_before_dispatch", "readiness_s", "stop_to_robot_release_s"):
+                    "expired_before_dispatch", "readiness_s", "stop_to_robot_release_s",
+                    "controller_mode", "reference_execution"):
             if key in scenario:
                 summary[key] = scenario[key]
         result["scenarios"].append(summary)
@@ -870,6 +874,7 @@ def main():
     parser.add_argument("--jpeg-quality", type=int, default=85)
     parser.add_argument("--call-mode", choices=("remote", "spawn", "http"), default="remote")
     parser.add_argument("--execution-mode", choices=("eager", "cuda_graph10"), default="eager")
+    parser.add_argument("--controller-mode", choices=("async", "reference"), default="async")
     parser.add_argument("--task", default="put the red cube into the black container")
     parser.add_argument("--center-crop", action="store_true")
     parser.add_argument("--encoding-pairs", type=int, default=0,
@@ -905,6 +910,11 @@ def main():
             or args.diagnostic_num_inference_steps is not None or args.diagnostic_cuda_graph is not None
             or args.encoding_pairs or args.quality_pairs or args.denoising_pairs):
         parser.error("Production graph10 requires HTTP/raw RGB without experimental model or image overrides")
+    if args.controller_mode == "reference" and (
+            not args.modal_app or not (args.integrated_modal or args.integrated_only)
+            or args.call_mode != "http" or args.execution_mode != "cuda_graph10"
+            or args.image_encoding != "rgb8" or args.center_crop):
+        parser.error("Reference benchmark requires an explicit integrated HTTP graph10 service, raw RGB and no crop")
     if (args.integrated_modal or args.integrated_only) and (
             args.diagnostic_num_inference_steps is not None or args.diagnostic_cuda_graph is not None):
         parser.error("Model overrides are restricted to native-fixture profiling; use a separate integrated run")
@@ -960,11 +970,12 @@ def main():
                     target_warm_samples=args.warm_samples, task=args.task,
                     policy_options={"image_encoding": args.image_encoding, "jpeg_quality": args.jpeg_quality,
                                     "call_mode": args.call_mode, "center_crop": args.center_crop,
-                                    "execution_mode": args.execution_mode,
+                                    "execution_mode": args.execution_mode, "controller_mode": args.controller_mode,
                                     **({"modal_app": args.modal_app} if args.call_mode == "http" else {})})
             report.update(measured_on=datetime.now(UTC).isoformat(), modal_app=args.modal_app,
                           uncached_handles=args.uncached_handles, sdk_profile=args.sdk_profile,
-                          call_mode=args.call_mode, execution_mode=args.execution_mode, task=args.task,
+                          call_mode=args.call_mode, execution_mode=args.execution_mode,
+                          controller_mode=args.controller_mode, task=args.task,
                           physical_modal_rollout_allowed=False)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2) + "\n")

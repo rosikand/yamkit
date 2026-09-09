@@ -63,6 +63,7 @@ class YamkitRemotePolicy(PreTrainedPolicy):
         self._observation_time = None
         self._last_requested_observation_time = None
         self._last_prediction_timing = {}
+        self._request_deadline_monotonic_s = None
         readiness_started = time.monotonic()
         try:
             self.metadata = self.transport.ready(config.readiness_timeout_s)
@@ -261,6 +262,7 @@ class YamkitRemotePolicy(PreTrainedPolicy):
                                        "per_camera_timing": camera_timings}
         result = self.session.predict(state=state[0].tolist(), images=images, task=task[0],
                                       observation_time=observation_time,
+                                      deadline_monotonic_s=self._request_deadline_monotonic_s,
                                       crop="center_16_9" if self.config.center_crop else "none")
         self.session.samples[-1].update(self._last_prediction_timing)
         self._actions_expire_at = observation_time + self.config.max_observation_age_s

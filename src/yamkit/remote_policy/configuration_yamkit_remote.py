@@ -20,6 +20,7 @@ class YamkitRemoteConfig(PreTrainedConfig):
     jpeg_quality: int = 85
     call_mode: str = "remote"
     execution_mode: str = "eager"
+    controller_mode: str = "async"
     task: str = "put the red cube into the black container"
     prediction_queue_threshold: int | None = None
     supervised_confirmed: bool = False
@@ -60,9 +61,15 @@ class YamkitRemoteConfig(PreTrainedConfig):
             raise ValueError("Remote call_mode must be remote, spawn or http")
         if self.execution_mode not in ("eager", "cuda_graph10"):
             raise ValueError("Unknown remote execution mode")
+        if self.controller_mode not in ("async", "reference"):
+            raise ValueError("Remote controller mode must be async or reference")
         if self.execution_mode == "cuda_graph10" and (
                 self.call_mode != "http" or profile.id != "molmoact2" or self.image_encoding != "rgb8"):
             raise ValueError("Production graph10 requires MolmoAct2 over HTTP with raw RGB")
+        if self.controller_mode == "reference" and (
+                profile.id != "molmoact2" or self.call_mode != "http"
+                or self.execution_mode != "cuda_graph10" or self.image_encoding != "rgb8" or self.center_crop):
+            raise ValueError("Reference controller requires remote MolmoAct2 over HTTP graph10 with raw RGB and no crop")
         if not isinstance(self.task, str) or not self.task.strip() or len(self.task) > 2048:
             raise ValueError("The actual remote rollout task must contain 1–2048 characters")
         if self.prediction_queue_threshold is not None and (

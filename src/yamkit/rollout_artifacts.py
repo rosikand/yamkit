@@ -158,7 +158,9 @@ see `meta.json.task_success` and operator feedback when present.
   Gaps remain real gaps; no invented frames. Older recordings may lack this map.
 - `trace.json.events`: `observation` contains measured positions in the ordered
   14-element `summary.json.action_names`; `video_sample` joins frame_index and
-  observation_index. `action_dequeued` records queue deadlines. `send_start`
+  observation_index. These positions remain measured in reference mode, whose
+  model state instead uses the last committed 14D command after initialization.
+  In async mode, `action_dequeued` records queue deadlines. `send_start`
   contains requested arm targets, and `send_end.postclamp` contains the targets
   sent after joint/gripper speed clamps. Pair sends by arm and chronological
   order; two follower sends normally make one bimanual action. A send target is
@@ -170,22 +172,41 @@ see `meta.json.task_success` and operator feedback when present.
   predicted from the latest observation available to inference; its timestamp
   can be matched to the preceding observation receipt, subject to host timing
   precision. There is no exact request-to-observation ID in this schema.
-  `chunk_merge` events describe queue merges, discarded expired/overlap prefixes
-  and accepted tails; this strategy preserves retained old queued actions.
-  not every predicted target is executed. Target index j has a nominal deadline
-  `observation_monotonic_s + (j + 1) / 30` for this policy. Approximate matching
-  by deadlines and requested target values can reconstruct joins, but there is
-  no explicit foreign key. `action_dequeued` and ordered sends are execution
-  evidence, not a one-to-one join by chunk_index.
+  New chunks also store `policy_state`: the actual 14D robot-unit model-proxy
+  input after client preprocessing. It is cached committed state in reference
+  mode after initialization; historical chunks may lack this field. Model input
+  image handling is unchanged.
+  With `controller_mode=async`, `chunk_merge` events describe queue merges,
+  discarded expired/overlap prefixes and accepted tails. Retained old queued
+  actions remain; not every predicted target is executed. Row j has nominal
+  deadline `observation_monotonic_s + (j + 1) / 30`. Approximate matching by
+  deadlines and requested values can reconstruct joins, but async has no explicit
+  chunk/row foreign key. Ordered sends alone are not a one-to-one chunk join.
+  With `controller_mode=reference`, all 30 rows are consumed sequentially before
+  the next RPC; inference and dispatch do not overlap. Each row's 14D straight
+  path uses shared cubic-smoothstep progress and added timing/endpoint holds for
+  existing command limits. This is not literal upstream interpolation timing.
+  RPC observation freshness is at most two seconds; the fixed execution lease is
+  `min(phase_deadline, returned_at + interpolation_points / 30 * 1.1 + 0.1)`,
+  with an additional 100 ms active dispatch/stall guard. Async row deadlines do
+  not apply to reference interpolation. Duration, Stop or faults can interrupt
+  the final chunk; never infer full consumption merely from a saved prediction.
 - `metrics.json`: complete available inference/queue/control/cleanup metrics;
   `summary.json`: capture scope, phase boundaries, dropped data and export errors.
   Newer remote runs include `command_shaping`: limits, counts and bounded samples
-  joining each `dispatch_index` and host monotonic timestamp to the original
-  14-key `requested` policy target, acceleration-limited `shaped` target, and
-  successfully returned post-clamp `sent` command. These are command targets,
-  not measured joint trajectories. In these runs, trace `send_start.requested`
-  is already shaped; use the metric sample's `requested` for model-chunk joins.
-  Any samples omitted by the bound are counted in `samples_dropped`.
+  joining each `dispatch_index` and host monotonic timestamp to 14-key
+  `requested`, `shaped` and successfully returned post-clamp `sent` commands.
+  In async mode, `requested` is the original model target and `shaped` is joint
+  acceleration-limited; trace `send_start.requested` is already shaped.
+  In reference mode, `requested` is the coordinated interpolation point, NOT the
+  raw model row. `reference_execution.dispatch_samples` joins `dispatch_index`
+  to `chunk_index`, `row_index`, `point_index`, scalar `progress` and `endpoint`;
+  chunk and row indices refer directly to `trace.json.chunks` and its action rows.
+  Reference `shaped` and returned `sent` must preserve the interpolated point.
+  `completed_steps`, `completed_chunks` and `partial_chunk_at_stop` describe
+  consumption; commands do not prove measured motion or task success.
+  Samples omitted by bounds are counted in `samples_dropped` and reference
+  `dispatch_samples_dropped`; do not invent the missing joins.
 - `meta.json`: launcher task, times, return code and any operator feedback.
   `log.txt`: available child stdout/stderr; `plan.json`: saved capture plan if available.
   `run_metadata.json`: sanitized

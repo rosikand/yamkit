@@ -23,7 +23,7 @@ def _benchmark_module():
 
 def collect_qualification(policy="molmoact2", *, requests=50, modal_app=None, rig_path=DEFAULT_RIG,
                           image_encoding="rgb8", jpeg_quality=85, call_mode="remote", center_crop=False,
-                          prediction_queue_threshold=None, execution_mode="eager",
+                          prediction_queue_threshold=None, execution_mode="eager", controller_mode="async",
                           task="put the red cube into the black container", backend="modal", external_service=None) -> dict:
     from .config import RigConfig
     from .inference.profiles import get_profile
@@ -41,6 +41,11 @@ def collect_qualification(policy="molmoact2", *, requests=50, modal_app=None, ri
         raise ValueError("External qualification requires an explicit service and HTTP, without a Modal app")
     if execution_mode not in ("eager", "cuda_graph10"):
         raise ValueError("Unknown qualification execution mode")
+    if controller_mode not in ("async", "reference"):
+        raise ValueError("Unknown qualification controller mode")
+    if controller_mode == "reference" and (
+            call_mode != "http" or execution_mode != "cuda_graph10" or image_encoding != "rgb8" or center_crop):
+        raise ValueError("Reference qualification requires HTTP graph10, raw RGB and no crop")
     if execution_mode == "cuda_graph10" and (call_mode != "http" or image_encoding != "rgb8"):
         raise ValueError("Production graph10 qualification requires HTTP and raw RGB")
     if not isinstance(task, str) or not task.strip() or len(task) > 2048:
@@ -99,7 +104,7 @@ def collect_qualification(policy="molmoact2", *, requests=50, modal_app=None, ri
                   "hardware_tested": False,
                   "settings": {"profile": profile.id, "model_revision": profile.revision, "modal_app": app_name,
                                "call_mode": call_mode, "image_encoding": image_encoding,
-                               "execution_mode": execution_mode, "task": task,
+                               "execution_mode": execution_mode, "controller_mode": controller_mode, "task": task,
                                "jpeg_quality": jpeg_quality if image_encoding == "jpeg" else None,
                                "image_hw": list(image_hw),
                                "crop": "center_16_9" if center_crop else "none",
@@ -147,12 +152,12 @@ def collect_qualification(policy="molmoact2", *, requests=50, modal_app=None, ri
         sys.path.insert(0, str(ROOT))
         integrated = benchmark.run_scenario(
             "host_external_qualification" if backend == "external" else "host_modal_qualification",
-            [0], duration=min(300, requests * 1.5 + 15),
+            [0], duration=1800 if controller_mode == "reference" else min(300, requests * 1.5 + 15),
             image_hw=image_hw, transport_factory=transport_factory, target_warm_samples=requests,
             task=task,
             policy_options={"profile": profile.id, "image_encoding": image_encoding, "jpeg_quality": jpeg_quality,
                             "call_mode": call_mode, "center_crop": center_crop,
-                            "execution_mode": execution_mode, "task": task,
+                            "execution_mode": execution_mode, "controller_mode": controller_mode, "task": task,
                             **({"backend": "external", "external_service": external_service, "modal_app": ""}
                                if backend == "external" else {"modal_app": app_name} if call_mode == "http" else {}),
                             "prediction_queue_threshold": prediction_queue_threshold})
@@ -166,7 +171,7 @@ def collect_qualification(policy="molmoact2", *, requests=50, modal_app=None, ri
             jpeg_quality=jpeg_quality, image_hw=image_hw, crop="center_16_9" if center_crop else "none",
             requested_region=readiness.get("requested_compute_region"), observed_region=readiness.get("compute_region"),
             routing_region=readiness.get("routing_region"), prediction_queue_threshold=prediction_queue_threshold,
-            execution_mode=execution_mode, task=task, metadata=readiness,
+            execution_mode=execution_mode, controller_mode=controller_mode, task=task, metadata=readiness,
             endpoint_url=receipt.get("http_endpoint") if call_mode == "http" else None,
             **({"backend": "external", "external_service": external_service} if backend == "external" else {}))
         record = build_qualification(settings, direct=direct, integrated=integrated, requested_warm_samples=requests)

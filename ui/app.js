@@ -737,6 +737,7 @@ pages.inference = {
         <div class="form-grid">
           <label class="field">preset<select id="inf-preset"><option value="smolvla">SmolVLA base · forward check</option><option value="molmoact2">MolmoAct2 · bimanual YAM</option><option value="pi05">pi05 base · forward check</option><option value="custom">Custom compatible local checkpoint</option></select></label>
           <label class="field">backend<select id="inf-backend"><option value="local">Local (default)</option><option value="modal">Modal · retained MolmoAct2 session</option><option value="external">Lambda / own GPU host · SSH</option></select></label>
+          <label class="field">remote controller<select id="inf-controller"><option value="async">Experimental async chunks</option><option value="reference">Reference full chunks</option></select></label>
           <label class="field">checkpoint<input type="text" id="inf-policy" value="smolvla" list="policy-list" /></label>
           <label class="field">task<input type="text" id="inf-task" value="put the red cube into the black container" /></label>
           <label class="field">followers<select id="inf-arms"><option value="">Both arms</option><option value="left">Left only (compatible local model)</option><option value="right">Right only (compatible local model)</option></select></label>
@@ -762,7 +763,7 @@ pages.inference = {
         <div class="toolbar"><label class="check"><input type="checkbox" id="inf-rtc" /> Local RTC (policy must support guidance)</label>
           <label class="check"><input type="checkbox" id="inf-crop" /> Optional center crop to 16:9 at remote policy boundary</label></div>
         <div id="inf-profile-note" class="hint"></div>
-        <div class="hint">Remote inference uses unguided background chunks. Crop stays off by default and does not restore training camera geometry. Recording camera settings stay unchanged.</div>
+        <div class="hint">Reference full chunks executes one complete prediction before requesting the next. Experimental async chunks requests predictions in the background. Both use unguided inference. Changing controller requires a matching qualification.</div>
         <div class="toolbar" style="margin-top:12px">
           <button id="btn-pc">Check (no hardware)</button><button id="btn-prepare">Prepare Modal</button>
           <button id="btn-ro" class="danger">Start rollout</button><button id="btn-inf-stop" class="danger">Stop local execution</button>
@@ -791,7 +792,7 @@ pages.inference = {
       if (dl) dl.innerHTML = list.map((m) => `<option value="${esc(m.where === "cloud" ? m.repo_id : "outputs/" + m.path)}">${esc(m.policy_type ?? "")}</option>`).join("");
     }).catch(() => {});
     $("#inf-preset").onchange = () => { $("#inf-policy").value = $("#inf-preset").value === "custom" ? "" : $("#inf-preset").value; this.syncForm(); };
-    ["inf-backend", "inf-policy", "inf-task", "inf-arms", "inf-duration", "inf-device", "inf-gpu", "inf-rtc", "inf-crop", "inf-saved", "inf-modal-app", "inf-external-service", "inf-mapping", "inf-trace", "inf-upload", "inf-upload-repo"].forEach((id) => {
+    ["inf-backend", "inf-controller", "inf-policy", "inf-task", "inf-arms", "inf-duration", "inf-device", "inf-gpu", "inf-rtc", "inf-crop", "inf-saved", "inf-modal-app", "inf-external-service", "inf-mapping", "inf-trace", "inf-upload", "inf-upload-repo"].forEach((id) => {
       document.getElementById(id).addEventListener("input", () => this.syncForm());
     });
     $("#btn-pc").onclick = (e) => this.launch("/session/policy-check", {}, e.target);
@@ -846,6 +847,7 @@ pages.inference = {
       backend: $("#inf-backend").value, device: $("#inf-device").value, gpu: $("#inf-gpu").value,
       duration: Number($("#inf-duration").value), fps: 30, rtc: $("#inf-rtc").checked,
       center_crop: $("#inf-crop").checked, async_chunks: true,
+      controller_mode: remote ? $("#inf-controller").value : "async",
       modal_app: modal ? $("#inf-modal-app").value.trim() || null : null,
       external_service: external ? $("#inf-external-service").value.trim() || null : null,
       call_mode: remote ? "http" : "remote", execution_mode: remote ? "cuda_graph10" : "eager",
@@ -879,6 +881,7 @@ pages.inference = {
     const external = $("#inf-backend").value === "external";
     const modal = ["modal", "external"].includes($("#inf-backend").value);
     $("#inf-device").disabled = modal;
+    $("#inf-controller").disabled = !modal || session.active || this._launching;
     $("#inf-gpu").disabled = !modal || external;
     $("#inf-modal-app").disabled = !modal || external;
     $("#inf-external-service").disabled = !external;

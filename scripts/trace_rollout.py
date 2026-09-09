@@ -41,9 +41,10 @@ MAX_ROLLOUT_WALL_S = 120
 MAX_EXPORT_WALL_S = 90
 
 
-def plan(duration=5):
+def plan(duration=5, controller_mode="async"):
     return {"status": "PLAN_ONLY", "hardware_opened": False, "task": TASK,
-            "duration_s": duration, "maximum_rollout_wall_s": MAX_ROLLOUT_WALL_S,
+            "duration_s": duration, "controller_mode": controller_mode,
+            "maximum_rollout_wall_s": MAX_ROLLOUT_WALL_S,
             "maximum_export_wall_s": MAX_EXPORT_WALL_S,
             "video_fps": VIDEO_FPS, "max_frame_triplets": duration * VIDEO_FPS + 3,
             "max_frame_bytes": (duration * VIDEO_FPS + 3) * FRAME_TRIPLET_BYTES,
@@ -66,6 +67,7 @@ def parse_args(argv=None):
     parser.add_argument("--modal-app")
     parser.add_argument("--backend", choices=("modal", "external"), default="modal")
     parser.add_argument("--external-service")
+    parser.add_argument("--controller-mode", choices=("async", "reference"), default="async")
     parser.add_argument("--confirm-supervised", action="store_true")
     parser.add_argument("--rig", type=Path, help="Selected rig inside this repository; normal CLI validation still applies")
     parser.add_argument("--output-dir", type=Path, help="New directory inside this repository's .context/rollout-traces")
@@ -114,8 +116,9 @@ def available_memory_bytes(meminfo=Path('/proc/meminfo'), cgroup_root=Path('/sys
 
 
 class Collector:
-    def __init__(self, duration, *, clock=time.monotonic):
+    def __init__(self, duration, *, clock=time.monotonic, controller_mode="async"):
         self.duration, self.clock = duration, clock
+        self.controller_mode = controller_mode
         self.events, self.frames, self.chunks, self.robots = [], [], [], []
         self.metrics = None
         self.rollout_error = None
@@ -205,7 +208,7 @@ class Collector:
                    observation_index=observation_index,
                    observation_receipt_monotonic_s=started, copy_s=self.clock() - started)
 
-    def capture_chunk(self, result, observation_time):
+    def capture_chunk(self, result, observation_time, policy_state=None):
         if not self.active:
             return
         if len(self.chunks) >= MAX_CHUNKS:
@@ -215,6 +218,8 @@ class Collector:
             raise ValueError("Trace requires the unchanged CPU 30x14 policy boundary")
         self.chunks.append({"chunk_index": len(self.chunks), "returned_monotonic_s": self.clock(),
                             "observation_monotonic_s": observation_time,
+                            "policy_state": (policy_state.detach().cpu().numpy().copy()[0]
+                                             if policy_state is not None else None),
                             "actions": result.detach().numpy().copy()[0]})
 
     def register_robot(self, robot):
@@ -234,6 +239,7 @@ def install_hooks(collector):
     from lerobot_robot_yamkit.yam_follower import BiYamFollower, _FollowerHandle
 
     from yamkit import cli
+    from yamkit.reference_rollout import ReferenceRemoteInferenceEngine
     from yamkit.remote_policy.modeling_yamkit_remote import YamkitRemotePolicy
     from yamkit.remote_rollout import InvalidatableActionQueue, UnguidedRemoteInferenceEngine
 
@@ -244,6 +250,7 @@ def install_hooks(collector):
     original_predict = YamkitRemotePolicy.predict_action_chunk
     original_merge = UnguidedRemoteInferenceEngine._record_merge
     original_get = InvalidatableActionQueue.get
+    original_reference_event = ReferenceRemoteInferenceEngine.trace_event
 
     def run(strategy, ctx):
         collector.safely(collector.start_phase)
@@ -280,8 +287,9 @@ def install_hooks(collector):
 
     def predict(policy, *args, **kwargs):
         observation_time = policy._observation_time
+        batch = args[0] if args else kwargs.get("batch", {})
         result = original_predict(policy, *args, **kwargs)
-        collector.safely(collector.capture_chunk, result, observation_time)
+        collector.safely(collector.capture_chunk, result, observation_time, batch.get("observation.state"))
         return result
 
     def merge(engine, metrics):
@@ -299,6 +307,12 @@ def install_hooks(collector):
         # CLI invokes this only after run_remote_rollout's complete cleanup.
         collector.metrics = metrics
 
+    def reference_event(engine, kind, **values):
+        result = original_reference_event(engine, kind, **values)
+        if collector.active:
+            collector.safely(collector.event, kind, **values)
+        return result
+
     with ExitStack() as stack:
         for target, name, replacement in (
             (BaseStrategy, "run", run), (BiYamFollower, "connect", connect),
@@ -306,6 +320,7 @@ def install_hooks(collector):
             (YamkitRemotePolicy, "predict_action_chunk", predict),
             (UnguidedRemoteInferenceEngine, "_record_merge", merge),
             (InvalidatableActionQueue, "get", get), (cli, "_print_inference_result", result),
+            (ReferenceRemoteInferenceEngine, "trace_event", reference_event),
         ):
             stack.enter_context(patch.object(target, name, replacement))
         yield
@@ -446,6 +461,7 @@ def export(collector, outdir):
                "video_quality": "Near-lossless H.264 CRF 12, yuv420p; exact original RGB PNGs retained",
                "capture_scope": "Policy phase only; startup and return-home movement are not recorded",
                "full_metrics_available": collector.metrics is not None, "video_export_errors": {},
+               "controller_mode": (collector.metrics or {}).get("controller_mode", collector.controller_mode),
                "report_available": False, "render_error_type": None}
     write_json(outdir / "trace.json", {"events": collector.events, "chunks": collector.chunks})
     write_json(outdir / "frame_timestamps.json", [at for at, _ in collector.frames])
@@ -500,6 +516,8 @@ def rollout_arguments(args):
             "--execution-mode", "cuda_graph10", "--task", TASK, "--arms", "left_follower",
             "--arms", "right_follower", "--duration", str(args.duration),
             "--accept-mapping", "--confirm-supervised"]
+    if getattr(args, "controller_mode", "async") != "async":
+        result.extend(["--controller-mode", args.controller_mode])
     if args.backend == "external":
         result.extend(["--external-service", args.external_service])
     else:
@@ -537,8 +555,8 @@ def execute(args):
         if not args.rig.is_relative_to(ROOT.resolve()) or not args.rig.is_file():
             raise ValueError("Selected rig must be an existing file inside this repository")
     outdir.mkdir(parents=True, exist_ok=False)
-    collector = Collector(args.duration)
-    write_json(outdir / "plan.json", {**plan(args.duration), "argv": rollout_arguments(args)})
+    collector = Collector(args.duration, controller_mode=args.controller_mode)
+    write_json(outdir / "plan.json", {**plan(args.duration, args.controller_mode), "argv": rollout_arguments(args)})
     status, error_type = 0, None
     try:
         with install_hooks(collector), wall_limit(MAX_ROLLOUT_WALL_S):
@@ -566,6 +584,7 @@ def execute(args):
         except (OSError, ValueError):
             summary = {}
         summary.update(status="EXPORT_FAILED", error_type=type(exc).__name__,
+                       controller_mode=args.controller_mode,
                        resources_released=collector.released(), rollout_error=collector.rollout_error)
         write_json(outdir / "summary.json", summary)
         write_json(outdir / "export-error.json", summary)
@@ -580,7 +599,7 @@ def execute(args):
 def main(argv=None):
     args = parse_args(argv)
     if not args.run:
-        print(json.dumps(plan(args.duration)), flush=True)
+        print(json.dumps(plan(args.duration, args.controller_mode)), flush=True)
         return 0
     return execute(args)
 

@@ -12,7 +12,7 @@ distance near physical joint limits. With a constant interior target of 0.2 rad 
 30 Hz, it overshot by 0.08 rad and repeatedly reversed before settling. This reproduced with
 no model or hardware involved.
 
-The shaper now slows its desired velocity as it approaches the requested pose. It uses the
+The asynchronous controller's shaper now slows its desired velocity as it approaches the requested pose. It uses the
 existing conservative stopping envelope, `v*h + v²/(2*a) <= distance`, then projects that
 soft desired velocity through the unchanged hard speed, acceleration, step, and joint-boundary
 constraints. Here `a=1 rad/s²` accounts for the existing 50 ms acceleration budget and maximum
@@ -61,6 +61,63 @@ replays; fixed-grid resampling also produces expiry faults. Those changes were r
 Joint/gripper coordination, retained late chunk rows, measured versus cached state, and the
 reference 640×360 versus current 640×480 camera geometry remain execution differences to
 investigate. The small target-braking correction deliberately isolates one demonstrated defect.
+
+## Reference controller mode
+
+`--controller-mode reference` selects serial execution for the fixed MolmoAct2 checkpoint over
+HTTP with `cuda_graph10`, raw RGB and no crop. `--controller-mode async` retains the experimental
+asynchronous append queue and independent joint shaping; it remains the default. Qualification
+is bound to the selected mode, with a separate `-reference.json` record. Async evidence cannot
+qualify reference execution. These are implementation contracts, not a claim of a passing
+reference qualification or successful physical placement.
+
+The pinned YAM runner's spatial oracle takes a 14D start and target, computes
+`n = min(int(max(abs(target - start)) / 0.01), 100)`, and sends the target directly when
+`n <= 1`; otherwise it sends `np.linspace(start, target, n)`, including both endpoints.
+The maximum includes both normalized grippers. Its nominal 30 Hz loop does not impose a strict
+minimum send interval after a blocking RPC. Its unused `action_horizon=25` accessor does not
+truncate the returned response: this checkpoint returns 30 rows.
+
+Yamkit's reference planner preserves every original row endpoint and the same straight 14D path.
+All joints and grippers share one scalar `s(u) = 3u² - 2u³`; extra intervals and endpoint holds
+keep the unchanged 0.6 rad/s joint speed, 2 rad/s² command acceleration, per-joint step limits
+and gripper step limits. Actual dispatch intervals and postclamp results are checked as well.
+**This is deliberately slower timing, not literal upstream interpolation timing.** Commands
+never catch up in a burst after inference. A command-space bound does not measure motor dynamics.
+
+The controller consumes all 30 rows, including their interpolation endpoints, before taking the
+next policy observation and starting another RPC. Inference and policy dispatch do not overlap;
+there is no prefix dropping, queue replacement or overlap blending. After initialization, the
+model receives the last committed 14D command as state, matching the linked runner's cached-state
+convention. Measured encoders remain in monitoring and hardware guards; saved observation events
+therefore do not represent that cached model state after the first chunk. New traces save the
+actual 14D robot-unit input after client preprocessing in `trace.json.chunks[].policy_state`;
+historical recordings lack that field. Model input images are unchanged.
+
+Freshness applies at RPC admission: the response must arrive within the configured observation
+budget, at most two seconds. The request also has a finite timeout and phase/session bounds.
+An admitted plan gets one fixed deadline:
+`min(phase_deadline, returned_at + interpolation_points / 30 * 1.1 + 0.1)`.
+It is not the async row deadline `observation_time + (row + 1) / 30`. Active interpolation retains
+the 100 ms stall/dispatch guard and cannot extend its plan lease. At a completed chunk, another
+RPC is skipped if its whole request/freshness budget cannot fit before the phase ends; monitoring
+continues until normal home and release. Stop, faults and expiry still release promptly, and the
+400 ms motor firmware timeout remains enabled.
+
+Reference qualification uses the same real model with generated images and fake arms: 50 warm
+direct samples and 50 warm, fully consumed integrated chunks, with the first sample excluded.
+The integrated diagnostic allows at most 1,800 seconds at real 30 Hz; incomplete evidence fails.
+Its latency margin uses the synchronous admission budget, while async uses the remaining queue
+horizon. The diagnostic limit does not extend physical rollout or capture limits.
+
+In saved artifacts, `metrics.json.reference_execution.dispatch_samples` provides `dispatch_index`,
+`chunk_index`, `row_index`, `point_index`, scalar `progress` and `endpoint`. Chunk and row indices
+refer directly to `trace.json.chunks`, joining a committed point to its original model row. In reference mode,
+`command_shaping.samples[].requested` is that interpolated point, **not** the raw model row;
+`shaped` and returned `sent` must preserve it. Bounded sample loss is counted explicitly. Use
+`completed_steps`, `completed_chunks` and `partial_chunk_at_stop` to distinguish a full chunk
+from one interrupted by duration or Stop. Video and measured positions establish physical
+outcomes separately.
 
 ## First supervised validation after target braking
 

@@ -34,6 +34,7 @@ from yamkit.camera_ownership import claim_from_env
 p=argparse.ArgumentParser()
 p.add_argument('--run',action='store_true');p.add_argument('--duration',type=int)
 p.add_argument('--modal-app');p.add_argument('--rig');p.add_argument('--output-dir')
+p.add_argument('--backend',choices=['modal','external'],default='modal')
 p.add_argument('--confirm-supervised',action='store_true')
 a=p.parse_args()
 lease=claim_from_env(['top','left_wrist','right_wrist'])
@@ -170,9 +171,9 @@ def test_invalid_destinations_are_rejected_before_child(attached_modal, repo_id)
 
 def test_upload_requires_supported_complete_capture(attached_modal):
     attached_modal.expected_override["task"] = server.TRACE_TASK
-    result = launch(attached_modal.ui, upload_repo_id="owner/private-rollouts", duration=30)
+    result = launch(attached_modal.ui, upload_repo_id="owner/private-rollouts", duration=31)
     assert result.status_code == 422
-    assert "5 or 10" in result.text
+    assert "5, 10, 20 or 30" in result.text
     assert attached_modal.ui.manager._proc is None
 
 

@@ -473,6 +473,7 @@ class _StoppableRobot(ThreadSafeRobot):
         self.on_dispatch = None
         self.session_check = None
         self.command_shaper = command_shaper
+        self.on_commit = None
 
     def invalidate_shaping(self):
         if self.command_shaper is not None:
@@ -512,7 +513,8 @@ class _StoppableRobot(ThreadSafeRobot):
                     # Check both original arms before shaping can hide an invalid
                     # policy target. These checks never acquire another observation.
                     self.inner.validate_action_target(action)
-                    if self.command_shaper.generation == 0:
+                    if self.command_shaper.generation == 0 and not getattr(
+                            self.command_shaper, "anchor_initialized", False):
                         # Homing may still settle during first-chunk admission.
                         # Read current motor positions once, without camera I/O;
                         # later commands retain the committed trajectory state.
@@ -527,6 +529,8 @@ class _StoppableRobot(ThreadSafeRobot):
                     self.on_action()  # A successful hardware send counts even if its feedback faults below.
                 if step is not None:
                     self.command_shaper.commit(step, result, deadline_monotonic_s=deadline)
+                if self.on_commit is not None:
+                    self.on_commit()
                 return result
             except BaseException:
                 self.invalidate_shaping()
@@ -645,18 +649,35 @@ def run_remote_rollout(cfg, *, shutdown_event: Event | None = None):
 
         with validated_runner_context():
             ctx = build_rollout_context(cfg, shutdown_event)
-        from yamkit.inference.command_shaping import JointCommandShaper
-
         robot = ctx.hardware.robot_wrapper.inner
         robot.validate_action_target(ctx.hardware.initial_position)
-        shaper = JointCommandShaper(ctx.hardware.initial_position, robot.joint_command_limits())
+        reference = getattr(cfg.policy, "controller_mode", "async") == "reference"
+        if reference:
+            from yamkit.arm import MAX_COMMAND_DT
+            from yamkit.inference.reference import ReferenceCommandGuard
+            from yamkit.reference_rollout import ReferenceRemoteInferenceEngine
+
+            gripper_steps = {f"{side}_gripper.pos": handle.max_gripper_speed * MAX_COMMAND_DT
+                             for side, handle in robot._sides.items()}
+            shaper = ReferenceCommandGuard(ctx.hardware.initial_position, robot.joint_command_limits(),
+                                           gripper_max_step=gripper_steps)
+        else:
+            from yamkit.inference.command_shaping import JointCommandShaper
+
+            shaper = JointCommandShaper(ctx.hardware.initial_position, robot.joint_command_limits())
         ctx.hardware.robot_wrapper = _StoppableRobot(robot, shutdown_event, command_shaper=shaper)
-        engine = UnguidedRemoteInferenceEngine(
-            policy=ctx.policy.policy, preprocessor=ctx.policy.preprocessor, postprocessor=ctx.policy.postprocessor,
-            robot_wrapper=ctx.hardware.robot_wrapper, hw_features=ctx.data.hw_features,
-            task=cfg.task, fps=cfg.fps, shutdown_event=shutdown_event)
+        engine_options = {"policy": ctx.policy.policy, "preprocessor": ctx.policy.preprocessor,
+                          "postprocessor": ctx.policy.postprocessor, "robot_wrapper": ctx.hardware.robot_wrapper,
+                          "task": cfg.task, "fps": cfg.fps, "shutdown_event": shutdown_event}
+        if reference:
+            engine = ReferenceRemoteInferenceEngine(**engine_options, duration=cfg.duration,
+                                                    gripper_max_step=gripper_steps)
+            ctx.hardware.robot_wrapper.action_deadline = lambda: engine.action_deadline
+            ctx.hardware.robot_wrapper.on_commit = engine.record_commit
+        else:
+            engine = UnguidedRemoteInferenceEngine(**engine_options, hw_features=ctx.data.hw_features)
+            ctx.hardware.robot_wrapper.action_deadline = lambda: engine.action_queue.last_action_deadline
         ctx.hardware.robot_wrapper.on_action = engine.record_execution
-        ctx.hardware.robot_wrapper.action_deadline = lambda: engine.action_queue.last_action_deadline
         ctx.hardware.robot_wrapper.on_fault = engine._fault
         ctx.hardware.robot_wrapper.on_dispatch = engine.record_dispatch
         ctx.hardware.robot_wrapper.session_check = getattr(
@@ -712,7 +733,8 @@ def run_remote_rollout(cfg, *, shutdown_event: Event | None = None):
 
 
 def _rollout_metrics(ctx, engine):
-    queue = engine._action_queue
+    queue = getattr(engine, "_action_queue", None)
+    reference = getattr(ctx.policy.policy.config, "controller_mode", "async") == "reference"
     policy_stop_to_release = (engine.robot_released_at - engine.stop_detected_at
                              if engine.robot_released_at is not None and engine.stop_detected_at is not None else None)
     release_stop_at = engine.home_stop_detected_at if engine.home_aborted else (
@@ -720,8 +742,11 @@ def _rollout_metrics(ctx, engine):
     immediate_release = (engine.robot_released_at - release_stop_at
                          if engine.robot_released_at is not None and release_stop_at is not None else None)
     failed = engine.failed or (engine.home_aborted and engine.home_abort_reason != "operator_stop")
-    return {"inference": "unguided_async", "failed": failed, "underruns": engine.underruns,
-            "startup_queue": {"minimum_horizon_s": engine.startup_min_horizon_s,
+    return {"inference": "molmoact2_reference" if reference else "unguided_async",
+            "controller_mode": "reference" if reference else "async",
+            **({"reference_execution": engine.metrics()} if reference else {}),
+            "failed": failed, "underruns": getattr(engine, "underruns", 0),
+            "startup_queue": {"minimum_horizon_s": getattr(engine, "startup_min_horizon_s", None),
                               "accepted_horizon_s": queue.startup_accepted_horizon_s if queue is not None else None,
                               "discarded_chunks": queue.startup_discarded_chunks if queue is not None else 0,
                               "discarded_actions": queue.startup_discarded_actions if queue is not None else 0,
@@ -753,7 +778,7 @@ def _rollout_metrics(ctx, engine):
             "prediction_samples": [dict(event) for event in engine.predictions],
             "readiness_s": ctx.policy.policy.readiness_s,
             "readiness_model_warmup_s": ctx.policy.policy.warmup_s,
-            "prefetch_threshold_steps": engine._rtc_queue_threshold,
+            "prefetch_threshold_steps": getattr(engine, "_rtc_queue_threshold", None),
             "expired_prefix_dropped": queue.expired_prefix_dropped if queue is not None else 0,
             "overlap_prefix_dropped": queue.overlap_prefix_dropped if queue is not None else 0,
             "expired_chunks": queue.expired_chunks if queue is not None else 0,

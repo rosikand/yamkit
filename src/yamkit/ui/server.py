@@ -52,7 +52,7 @@ def _rollout_metadata(options, rig: RigConfig) -> dict:
     camera_fields = {"type", "width", "height", "fps", "color_mode", "rotation"}
     option_fields = {"policy", "task", "backend", "device", "gpu", "external_service", "call_mode", "execution_mode",
                      "image_encoding", "jpeg_quality", "prediction_queue_threshold", "center_crop",
-                     "async_chunks", "duration", "fps", "rtc", "arms"}
+                     "async_chunks", "controller_mode", "duration", "fps", "rtc", "arms"}
     try:
         model = dataclasses.asdict(get_profile(options.policy))
     except ValueError:
@@ -145,6 +145,7 @@ class InferenceBody(BaseModel):
     upload_repo_id: str | None = None
     center_crop: bool = False
     async_chunks: bool = True
+    controller_mode: str = "async"
     duration: float = 60.0
     fps: float = 30.0
     rtc: bool = False
@@ -612,7 +613,8 @@ def create_app(
                 body.backend not in ("modal", "external") or body.policy not in ("molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot")
                 or body.task != TRACE_TASK or body.duration not in (5, 10, 20, 30)
                 or body.call_mode != "http" or body.execution_mode != "cuda_graph10"
-                or body.image_encoding != "rgb8" or body.center_crop or body.rtc or not body.async_chunks
+                or body.image_encoding != "rgb8" or body.center_crop or body.rtc
+                or (body.controller_mode == "async" and not body.async_chunks)
                 or body.prediction_queue_threshold not in (None, 30)
                 or body.arms not in (None, ["left_follower", "right_follower"])):
             raise ValueError("Debug capture requires the task 'put the red cube into the black container', 5, 10, 20 or 30 seconds, both named followers, and the unchanged raw-RGB HTTP graph settings")
@@ -719,6 +721,8 @@ def create_app(
                           "--rig", str(rig_path), "--output-dir", str(trace_dir), "--confirm-supervised"]
             trace_args += (["--external-service", body.external_service] if body.backend == "external"
                            else ["--modal-app", body.modal_app])
+            if options.controller_mode != "async":
+                trace_args += ["--controller-mode", options.controller_mode]
             return inference_start("rollout", args, options, argv_override=trace_args,
                                    extra_meta={"capture_trace": True, "debug_trace_dir": str(trace_dir),
                                                "upload_repo_id": body.upload_repo_id})
@@ -727,7 +731,7 @@ def create_app(
     @app.post("/api/session/policy-check")
     def session_policy_check(body: PolicyCheckBody) -> dict[str, Any]:
         options = inference_options(body)
-        args = ["policy-check", "--rig", str(rig_path), *options.cli_args()]
+        args = ["policy-check", "--rig", str(rig_path), *options.cli_args(include_controller=False)]
         for arm in body.arms or []:
             args += ["--arms", arm]
         return inference_start("policy-check", args, options)
@@ -751,7 +755,7 @@ def create_app(
         options = inference_options(body)
         if body.live == bool(body.saved):
             raise HTTPException(422, "choose a saved snapshot or live active read")
-        args = ["policy-probe", "--rig", str(rig_path), *options.cli_args()]
+        args = ["policy-probe", "--rig", str(rig_path), *options.cli_args(include_controller=False)]
         if body.live:
             if not body.confirm_active_read:
                 raise HTTPException(422, "explicit GRAVITY-COMPENSATION ACTIVE READ confirmation is required")

@@ -21,6 +21,7 @@ class InferenceOptions:
     gpu: str = "L40S"
     rtc: bool = False
     async_chunks: bool = True
+    controller_mode: str = "async"
     center_crop: bool = False
     modal_app: str | None = None
     external_service: str | None = None
@@ -43,6 +44,8 @@ class InferenceOptions:
             raise ValueError("task must contain 1–2048 characters")
         if self.backend not in ("local", "modal", "external"):
             raise ValueError("backend must be local, modal or external")
+        if self.controller_mode not in ("async", "reference"):
+            raise ValueError("controller mode must be async or reference")
         if not re.fullmatch(r"(?:cpu|mps|cuda(?::[0-9]+)?)", self.device):
             raise ValueError("device must be cpu, mps, cuda or cuda:N")
         if not math.isfinite(self.duration) or self.duration < 0:
@@ -82,9 +85,14 @@ class InferenceOptions:
             if self.backend == "modal" and self.gpu not in ("L40S", "H100!"):
                 raise ValueError("Use one L40S or an exact H100! per model pool")
             if self.rtc:
-                raise ValueError("remote RTC guidance is unverified; use unguided async")
-            if not self.async_chunks:
-                raise ValueError("Remote rollout requires unguided async; synchronous RPC execution is disabled")
+                raise ValueError("remote RTC guidance is unverified; use an unguided controller")
+            if self.controller_mode == "reference":
+                if (profile.id != "molmoact2" or self.call_mode != "http"
+                        or self.execution_mode != "cuda_graph10" or self.image_encoding != "rgb8"
+                        or self.center_crop or self.fps != profile.fps):
+                    raise ValueError("Reference controller requires remote MolmoAct2 at 30 Hz over HTTP graph10 with raw RGB and no crop")
+            elif not self.async_chunks:
+                raise ValueError("Async controller requires unguided async chunks; select --controller-mode reference for full chunks")
             if motion:
                 if not profile.mapping_verified:
                     raise ValueError("physical YAM mapping is not validated: " + profile.mapping_note)
@@ -99,6 +107,8 @@ class InferenceOptions:
                                                supervised_confirmed=self.supervised_confirmed,
                                                mapping_accepted=self.mapping_accepted)
         else:
+            if self.controller_mode != "async":
+                raise ValueError("Reference controller is only available for reviewed remote MolmoAct2")
             if self.execution_mode != "eager":
                 raise ValueError("Production graph10 is only available through the reviewed remote HTTP path")
             if self.center_crop:
@@ -124,7 +134,7 @@ class InferenceOptions:
         """Bind asynchronous completion to the exact options, never just the model name."""
         return hashlib.sha256(json.dumps(asdict(self), sort_keys=True).encode()).hexdigest()[:20]
 
-    def cli_args(self) -> list[str]:
+    def cli_args(self, *, include_controller: bool = True) -> list[str]:
         args = ["--policy", self.policy, "--task", self.task, "--backend", self.backend,
                 "--device", self.device]
         if self.backend in ("modal", "external"):
@@ -136,6 +146,8 @@ class InferenceOptions:
                      "--call-mode", self.call_mode]
             if self.execution_mode != "eager":
                 args += ["--execution-mode", self.execution_mode]
+            if include_controller and self.controller_mode != "async":
+                args += ["--controller-mode", self.controller_mode]
             if self.prediction_queue_threshold is not None:
                 args += ["--prediction-queue-threshold", str(self.prediction_queue_threshold)]
             if self.supervised_confirmed:
