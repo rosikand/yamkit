@@ -61,3 +61,18 @@ replays; fixed-grid resampling also produces expiry faults. Those changes were r
 Joint/gripper coordination, retained late chunk rows, measured versus cached state, and the
 reference 640×360 versus current 640×480 camera geometry remain execution differences to
 investigate. The small target-braking correction deliberately isolates one demonstrated defect.
+
+## First supervised validation after target braking
+
+Run `20260909-014413-rollout-1559398b` on source `929180c` shows the left gripper grasping,
+lifting and retaining the cube from approximately 13.35 seconds through the 20-second end.
+The cube is still being transported at the cutoff; placement and release in the container
+were not demonstrated. Both followers subsequently homed and released normally. The
+[complete private recording](https://huggingface.co/datasets/rohanlux/yamkit-rollouts/tree/02f7f45b99d81504431e6e5feefedb8a4fad34f9/runs/20260909-014413-rollout-1559398b)
+contains all three videos and 599 original RGB frames per camera.
+
+The next supported capture duration is 30 seconds, retaining the same controller/model and
+the existing 120-second rollout and 90-second export wall limits. Its 903-slot frame pool needs
+2,496,614,400 bytes plus the existing 512 MiB headroom before hardware can connect. The report
+renderer accepts the collector's existing 8,192-event limit. A longer trial requires fresh
+supervised approval; it is an experiment, not a claim that additional time guarantees placement.

@@ -46,6 +46,10 @@ def test_default_plan_does_not_execute(monkeypatch, capsys):
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "PLAN_ONLY" and result["hardware_opened"] is False
     assert module.plan(10)["max_frame_bytes"] == 837734400
+    longer = module.plan(30)
+    assert longer["max_frame_triplets"] == 903 and longer["max_frame_bytes"] == 2496614400
+    assert longer["maximum_rollout_wall_s"] == 120 and longer["maximum_export_wall_s"] == 90
+    assert longer["max_events"] == 8192 and longer["max_chunks"] == 128
     assert result["video_fps"] == 30 and result["max_frame_triplets"] == 153
     assert "return home" in result["run_effects"] and "Stop" in result["run_effects"]
 
@@ -56,6 +60,7 @@ def test_default_plan_does_not_execute(monkeypatch, capsys):
     ["--run", "--confirm-supervised", "--modal-app", "bad/app"],
     ["--run", "--confirm-supervised", "--modal-app", "yamkit-vla-test", "--duration", "11"],
     ["--run", "--confirm-supervised", "--modal-app", "yamkit-vla-test", "--duration", "21"],
+    ["--run", "--confirm-supervised", "--modal-app", "yamkit-vla-test", "--duration", "31"],
     ["--plan", "--run"],
 ])
 def test_invalid_run_never_executes(args, monkeypatch):
@@ -341,7 +346,7 @@ def test_actual_encoder_preserves_irregular_pts_all_original_frames_and_duration
     assert [row["duration_ticks"] for row in timeline["frames"]] == [33000, 87000, 60000]
 
 
-@pytest.mark.parametrize("duration", [5, 10, 20])
+@pytest.mark.parametrize("duration", [5, 10, 20, 30])
 def test_full_30hz_video_keeps_every_frame_and_real_duration(tmp_path, duration):
     import av
 

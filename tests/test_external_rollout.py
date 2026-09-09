@@ -43,7 +43,7 @@ def test_external_service_is_bound_into_exact_selection_and_cli():
     assert "--modal-app" not in args and "--gpu" not in args
 
 
-@pytest.mark.parametrize("duration", [10, 20])
+@pytest.mark.parametrize("duration", [10, 20, 30])
 def test_external_trace_preserves_canonical_task_duration_and_supervision(duration):
     from tests.test_trace_rollout import module
 

@@ -750,10 +750,10 @@ pages.inference = {
         <div id="inf-attach-controls">
           <div class="hint">Conductor prepares and qualifies the cloud session. Enter its exact warmed task above. This page attaches over HTTP using ten-step inference and raw RGB.</div>
           <label class="check"><input type="checkbox" id="inf-mapping" /> I verified left/right arms, cameras and gripper calibration and accept this policy's YAM mapping.</label>
-          <label class="check"><input type="checkbox" id="inf-trace" /> Save 30 fps video and joint traces (put the red cube into the black container, 5, 10 or 20 seconds).</label>
+          <label class="check"><input type="checkbox" id="inf-trace" /> Save 30 fps video and joint traces (put the red cube into the black container, 5, 10, 20 or 30 seconds).</label>
           <label class="check"><input type="checkbox" id="inf-upload" /> Upload finalized rollout to a private Hugging Face dataset.</label>
           <label class="field">rollout dataset<input type="text" id="inf-upload-repo" placeholder="your-namespace/yamkit-rollouts" /></label>
-          <div class="hint">Upload saves all debug data after the arms are released and video export finishes. Local originals are kept. Requires 5, 10 or 20 second capture.</div>
+          <div class="hint">Upload saves all debug data after the arms are released and video export finishes. Local originals are kept. Requires 5, 10, 20 or 30 second capture.</div>
           <div class="hint">MolmoAct2 action rate: 30 Hz. Debug video preserves the timing of those camera observations, including gaps.</div>
           <div class="toolbar"><button id="btn-inf-preflight">Check retained session (no hardware)</button></div>
           <div id="inf-qualification-status" class="hint"></div>

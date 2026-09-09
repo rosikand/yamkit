@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SIDES = ('left', 'right')
 JOINTS = tuple(f'joint_{i}.pos' for i in range(1, 7)) + ('gripper.pos',)
 MAX_JSON_BYTES = 16 * 1024 * 1024
+MAX_EVENTS = 8192  # Match the existing collector cap, including 30-second captures.
 
 
 def repo_path(path, *, directory=False):
@@ -68,7 +69,7 @@ def series(summary, trace):
     if type(start) not in (int, float) or not math.isfinite(start):
         raise ValueError('A recorded policy phase start is required')
     events = trace.get('events')
-    if not isinstance(events, list) or len(events) > 4096:
+    if not isinstance(events, list) or len(events) > MAX_EVENTS:
         raise ValueError('Trace event count exceeds its bound')
     expected = [f'{side}_{joint}' for side in SIDES for joint in JOINTS]
     if summary.get('action_names') != expected:

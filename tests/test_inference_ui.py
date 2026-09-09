@@ -319,7 +319,7 @@ def test_attached_rollout_denies_child_when_preview_retains_camera(attached_moda
 
 @pytest.mark.parametrize("route", ["/api/inference/preflight", "/api/session/rollout"])
 @pytest.mark.parametrize("changes", [
-    {"task": "a different qualified task"}, {"duration": 6}, {"center_crop": True},
+    {"task": "a different qualified task"}, {"duration": 6}, {"duration": 31}, {"center_crop": True},
     {"prediction_queue_threshold": 15}, {"arms": ["right_follower", "left_follower"]},
     {"arms": []}, {"call_mode": "remote", "execution_mode": "eager"},
 ])

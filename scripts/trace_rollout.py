@@ -31,11 +31,11 @@ CAMERAS = ("top", "left_wrist", "right_wrist")
 ACTION_NAMES = tuple(f"{side}_{joint}.pos" for side in ("left", "right")
                      for joint in (*[f"joint_{i}" for i in range(1, 7)], "gripper"))
 VIDEO_FPS = 30
-MAX_DURATION_S = 20
+MAX_DURATION_S = 30
 VIDEO_TIME_BASE = Fraction(1, 1_000_000)
 FRAME_TRIPLET_BYTES = 3 * 480 * 640 * 3
 MEMORY_HEADROOM_BYTES = 512 * 1024 * 1024
-MAX_EVENTS = 8192  # Covers 20 seconds of observation, shaping and both arm-send events.
+MAX_EVENTS = 8192  # Covers 30 seconds of observation, shaping and both arm-send events.
 MAX_CHUNKS = 128
 MAX_ROLLOUT_WALL_S = 120
 MAX_EXPORT_WALL_S = 90
@@ -62,7 +62,7 @@ def parse_args(argv=None):
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--plan", action="store_true")
     mode.add_argument("--run", action="store_true")
-    parser.add_argument("--duration", type=int, choices=(5, 10, MAX_DURATION_S), default=5)
+    parser.add_argument("--duration", type=int, choices=(5, 10, 20, MAX_DURATION_S), default=5)
     parser.add_argument("--modal-app")
     parser.add_argument("--backend", choices=("modal", "external"), default="modal")
     parser.add_argument("--external-service")

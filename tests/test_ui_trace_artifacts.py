@@ -15,7 +15,7 @@ inference_ui = _inference_ui
 
 
 @pytest.mark.parametrize("failure", [None, "symlink", "copy"])
-@pytest.mark.parametrize("duration", [5, 20])
+@pytest.mark.parametrize("duration", [5, 20, 30])
 def test_managed_trace_exports_only_whitelisted_regular_files_after_exit(attached_modal, failure, duration, monkeypatch):
     state = attached_modal
     ui = state.ui
@@ -36,7 +36,7 @@ p.add_argument('--modal-app');p.add_argument('--rig');p.add_argument('--output-d
 p.add_argument('--backend',choices=['modal','external'],default='modal')
 p.add_argument('--confirm-supervised',action='store_true')
 a=p.parse_args()
-assert a.run and a.confirm_supervised and a.duration in (5,20) and a.backend=='modal'
+assert a.run and a.confirm_supervised and a.duration in (5,20,30) and a.backend=='modal'
 assert pathlib.Path(a.rig).is_file()
 lease=claim_from_env(['top','left_wrist','right_wrist'])
 print('FAKE_TRACE_CAMERA_ACQUIRED',flush=True)
