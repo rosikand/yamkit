@@ -17,7 +17,7 @@ from yamkit.inference.command_shaping import ACTION_NAMES, FIRST_DT, JOINT_NAMES
 from yamkit.validation import finite_scalar
 
 GRIPPER_NAMES = tuple(name for name in ACTION_NAMES if name not in JOINT_NAMES)
-MAX_REFERENCE_SAMPLES = 2048
+MAX_REFERENCE_SAMPLES = 4096  # Retain every bounded 90-second capture point, with margin.
 
 
 class ReferenceInterpolationFault(ValueError):

@@ -178,16 +178,31 @@ the current opening. No post-home encoder measurement is recorded. The
 [recording and full trace](https://huggingface.co/datasets/rohanlux/yamkit-rollouts/tree/ec0c54aa38cffc08faccd66a0b4222bdd65d91e8/runs/20260909-055224-rollout-f1863c43)
 retain this evidence.
 
+The 60-second open-start run `20260909-062530-rollout-9875b01f` on `9502c0b`
+completed 32 chunks / 960 rows / 1,231 literal points with no dropped or modified
+commands. All model states matched the previous committed command. Video shows
+retained lift at approximately 47.5–48.8 seconds and transport toward the container;
+the cube was still held near its rim at the last observation, 59.253 seconds. No
+release or placement was demonstrated. Normal return-home took 9.03 seconds.
+The [original archive](https://huggingface.co/datasets/rohanlux/yamkit-rollouts/tree/022611e94bc3b6558be0906172d2844eced6cf09/runs/20260909-062530-rollout-9875b01f)
+and [independent command/video review](https://huggingface.co/datasets/rohanlux/yamkit-rollouts/tree/f822422a9d5e68885dc646d371af88cda6e662d1/diagnostics/20260909-062530-rollout-9875b01f/reference-controller-review)
+preserve this evidence. The next longer capture allows more time after transport;
+it does not establish that the pretrained policy will release correctly.
+
 A saved-frame comparison (four scenes, three unseeded predictions per scene and
 framing option) found no consistent stronger closure from a centered 16:9 crop.
 The final uncropped scene produced tighter-grip predictions in all three samples;
 these are hypothetical next chunks, not executed actions or a success result.
 Current RGB framing, checkpoint and controller remain unchanged. Capture supports
-5/10/20/30/45/60 seconds for separately approved supervised trials. The 60-second
-pool reserves 1,803 RGB triplets (4,984,934,400 bytes) plus 512 MiB headroom before
-hardware connects. Its 16,384-event cap and 2,048-point reference diagnostics remain
-bounded. The physical wall limit stays 120 seconds; the 160-second export limit
-applies only after release. Additional time does not guarantee a grasp or placement.
+5/10/20/30/45/60/90 seconds for separately approved supervised trials. The 90-second
+pool reserves 2,703 RGB triplets (7,473,254,400 bytes) plus 512 MiB headroom before
+hardware connects. Its 32,768-event cap covers 8 events per 2,700 observation/command
+slots plus 128 chunk admissions and phase markers; reference diagnostics retain
+4,096 points. Async diagnostics keep their existing 1,000-point limit. These are
+recording limits, not changes to model inputs, sampling, interpolation or command timing.
+The 150-second physical wall limit bounds startup, the 90-second policy phase and
+return home; the 240-second export limit applies only after release. Additional
+time does not guarantee a grasp or placement.
 
 ## First supervised validation after target braking
 

@@ -23,7 +23,7 @@ def limits():
     return {name: {"lower": -2.0, "upper": 2.0, "max_step": .03} for name in JOINT_NAMES}
 
 
-def test_reference_retains_2048_commands_then_evicts_without_changing_literal_points(monkeypatch):
+def test_reference_retains_4096_commands_then_evicts_without_changing_literal_points(monkeypatch):
     clock = [10.0]
     monkeypatch.setattr(reference_rollout, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     initial = action(-.8, .2)
@@ -33,23 +33,26 @@ def test_reference_retains_2048_commands_then_evicts_without_changing_literal_po
     engine = reference_rollout.ReferenceRemoteInferenceEngine(
         policy=policy, preprocessor=None, postprocessor=None,
         robot_wrapper=SimpleNamespace(command_shaper=guard), task="put the red cube into the black container", fps=30,
-        shutdown_event=threading.Event(), duration=120, gripper_max_step=grips)
-    # Thirty already-admitted original rows exercise the real dequeue/commit path
-    # without importing a hardware adapter, observing cameras, or invoking a model.
-    targets = [action(.8 if i % 2 == 0 else -.8, .8 if i % 2 == 0 else .2) for i in range(30)]
+        shutdown_event=threading.Event(), duration=240, gripper_max_step=grips)
+    # Two already-admitted thirty-row chunks exercise retention and eviction
+    # under a synthetic clock only, without a hardware adapter or model call.
+    targets = [action(.8 if i % 2 == 0 else -.8, .8 if i % 2 == 0 else .2) for i in range(60)]
     original_targets = deepcopy(targets)
     plans, expected, previous = [], [], initial
     for target in targets:
         plans.append(plan_reference_row(previous, target, joint_limits=limits(), gripper_max_step=grips))
         expected.extend(reference_row(previous, target))
         previous = target
-    assert len(expected) == 3000
-    engine._plans = plans
-    engine.predictions.append({"chunk_index": 0})
-    engine.predicted_steps = engine.admitted_steps = len(targets)
-    engine.phase_deadline = engine._plan_deadline = clock[0] + 120
-    assert MAX_REFERENCE_SAMPLES == 2048
+    assert len(expected) == 6000
+    engine.phase_deadline = engine._plan_deadline = clock[0] + 240
+    assert MAX_REFERENCE_SAMPLES == 4096
     for index, original in enumerate(expected):
+        if index in (0, 3000):
+            chunk = index // 3000
+            engine._plans, engine._row, engine._point = plans[chunk * 30:(chunk + 1) * 30], 0, 0
+            engine.predictions.append({"chunk_index": chunk})
+            engine.predicted_steps += 30
+            engine.admitted_steps += 30
         clock[0] += 1 / 30
         returned = engine.get_action({})
         requested = dict(zip(ACTION_NAMES, returned.tolist(), strict=True))
@@ -59,7 +62,7 @@ def test_reference_retains_2048_commands_then_evicts_without_changing_literal_po
         engine.record_execution()
         engine.record_commit()
         assert guard.last_action == original
-        if index + 1 in (1001, 1803, 2048, 2049, 3000):
+        if index + 1 in (1001, 1803, 2048, 2703, 4096, 4097, 6000):
             count = index + 1
             retained = min(count, MAX_REFERENCE_SAMPLES)
             commands, dispatch = guard.metrics(), engine.metrics()
@@ -72,10 +75,10 @@ def test_reference_retains_2048_commands_then_evicts_without_changing_literal_po
                 original = expected[command["dispatch_index"]]
                 assert command["requested"] == command["shaped"] == command["sent"] == original
                 assert point["dispatch_index"] == command["dispatch_index"]
-                assert point["target"] == targets[point["row_index"]]
+                assert point["target"] == targets[point["chunk_index"] * 30 + point["row_index"]]
                 assert command["deadline_monotonic_s"] == point["deadline_monotonic_s"] == engine.phase_deadline
     assert targets == original_targets
-    assert engine.completed_steps == 30 and engine.completed_chunks == 1
+    assert engine.completed_steps == 60 and engine.completed_chunks == 2
     assert guard.valid and guard.postclamp_modified_count == engine.expired_before_dispatch == 0
 
 

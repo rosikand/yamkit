@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SIDES = ('left', 'right')
 JOINTS = tuple(f'joint_{i}.pos' for i in range(1, 7)) + ('gripper.pos',)
 MAX_JSON_BYTES = 16 * 1024 * 1024
-MAX_EVENTS = 16384  # Match the collector cap, including bounded 60-second captures.
+MAX_EVENTS = 32768  # Match the collector cap, including bounded 90-second captures.
 
 
 def repo_path(path, *, directory=False):

@@ -48,13 +48,15 @@ def test_default_plan_does_not_execute(monkeypatch, capsys):
     assert module.plan(10)["max_frame_bytes"] == 837734400
     longer = module.plan(30)
     assert longer["max_frame_triplets"] == 903 and longer["max_frame_bytes"] == 2496614400
-    assert longer["maximum_rollout_wall_s"] == 120 and longer["maximum_export_wall_s"] == 160
-    assert longer["max_events"] == 16384 and longer["max_chunks"] == 128
+    assert longer["maximum_rollout_wall_s"] == 150 and longer["maximum_export_wall_s"] == 240
+    assert longer["max_events"] == 32768 and longer["max_chunks"] == 128
     previous_max = module.plan(45)
     assert previous_max["max_frame_triplets"] == 1353 and previous_max["max_frame_bytes"] == 3740774400
-    longest = module.plan(60)
-    assert longest["max_frame_triplets"] == 1803 and longest["max_frame_bytes"] == 4984934400
-    assert longest["max_events"] > 8 * 1800 + longest["max_chunks"] + 2
+    previous_max = module.plan(60)
+    assert previous_max["max_frame_triplets"] == 1803 and previous_max["max_frame_bytes"] == 4984934400
+    longest = module.plan(90)
+    assert longest["max_frame_triplets"] == 2703 and longest["max_frame_bytes"] == 7473254400
+    assert longest["max_events"] > 8 * 2700 + longest["max_chunks"] + 2
     assert result["video_fps"] == 30 and result["max_frame_triplets"] == 153
     assert "return home" in result["run_effects"] and "Stop" in result["run_effects"]
 
@@ -68,6 +70,7 @@ def test_default_plan_does_not_execute(monkeypatch, capsys):
     ["--run", "--confirm-supervised", "--modal-app", "yamkit-vla-test", "--duration", "31"],
     ["--run", "--confirm-supervised", "--modal-app", "yamkit-vla-test", "--duration", "46"],
     ["--run", "--confirm-supervised", "--modal-app", "yamkit-vla-test", "--duration", "61"],
+    ["--run", "--confirm-supervised", "--modal-app", "yamkit-vla-test", "--duration", "91"],
     ["--plan", "--run"],
 ])
 def test_invalid_run_never_executes(args, monkeypatch):
@@ -76,7 +79,7 @@ def test_invalid_run_never_executes(args, monkeypatch):
         module.main(args)
 
 
-@pytest.mark.parametrize("duration", [5, 10, 20, 30, 45, 60])
+@pytest.mark.parametrize("duration", [5, 10, 20, 30, 45, 60, 90])
 def test_explicit_run_keeps_canonical_flags(monkeypatch, duration):
     seen = []
     monkeypatch.setattr(module, "execute", lambda args: seen.append(module.rollout_arguments(args)) or 0)
@@ -214,7 +217,7 @@ def test_reserved_pool_is_checked_and_prefaulted_before_capture(monkeypatch):
         assert copied.min() == 71
 
 
-@pytest.mark.parametrize("duration,capacity", [(45, 1353), (60, 1803)])
+@pytest.mark.parametrize("duration,capacity", [(45, 1353), (60, 1803), (90, 2703)])
 def test_long_capture_checks_complete_memory_budget_before_allocation(monkeypatch, duration, capacity):
     collector = module.Collector(duration)
     frame_bytes = capacity * module.FRAME_TRIPLET_BYTES
@@ -437,7 +440,7 @@ def test_actual_encoder_preserves_irregular_pts_all_original_frames_and_duration
     assert [row["duration_ticks"] for row in timeline["frames"]] == [33000, 87000, 60000]
 
 
-@pytest.mark.parametrize("duration", [5, 10, 20, 30, 45, 60])
+@pytest.mark.parametrize("duration", [5, 10, 20, 30, 45, 60, 90])
 def test_full_30hz_video_keeps_every_frame_and_real_duration(tmp_path, duration):
     import av
 
@@ -457,7 +460,7 @@ def test_full_30hz_video_keeps_every_frame_and_real_duration(tmp_path, duration)
 
 @pytest.mark.parametrize("timestamps,start,end,indices", [
     ([1, 1], 1, 2, None), ([1.1, 1], 1, 2, None), ([1, 1.0000001], 1, 2, None),
-    ([1], 1.1, 2, None), ([1, 2], 1, 2, None), ([1], 1, 122, None),
+    ([1], 1.1, 2, None), ([1, 2], 1, 2, None), ([1], 1, 152, None),
     ([float("nan")], 0, 2, None), ([1], 0, float("inf"), None), ([True], 0, 2, None),
     ([1, 1.5], 0, 2, [2, 1]), ([1], 0, 2, []), ([1], 0, 2, [True]),
 ])

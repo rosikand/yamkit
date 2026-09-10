@@ -31,18 +31,18 @@ CAMERAS = ("top", "left_wrist", "right_wrist")
 ACTION_NAMES = tuple(f"{side}_{joint}.pos" for side in ("left", "right")
                      for joint in (*[f"joint_{i}" for i in range(1, 7)], "gripper"))
 VIDEO_FPS = 30
-MAX_DURATION_S = 60
+MAX_DURATION_S = 90
 VIDEO_TIME_BASE = Fraction(1, 1_000_000)
 FRAME_TRIPLET_BYTES = 3 * 480 * 640 * 3
 MEMORY_HEADROOM_BYTES = 512 * 1024 * 1024
-# At 60 seconds: 8 events per 1,800 send/observation slots + 128 chunk
-# admissions + 2 phase markers = 14,530; retain a bounded margin above that.
-MAX_EVENTS = 16384
+# At 90 seconds: 8 events per 2,700 send/observation slots + 128 chunk
+# admissions + 2 phase markers = 21,730; retain a bounded margin above that.
+MAX_EVENTS = 32768
 MAX_CHUNKS = 128
-MAX_ROLLOUT_WALL_S = 120
-# A full 45-second synthetic export took 88 seconds; proportional 60-second
-# work is about 117 seconds. This margin applies only after hardware release.
-MAX_EXPORT_WALL_S = 160
+MAX_ROLLOUT_WALL_S = 150  # Startup + at most 90 policy seconds + bounded return home.
+# A full 45-second synthetic export took 88 seconds; proportional 90-second
+# work is about 176 seconds. This margin applies only after hardware release.
+MAX_EXPORT_WALL_S = 240
 
 
 def plan(duration=5, controller_mode="async"):
@@ -69,7 +69,7 @@ def parse_args(argv=None):
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--plan", action="store_true")
     mode.add_argument("--run", action="store_true")
-    parser.add_argument("--duration", type=int, choices=(5, 10, 20, 30, 45, MAX_DURATION_S), default=5)
+    parser.add_argument("--duration", type=int, choices=(5, 10, 20, 30, 45, 60, MAX_DURATION_S), default=5)
     parser.add_argument("--modal-app")
     parser.add_argument("--backend", choices=("modal", "external"), default="modal")
     parser.add_argument("--external-service")
