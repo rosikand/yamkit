@@ -57,11 +57,28 @@ matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
 // ---------------------------------------------------------------- global state + pollers ----
 let overview = null;
 let session = { active: false, mode: null, parsed: {}, log: [] };
+const pollControllers = new Set();
+let overviewFlight = null, sessionFlight = null, camerasFlight = null;
+let stopRequestsPending = 0;
+
+// Only background GETs use this bounded transport. Never abort or retry a motion POST.
+async function pollRead(path) {
+  const controller = new AbortController();
+  pollControllers.add(controller);
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try { return await api(path, {signal: controller.signal, cache: "no-store"}); }
+  finally { clearTimeout(timeout); pollControllers.delete(controller); }
+}
 
 async function refreshOverview() {
-  try { overview = await api("/overview"); } catch { overview = null; }
-  updateSidebar();
-  document.dispatchEvent(new CustomEvent("overview"));
+  if (document.visibilityState === "hidden" || stopRequestsPending) return;
+  if (overviewFlight) return overviewFlight;
+  overviewFlight = (async () => {
+    try { overview = await pollRead("/overview"); } catch { /* Keep the last known configuration. */ }
+    updateSidebar();
+    document.dispatchEvent(new CustomEvent("overview"));
+  })();
+  try { return await overviewFlight; } finally { overviewFlight = null; }
 }
 let lastSessionKey = "";
 let sessionRequest = 0;
@@ -69,30 +86,59 @@ let sessionApplied = 0;
 let sessionReceivedAt = null;
 let sessionDisconnected = false;
 let sessionFrozenDelta = null;
-async function refreshSession() {
-  const request = ++sessionRequest;
-  const requestedAt = performance.now();
-  try {
-    const next = await api("/session");
-    if (request < sessionApplied) return; // an older poll cannot restore a previous run/phase
-    sessionApplied = request;
-    session = next;
-    sessionReceivedAt = performance.now();
-    // A delayed reply may contain an old snapshot. Await a prompt poll before
-    // advancing its display clock; do not compare browser and host wall clocks.
-    sessionDisconnected = sessionReceivedAt - requestedAt >= 3000;
-    sessionFrozenDelta = sessionDisconnected ? 0 : null;
-  } catch {
-    if (request < sessionApplied) return;
-    // Stop the display clock on a failed poll, without inventing a robot phase change.
-    if (!sessionDisconnected) sessionFrozenDelta = sessionReceivedAt == null ? 0 : Math.min(3, Math.max(0, (performance.now() - sessionReceivedAt) / 1000));
-    sessionDisconnected = true;
-  }
+let sessionReadFailed = false;
+function sessionUpdated() {
   updateSidebar();
   document.dispatchEvent(new CustomEvent("session"));
-  // a session starting, ending or handing the cameras back changes what the tiles should show: refresh now
   const key = `${session.active}|${session.mode}|${session.parsed?.phase || ""}|${session.preview_generation || 0}`;
   if (key !== lastSessionKey) { lastSessionKey = key; refreshOverview(); }
+}
+
+function applySessionReceipt(next, requestedAt, {allowSameOperation = false} = {}) {
+  // Start already returns authoritative state. Do not show a previous run's
+  // released-arms status while the follow-up GET waits for a browser connection.
+  if (typeof next?.active !== "boolean" || !next.meta?.operation_id) return;
+  if (session.meta?.operation_id === next.meta.operation_id) {
+    if (!allowSameOperation) return; // A GET already saw this operation.
+    if (!session.active && next.active) return;
+    const knownAt = session.rollout_progress?.server_time, nextAt = next.rollout_progress?.server_time;
+    if (Number.isFinite(knownAt) && Number.isFinite(nextAt) && knownAt > nextAt) return;
+  }
+  if (Number.isFinite(session.started_at) && Number.isFinite(next.started_at) && session.started_at > next.started_at) return;
+  sessionApplied = ++sessionRequest; // Fence GETs that began before this acknowledged operation.
+  session = next;
+  sessionReceivedAt = performance.now();
+  sessionDisconnected = sessionReceivedAt - requestedAt >= 3000;
+  sessionFrozenDelta = sessionDisconnected ? 0 : null;
+  sessionReadFailed = false;
+  sessionUpdated();
+}
+
+async function refreshSession() {
+  if (document.visibilityState === "hidden" || stopRequestsPending) return;
+  if (sessionFlight) return sessionFlight;
+  const request = ++sessionRequest;
+  const requestedAt = performance.now();
+  sessionFlight = (async () => {
+    try {
+      const next = await pollRead("/session");
+      if (request < sessionApplied) return; // An old GET cannot undo a newer launch receipt.
+      sessionApplied = request;
+      session = next;
+      sessionReceivedAt = performance.now();
+      // Slow replies freeze timing, but do not establish that the connection was lost.
+      sessionDisconnected = sessionReceivedAt - requestedAt >= 3000;
+      sessionFrozenDelta = sessionDisconnected ? 0 : null;
+      sessionReadFailed = false;
+    } catch (error) {
+      if (request < sessionApplied || document.visibilityState === "hidden") return;
+      if (!sessionDisconnected) sessionFrozenDelta = sessionReceivedAt == null ? 0 : Math.min(3, Math.max(0, (performance.now() - sessionReceivedAt) / 1000));
+      sessionDisconnected = true;
+      sessionReadFailed = error.name !== "AbortError";
+    }
+    sessionUpdated();
+  })();
+  try { return await sessionFlight; } finally { sessionFlight = null; }
 }
 function updateSidebar() {
   const dot = $("#side-dot");
@@ -132,16 +178,20 @@ const cameraKey = () => (overview?.cameras || []).map((c) =>
 
 // Poll status only; pixels remain one MJPEG connection per visible tile.
 async function refreshCameras() {
-  if (!$("#cams-slot")) return;
-  try {
-    const cameras = await api("/cameras");
-    if (overview) overview.cameras = cameras;
-    syncCams();
-  } catch {
-    document.querySelectorAll(".cam .preview-state").forEach((el) => {
-      el.textContent = "preview unavailable";
-    });
-  }
+  if (!$("#cams-slot") || document.visibilityState === "hidden" || stopRequestsPending) return;
+  if (camerasFlight) return camerasFlight;
+  camerasFlight = (async () => {
+    try {
+      const cameras = await pollRead("/cameras");
+      if (overview) overview.cameras = cameras;
+      syncCams();
+    } catch {
+      if (document.visibilityState !== "hidden") document.querySelectorAll(".cam .preview-state").forEach((el) => {
+        el.textContent = "preview unavailable";
+      });
+    }
+  })();
+  try { return await camerasFlight; } finally { camerasFlight = null; }
 }
 function cameraStreamError(img) {
   img.dataset.retryAt = String(Date.now() + 2000);
@@ -162,12 +212,22 @@ function releaseCameraStreams(root = document) {
   // and prevent a queued Stop request from reaching the server.
   root.querySelectorAll(".cam img").forEach((img) => {
     img.onerror = null;
+    delete img.dataset.pausedSrc;
+    img.removeAttribute("src");
+  });
+}
+function pauseCameraStreams(root = document) {
+  root.querySelectorAll(".cam img").forEach((img) => {
+    const src = img.getAttribute("src");
+    if (src) img.dataset.pausedSrc = src;
+    img.onerror = null;
     img.removeAttribute("src");
   });
 }
 function syncCams() {
   const slot = $("#cams-slot");
   if (!slot) return;
+  if (document.visibilityState === "hidden" || stopRequestsPending) { pauseCameraStreams(slot); return; }
   if (cameraKey() !== camsRendered) {
     releaseCameraStreams(slot);
     slot.innerHTML = camsHTML();
@@ -179,6 +239,14 @@ function syncCams() {
     const label = $(".preview-state", tile);
     if (label) label.textContent = cameraStateText(c);
     if (!img) return;
+    if (img.dataset.pausedSrc) {
+      const src = img.dataset.pausedSrc;
+      delete img.dataset.pausedSrc;
+      delete img.dataset.retryAt;
+      img.dataset.connectedAt = String(Date.now());
+      img.onerror = () => cameraStreamError(img);
+      img.src = src;
+    }
     // Native MJPEG images can report complete=true while still streaming. Use source status
     // and errors for quick retries; a slow renewal also recovers a silently ended response.
     const now = Date.now();
@@ -199,7 +267,7 @@ function camsHTML() {
       <span class="label">${esc(c.name)}</span>
       <span class="rollout-timer" hidden aria-label="Rollout policy time"></span>
       ${c.configured
-        ? `<img src="/api/cameras/${encodeURIComponent(c.name)}/stream" alt="${esc(c.name)}"
+        ? `<img ${document.visibilityState === "hidden" ? "data-paused-src" : "src"}="/api/cameras/${encodeURIComponent(c.name)}/stream" alt="${esc(c.name)}"
              data-connected-at="${Date.now()}" onerror="cameraStreamError(this)" />
            <span class="preview-state">waiting for frames</span>`
         : `<div class="placeholder">no camera configured in rig.yaml</div>`}
@@ -284,8 +352,10 @@ function renderRolloutProgress(root, model) {
     : "Stay at the arms. Stop and physical power cutoff must remain accessible.");
   const stale = $("[data-rollout-stale]", root);
   stale.hidden = !model.stale;
-  set("[data-rollout-stale]", model.released ? "Status connection lost — showing the last confirmed status; arms were released. Check Lenovo for saving or upload progress."
-    : "Status connection lost — timer paused; physical execution may continue. Check Lenovo. Closing the browser is not Stop.");
+  const delay = model.readFailed ? "Status request failed" : "Status updates delayed";
+  set("[data-rollout-stale]", model.finished ? `${delay} — showing the last confirmed ${model.phase === "done" ? "completed" : model.phase} status. Reconnecting automatically.`
+    : model.released ? `${delay} — last confirmed stage: arms released. Reconnecting automatically for saving or upload status.`
+    : `${delay} — timer paused; physical execution may continue. Reconnecting automatically. Keep Stop and the physical cutoff accessible.`);
   const bar = $("[data-rollout-bar]", root);
   bar.max = model.barMax;
   if (model.barValue == null) bar.removeAttribute("value"); else bar.value = model.barValue;
@@ -302,7 +372,8 @@ function renderRolloutProgress(root, model) {
 
 function currentRolloutProgress() {
   const age = sessionReceivedAt == null ? 0 : Math.max(0, (performance.now() - sessionReceivedAt) / 1000);
-  return rolloutProgressView(session, sessionFrozenDelta ?? Math.min(3, age), sessionDisconnected || age >= 3);
+  const model = rolloutProgressView(session, sessionFrozenDelta ?? Math.min(3, age), sessionDisconnected || age >= 3);
+  return model ? {...model, readFailed: sessionReadFailed} : null;
 }
 
 function updateRolloutClocks() {
@@ -379,9 +450,25 @@ function fillLog(id = "log") {
 
 async function doPost(path, body, btn) {
   if (btn) btn.disabled = true;
-  try { await post(path, body); }
+  const stopping = path === "/session/stop";
+  if (stopping) {
+    stopRequestsPending++;
+    pauseCameraStreams();
+    pollControllers.forEach((controller) => controller.abort());
+  }
+  try {
+    const requestedAt = performance.now();
+    const result = await post(path, body);
+    applySessionReceipt(result, requestedAt, {allowSameOperation: stopping});
+  }
   catch (e) { alert(e.message); }
-  finally { if (btn) btn.disabled = false; await refreshSession(); }
+  finally {
+    if (stopping) stopRequestsPending--;
+    if (btn) btn.disabled = false;
+    if (stopping) sessionUpdated(); // The acknowledged state owns Stop availability, even if the next GET stalls.
+    await refreshSession();
+    if (stopping) syncCams();
+  }
 }
 
 // --------------------------------------------------------------------------------- pages ----
@@ -1137,7 +1224,9 @@ pages.inference = {
     this.syncForm();
     try {
       // Software preparation is explicitly not mapping acceptance or permission to move.
+      const requestedAt = performance.now();
       const result = await post("/inference/prepare", {...selected, mapping_accepted: false, supervised_confirmed: false});
+      applySessionReceipt(result.session, requestedAt);
       this._startingPreparation = false;
       if (!this.preparationIntentCurrent(intent)) return;
       if (result.ready === true && result.reused === true) {
@@ -1331,9 +1420,11 @@ pages.inference = {
     this._launching = true;
     this.syncForm();
     try {
+      const requestedAt = performance.now();
       const result = await post(path, { ...selected, ...extra });
       if (this._form === form)
         this._submitted = { id: result.meta?.operation_id, selection: JSON.stringify(selected), saved };
+      applySessionReceipt(result, requestedAt);
       await refreshSession();
     } catch (e) { alert(e.message); }
     finally { this._launching = false; if (this._form === form) this.syncForm(); }
@@ -1763,6 +1854,23 @@ function route() {
   p.render($("#main"), args);
 }
 window.addEventListener("hashchange", route);
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    pauseCameraStreams();
+    pollControllers.forEach((controller) => controller.abort());
+    return;
+  }
+  // Finish any intentional GET cancellations before starting one fresh poll per
+  // resource. Only existing opted-in camera tiles resume; no new preview is enabled.
+  Promise.allSettled([sessionFlight, overviewFlight, camerasFlight]).then(() => {
+    if (document.visibilityState !== "visible") return;
+    refreshSession();
+    refreshOverview();
+    refreshCameras();
+    syncCams();
+  });
+});
 
 document.addEventListener("session", () => current?.update && current.update());
 document.addEventListener("overview", () => (current === pages.live || current === pages.record) && current.update && current.update());

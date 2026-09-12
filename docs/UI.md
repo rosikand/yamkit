@@ -7,6 +7,18 @@ yamkit ui                # http://127.0.0.1:8400
 yamkit ui --port 9000 --rig configs/rig.yaml
 ```
 
+Keep one UI server running for the rig. If `127.0.0.1:8400` is already in use,
+open that page instead of starting another copy. A second launch now checks the
+port before loading the application, so it cannot rewrite the running server's
+progress or upload records. It does not stop or replace the existing process.
+Do not work around an occupied port by starting another server for the same rig.
+
+Closing a browser tab does not stop the UI server or its run. To manage the server
+from your own terminal, start it there and use Ctrl-C **only after** the session,
+recording save and any HF upload are finished. Stopping the UI during saving or
+upload can interrupt that work; it is not a substitute for the local Stop button
+or physical power cutoff.
+
 Screenshots: [`docs/ui-screenshots/`](ui-screenshots/).
 Current command effects and blocked stages: [staged acceptance](acceptance-test.md).
 
@@ -55,7 +67,11 @@ tests/test_ui.py  hardware-free tests (parsers, sessions with stub children, API
 ```
 
 The frontend is a single-page app (`ui/app.js`) with hash routing; it polls `/api/session` (1 s)
-and `/api/overview` (5 s). Chart colors are the validated categorical pair per theme
+and `/api/overview` (5 s). Background status requests have a five-second timeout and at most
+one outstanding request per resource, so slow replies do not build a request backlog.
+Hidden tabs pause status polling and release their MJPEG browser connections; returning
+refreshes status and resumes only previews that were already shown. Inference camera
+previews remain opt-in. Chart colors are the validated categorical pair per theme
 (light: state `#2a78d6` / action `#eb6834`; dark: `#3987e5` / `#d95926`). The Inter variable
 font is vendored at `ui/InterVariable.woff2`, so the UI needs no network access.
 
@@ -157,8 +173,12 @@ physical run outcome; local originals are retained. Stop stays available during 
 execution, and its label changes to interrupt saving only after confirmed release.
 
 The clock survives a page refresh using server-reported timing. If status updates become
-unavailable, the UI marks the display stale and stops advancing its estimate; a lost browser
-connection does not stop the robot. Keep the physical cutoff accessible.
+delayed, the UI pauses its estimate and reconnects automatically. It distinguishes a delayed
+reply from a failed status request; neither implies that the robot stopped or that recording
+failed. A successful Start response immediately replaces the previous run's status, even
+when the next status poll is delayed. Reconnection retries read-only status requests, never
+motion commands. A lost browser connection does not stop the robot. Keep the physical cutoff
+accessible. Saving may continue independently, and finalized videos remain available afterward.
 
 Saved-video playback shows elapsed / total time both in the shared controls and over each
 camera view. Those clocks follow the video playback position when playing, pausing or

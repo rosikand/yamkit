@@ -12,7 +12,7 @@ def progress_js():
     source = (Path(__file__).resolve().parents[1] / "ui" / "app.js").read_text()
     ctx = quickjs.Context()
     ctx.eval("""
-      let now=1000, sessionReceivedAt=1000, sessionDisconnected=false, sessionFrozenDelta=null;
+      let now=1000, sessionReceivedAt=1000, sessionDisconnected=false, sessionFrozenDelta=null,sessionReadFailed=false;
       const performance={now:()=>now};
       let session={active:true,mode:'rollout',meta:{task:'green bowl'},rollout_progress:{
         phase:'running',policy_elapsed_s:2,target_duration_s:20,policy_timer_running:true,
@@ -32,14 +32,15 @@ def model(ctx, expression="currentRolloutProgress()"):
 def polling_js(progress_js):
     source = (Path(__file__).resolve().parents[1] / "ui" / "app.js").read_text()
     progress_js.eval("""
-      let sessionRequest=0, sessionApplied=0, lastSessionKey='';
+      let sessionRequest=0, sessionApplied=0, lastSessionKey='',sessionFlight=null,stopRequestsPending=0;
       const pending=[];
       function api() { return new Promise((resolve,reject)=>pending.push({resolve,reject})); }
+      function pollRead() { return api(); }
       function updateSidebar() {} function refreshOverview() {}
-      const document={dispatchEvent(){}};
+      const document={visibilityState:'visible',dispatchEvent(){}};
       class CustomEvent { constructor(name) {} }
     """)
-    progress_js.eval(source[source.index("async function refreshSession()"):source.index("function updateSidebar()")])
+    progress_js.eval(source[source.index("function sessionUpdated()"):source.index("function updateSidebar()")])
     return progress_js
 
 
@@ -125,14 +126,95 @@ def test_late_old_poll_cannot_regress_a_confirmed_released_phase(polling_js):
     ctx = polling_js
     ctx.eval("""
       const old=JSON.parse(JSON.stringify(session));
-      refreshSession(); refreshSession();
-      session.rollout_progress.phase='saving_frames';session.rollout_progress.resources_released=true;
-      pending[1].resolve(session);
+      refreshSession();
+      applySessionReceipt({active:true,mode:'rollout',meta:{operation_id:'new-run'},
+        rollout_progress:{phase:'saving_frames',resources_released:true}},now);
     """)
     drain_jobs(ctx)
     ctx.eval("pending[0].resolve(old);")
     drain_jobs(ctx)
     assert model(ctx)["phase"] == "saving_frames" and model(ctx)["released"]
+
+
+def test_unresolved_periodic_polls_coalesce_instead_of_building_a_queue(polling_js):
+    ctx = polling_js
+    ctx.eval("for(let i=0;i<30;i++){now+=1000;refreshSession();}")
+    assert ctx.eval("pending.length") == 1
+    assert ctx.eval("sessionRequest") == 1
+    ctx.eval("pending[0].resolve(session);")
+    drain_jobs(ctx)
+    ctx.eval("refreshSession();")
+    assert ctx.eval("pending.length") == 2
+
+
+def test_hidden_or_stop_pending_poll_does_not_queue_gets(polling_js):
+    ctx = polling_js
+    ctx.eval("document.visibilityState='hidden';for(let i=0;i<30;i++)refreshSession();")
+    assert ctx.eval("pending.length") == 0
+    ctx.eval("document.visibilityState='visible';stopRequestsPending=1;refreshSession();")
+    assert ctx.eval("pending.length") == 0
+    ctx.eval("stopRequestsPending=0;refreshSession();")
+    assert ctx.eval("pending.length") == 1
+
+
+def test_timeout_is_delayed_not_a_claim_that_the_connection_was_lost(polling_js):
+    ctx = polling_js
+    ctx.eval("refreshSession();now=6000;pending[0].reject({name:'AbortError'});")
+    drain_jobs(ctx)
+    assert model(ctx)["stale"] and not model(ctx)["readFailed"]
+    ctx.eval("refreshSession();pending[1].reject({name:'TypeError'});")
+    drain_jobs(ctx)
+    assert model(ctx)["readFailed"]
+    ctx.eval("refreshSession();pending[2].resolve(session);")
+    drain_jobs(ctx)
+    assert not model(ctx)["stale"] and not model(ctx)["readFailed"]
+
+
+def test_launch_receipt_immediately_replaces_previous_released_state_and_fences_old_get(polling_js):
+    ctx = polling_js
+    ctx.eval("""
+      session={active:false,mode:'rollout',started_at:100,meta:{operation_id:'old-run'},
+        rollout_progress:{phase:'done',resources_released:true,operation_id:'old-run'}};
+      const old=JSON.parse(JSON.stringify(session));refreshSession();
+      applySessionReceipt({active:true,mode:'rollout',started_at:200,meta:{operation_id:'new-run'},
+        rollout_progress:{phase:'preparing',resources_released:false,operation_id:'new-run'}},now);
+    """)
+    assert ctx.eval("session.active")
+    assert ctx.eval("session.meta.operation_id") == "new-run"
+    assert not model(ctx)["released"]
+    ctx.eval("pending[0].resolve(old);")
+    drain_jobs(ctx)
+    assert ctx.eval("session.meta.operation_id") == "new-run" and not model(ctx)["released"]
+
+
+def test_late_launch_receipt_cannot_regress_same_operation_or_replace_newer_run(polling_js):
+    ctx = polling_js
+    ctx.eval("""
+      session.started_at=200;session.meta.operation_id='current-run';
+      applySessionReceipt({active:true,mode:'rollout',started_at:200,meta:{operation_id:'current-run'},
+        rollout_progress:{phase:'preparing',resources_released:false}},now);
+    """)
+    assert model(ctx)["phase"] == "running"
+    ctx.eval("applySessionReceipt({active:false,started_at:100,meta:{operation_id:'old-run'},rollout_progress:{phase:'done',resources_released:true}},now);")
+    assert ctx.eval("session.meta.operation_id") == "current-run"
+    assert not model(ctx)["released"]
+
+
+def test_stop_receipt_applies_current_operation_but_cannot_regress_confirmed_end(polling_js):
+    ctx = polling_js
+    ctx.eval("""
+      session.meta.operation_id='current-run';session.rollout_progress.server_time=100;
+      applySessionReceipt({active:true,stopping:true,mode:'rollout',meta:{operation_id:'current-run'},
+        rollout_progress:{phase:'releasing',resources_released:false,server_time:101}},now,{allowSameOperation:true});
+    """)
+    assert ctx.eval("session.stopping")
+    assert model(ctx)["phase"] == "releasing"
+    ctx.eval("""
+      session.active=false;session.rollout_progress.phase='done';session.rollout_progress.resources_released=true;
+      applySessionReceipt({active:true,mode:'rollout',meta:{operation_id:'current-run'},
+        rollout_progress:{phase:'running',resources_released:false,server_time:100}},now,{allowSameOperation:true});
+    """)
+    assert model(ctx)["phase"] == "done" and model(ctx)["released"]
 
 
 def test_reaching_duration_never_promotes_clock_to_done_or_release(progress_js):

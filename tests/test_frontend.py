@@ -30,7 +30,7 @@ def _camera_context():
     quickjs = pytest.importorskip("quickjs")
     src = (UI / "app.js").read_text()
     ctx = quickjs.Context()
-    ctx.eval("let overview = null;")
+    ctx.eval("let overview = null, stopRequestsPending=0; const document={visibilityState:'visible'};")
     ctx.eval(src[src.index("let camsRendered = null;"):src.index("function armPanelHTML")])
     return ctx
 

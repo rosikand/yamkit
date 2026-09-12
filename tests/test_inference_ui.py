@@ -689,6 +689,8 @@ def inference_js():
     ctx = quickjs.Context()
     ctx.eval("""
       var pages={}, nodes={}, posts=[], alerts=[], confirmResult=false;
+      var performance={now:()=>0};
+      function applySessionReceipt() {}
       var session={active:false,meta:{},parsed:{},log:[]};
       function $(id) { return nodes[id] ||= {value:'',checked:false,disabled:false,textContent:'',
         addEventListener:()=>{},innerHTML:''}; }

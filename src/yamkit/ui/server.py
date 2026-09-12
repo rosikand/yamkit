@@ -8,11 +8,13 @@ or opening any page never connects to (and never energises) an arm.
 from __future__ import annotations
 
 import dataclasses
+import errno
 import importlib.util
 import json
 import math
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -1364,7 +1366,56 @@ def _range_response(path: Path, request: Request, media_type: str) -> Response:
     return Response(path.read_bytes(), media_type=media_type, headers=headers)
 
 
+def _existing_dashboard(host: str, port: int) -> bool:
+    """Recognize only the static UI shell; never ask the existing process to open devices."""
+    target = "127.0.0.1" if host in ("", "0.0.0.0") else "::1" if host == "::" else host
+    authority = f"[{target}]:{port}" if ":" in target else f"{target}:{port}"
+    deadline = time.monotonic() + 1.0
+    received = bytearray()
+    try:
+        with socket.create_connection((target, port), timeout=0.5) as connection:
+            connection.sendall(f"GET / HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n".encode("ascii"))
+            while len(received) < 16384:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                connection.settimeout(remaining)
+                chunk = connection.recv(16384 - len(received))
+                if not chunk:
+                    break
+                received.extend(chunk)
+    except (OSError, UnicodeError):
+        return False  # Unknown/busy service is not safe to identify as the dashboard.
+    headers, separator, body = bytes(received).partition(b"\r\n\r\n")
+    return bool(separator and headers.split(b"\r\n", 1)[0] in (b"HTTP/1.1 200 OK", b"HTTP/1.0 200 OK")
+                and all(marker in body for marker in (b"<title>yamkit</title>", b"robot console", b'src="app.js')))
+
+
 def run(rig_path: Path | None = None, host: str = "127.0.0.1", port: int = 8400) -> None:
+    """Own the listening port before app startup reconciles any saved operation receipts."""
     import uvicorn
 
-    uvicorn.run(create_app(rig_path), host=host, port=port, log_level="info")
+    authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+    try:
+        listener = socket.create_server((host, port), family=socket.AF_INET6 if ":" in host else socket.AF_INET,
+                                        backlog=2048)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            if _existing_dashboard(host, port):
+                print(f"yamkit UI is already running at http://{authority}; open that page. No process or run was changed.")
+                return
+            raise SystemExit(f"Cannot start yamkit UI: {authority} is already in use. "
+                             "The existing process was left untouched. Check that service before starting another UI.") from None
+        raise SystemExit(f"Cannot bind yamkit UI at {authority}: {exc.strerror or 'socket unavailable'}") from None
+
+    with listener:
+        # Passing this already-listening socket avoids a check-then-bind race, and
+        # create_app can now safely reconcile its previous process's stale workers.
+        config = uvicorn.Config(create_app(rig_path), host=host, port=listener.getsockname()[1], log_level="info")
+        ui_server = uvicorn.Server(config)
+        try:
+            ui_server.run(sockets=[listener])
+        except KeyboardInterrupt:
+            pass  # Match uvicorn.run's normal Ctrl-C cleanup behavior.
+        if not ui_server.started:
+            raise SystemExit(3)  # Uvicorn's STARTUP_FAILURE exit status.
