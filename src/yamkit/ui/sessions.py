@@ -8,8 +8,10 @@ sessions use SIGINT. A further Stop interrupts; hung processes eventually receiv
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -37,6 +39,8 @@ _TELEOP_HZ_RE = re.compile(r"\[\s*([\d.]+)Hz\]")
 _TELEOP_PAIR_RE = re.compile(r"(\S+->\S+): (ENGAGED|idle)\s*err=\s*([-+.\dnaif]+)rad grip=(\S+)")
 _OPERATOR_PHASE_RE = re.compile(r"\[yamkit-operator\] (starting|homing|synchronizing|ready|holding|stopping|closing)\s*$")
 _ROLLOUT_PHASE_RE = re.compile(r"\[yamkit-rollout\] (running|returning_home|releasing|released)\s*$")
+_EXPORT_PROGRESS_PREFIX = "[yamkit-export] "
+_EXPORT_PHASES = frozenset({"saving_frames", "encoding_videos", "rendering", "finalizing"})
 # lerobot-record progress (message wording varies between versions; match loosely)
 _EPISODE_RE = re.compile(r"[Rr]ecord(?:ing)?\s+episode\s+(\d+)")
 _PREPARING_RE = re.compile(r"Preparing episode\s+(\d+): waiting for operator readiness\.")
@@ -132,10 +136,54 @@ def parse_line(line: str, parsed: dict[str, Any]) -> None:
     line = _ANSI_RE.sub("", line)
     m = _ROLLOUT_PHASE_RE.search(line)
     if m:
-        parsed["rollout_phase"] = m.group(1)
+        phase = m.group(1)
+        order = {"running": 0, "returning_home": 1, "releasing": 2, "released": 3}
+        if parsed.get("rollout_export") or order.get(parsed.get("rollout_phase"), -1) > order[phase]:
+            return  # Delayed/duplicate output cannot restart or regress a completed policy clock.
+        if phase != parsed.get("rollout_phase"):
+            parsed["rollout_phase_since_monotonic"] = time.monotonic()
+        parsed["rollout_phase"] = phase
+        if phase == "running":
+            # Receipt of the existing runner marker follows preparation/strategy setup.
+            # These display-only clocks never control runtime duration or deadlines.
+            if "rollout_started_monotonic" not in parsed:
+                parsed["rollout_started_monotonic"] = time.monotonic()
+                parsed["rollout_started_at"] = time.time()
+        else:
+            _end_rollout_clock(parsed)
+        return
+    if line.startswith(_EXPORT_PROGRESS_PREFIX):
+        if len(line) > 1024:
+            return
+        try:
+            value = json.loads(line[len(_EXPORT_PROGRESS_PREFIX):])
+        except ValueError:
+            return
+        if not isinstance(value, dict) or value.get("phase") not in _EXPORT_PHASES:
+            return
+        completed, total = value.get("completed"), value.get("total")
+        if (completed is not None or total is not None) and not (
+            type(completed) is int and type(total) is int and 0 <= completed <= total <= 100000
+        ):
+            return
+        if value.get("unit") not in (None, "frames", "videos"):
+            return
+        if value.get("camera") not in (None, "top", "left_wrist", "right_wrist"):
+            return
+        if value.get("resources_released") is not True:
+            return
+        previous = parsed.get("rollout_export", {})
+        if (previous.get("phase"), previous.get("camera")) != (value["phase"], value.get("camera")):
+            parsed["rollout_phase_since_monotonic"] = time.monotonic()
+        # Whitelist the protocol; arbitrary child JSON must not enter status metadata.
+        parsed["rollout_export"] = {key: value.get(key) for key in
+                                     ("phase", "completed", "total", "unit", "camera", "resources_released")}
+        _end_rollout_clock(parsed)
         return
     m = _OPERATOR_PHASE_RE.search(line)
     if m:
+        if parsed.get("operator_phase") != m.group(1):
+            parsed["operator_phase_since_monotonic"] = time.monotonic()
         parsed["operator_phase"] = m.group(1)
         if m.group(1) == "stopping":
             parsed["operator_stopping"] = True
@@ -221,6 +269,57 @@ def _maybe_float(s: str) -> float | None:
         return float(s)
     except ValueError:
         return None
+
+
+def _end_rollout_clock(parsed: dict[str, Any]) -> None:
+    if "rollout_started_monotonic" in parsed and "rollout_ended_monotonic" not in parsed:
+        parsed["rollout_ended_monotonic"] = time.monotonic()
+        parsed["rollout_ended_at"] = time.time()
+
+
+def rollout_progress(status: dict[str, Any], *, now: float | None = None, monotonic: float | None = None) -> dict | None:
+    """Display-only runner clock: never infer policy execution from process start or camera activity."""
+    if status.get("mode") != "rollout":
+        return None
+    now = time.time() if now is None else now
+    monotonic = time.monotonic() if monotonic is None else monotonic
+    parsed, meta = status.get("parsed", {}), status.get("meta", {})
+    phase = parsed.get("rollout_phase")
+    stage = phase if phase in ("running", "returning_home", "releasing") else "preparing"
+    if not phase and parsed.get("operator_phase") == "homing":
+        stage = "homing"
+    released = phase == "released"
+    export = parsed.get("rollout_export", {})
+    if export:
+        stage, released = export["phase"], True
+    elif released:
+        stage = "finalizing"
+    active = status.get("active", False)
+    if not active:
+        # The API overlays actual postprocessing, but the child snapshot must never
+        # claim a successful physical outcome when it stopped/failed.
+        stage = ("stopped" if status.get("stop_requested") else
+                 "failed" if status.get("returncode") not in (None, 0) else "finalizing")
+    if active and status.get("stopping") and not released:
+        stage = "releasing"
+    started, ended = parsed.get("rollout_started_monotonic"), parsed.get("rollout_ended_monotonic")
+    elapsed = max(0.0, (ended if ended is not None else monotonic) - started) if started is not None else None
+    timer_running = active and stage == "running" and ended is None and started is not None
+    duration = meta.get("duration")
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
+        duration = None
+    since = parsed.get("operator_phase_since_monotonic") if stage == "homing" else parsed.get("rollout_phase_since_monotonic")
+    return {"phase": stage, "operation_id": meta.get("operation_id"),
+            "policy_elapsed_s": round(elapsed, 3) if elapsed is not None else None,
+            "target_duration_s": duration,
+            "policy_remaining_s": round(max(0.0, duration - elapsed), 3) if duration is not None and elapsed is not None else None,
+            "policy_timer_running": bool(timer_running),
+            "policy_started_at": parsed.get("rollout_started_at"), "policy_ended_at": parsed.get("rollout_ended_at"),
+            "phase_elapsed_s": round(max(0.0, monotonic - since), 3) if since is not None and active else None,
+            "server_time": now, "resources_released": released,
+            "capture_requested": bool(meta.get("capture_trace")),
+            "completed": export.get("completed"), "total": export.get("total"),
+            "unit": export.get("unit"), "camera": export.get("camera")}
 
 
 class SessionManager:
@@ -318,6 +417,8 @@ class SessionManager:
                 self.on_start(mode)
             self.log.clear()
             self.parsed = {"operator_phase": "starting"} if mode in ("teleop", "teleoperate", "record") else {}
+            if mode == "rollout":
+                self.parsed["rollout_phase_since_monotonic"] = time.monotonic()
             self.mode = mode
             self.meta = meta or {}
             self._log_complete = False
@@ -411,6 +512,7 @@ class SessionManager:
                 return
             self._release_cameras()
             self._finishing = False
+            _end_rollout_clock(self.parsed)
             self.ended_at = time.time()
             self.returncode = proc.returncode
             self._token = ""
@@ -557,6 +659,8 @@ class SessionManager:
             if grace_s is None:
                 grace_s = 600.0 if self.mode in ("record", "push", "pull") else 30.0
             cooperative = not self.stopping and self._record_stop_current()
+            if self.mode == "rollout":
+                _end_rollout_clock(self.parsed)
             self.stopping = True
             if cooperative:
                 try:
@@ -621,9 +725,13 @@ class SessionManager:
 
     # ----- reporting --------------------------------------------------------------------------
     def status(self) -> dict[str, Any]:
+        with self._lock:
+            return self._status_locked()
+
+    def _status_locked(self) -> dict[str, Any]:
         active = self.active
         now = time.time()
-        return {
+        status = {
             "active": active,
             "mode": self.mode,
             "pid": self._proc.pid if self._proc is not None else None,
@@ -638,12 +746,14 @@ class SessionManager:
             "record_stop_ready": self._record_stop_current(),
             "cameras_owned": self.cameras_owned,
             "preview_generation": self.preview_generation,
-            "meta": self.meta,
-            "parsed": self.parsed,
+            "meta": copy.deepcopy(self.meta),
+            "parsed": copy.deepcopy(self.parsed),
             "phase_elapsed_s": round(now - self.parsed["phase_since"], 1) if active and self.parsed.get("phase_since") else None,
             "log": list(self.log),
             "log_complete": self._log_complete,
         }
+        status["rollout_progress"] = rollout_progress(status, now=now)
+        return status
 
 
 # ------------------------------------------------------------------- deployment run registry --
@@ -696,5 +806,6 @@ class DeploymentLog:
             "first_call_ms": parsed.get("first_call_ms"),
             "step_call_ms": parsed.get("step_call_ms"),
             "log_complete": status.get("log_complete", False),
+            "rollout_progress": status.get("rollout_progress"),
         }
         (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")

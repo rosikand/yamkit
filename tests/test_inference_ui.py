@@ -709,6 +709,9 @@ def inference_js():
       $('#inf-controller').value='async';
       $('#inf-duration').value='60'; $('#inf-saved').value='data/old.npz';
     """)
+    ctx.eval(source[source.index("const fmtClock ="):source.index("// series colors")])
+    ctx.eval(source[source.index("const ROLLOUT_SAVE_PHASES"):source.index("function armPanelHTML")])
+    ctx.eval("updateRolloutClocks=function(){};")
     ctx.eval(page)
     ctx.eval("pages.inference.render({innerHTML:''},[])")
     _drain_js(ctx)
@@ -795,7 +798,7 @@ def test_browser_attached_trace_selection_invalidates_qualification(attached_bro
     ("running", "Policy running — 30 Hz", "Stop and release arms"),
     ("returning_home", "Returning home — keep clear", "Stop and release arms"),
     ("releasing", "Releasing arms", "Stop and release arms"),
-    ("released", "Arms released — saving video and joint traces", "Interrupt saving"),
+    ("released", "Arms released — finalizing local files", "Interrupt saving"),
 ])
 def test_browser_managed_rollout_reports_motion_and_export_separately(attached_browser, phase, label, button):
     ctx = attached_browser

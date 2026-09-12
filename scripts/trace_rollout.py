@@ -478,6 +478,27 @@ def encode_timestamped_video(images, video_path, timeline):
             raise ValueError('Encoder did not preserve every observation frame')
 
 
+class ExportProgress:
+    """Bounded, sanitized UI/terminal progress after release; no work on the policy path."""
+
+    def __init__(self):
+        self.previous = None
+        self.last_emitted = 0.0
+
+    def report(self, phase, *, completed=None, total=None, unit=None, camera=None, force=False):
+        now = time.monotonic()
+        stage = (phase, camera)
+        if not force and stage == self.previous and completed != total and now - self.last_emitted < 0.5:
+            return
+        self.previous, self.last_emitted = stage, now
+        value = {"phase": phase, "completed": completed, "total": total, "unit": unit,
+                 "camera": camera, "resources_released": True}
+        try:
+            print("[yamkit-export] " + json.dumps(value, separators=(",", ":")), file=sys.stderr, flush=True)
+        except OSError:
+            pass  # A closed observer must not interrupt export of the retained recording.
+
+
 def export(collector, outdir):
     """Only call after rollout unwound; no image writes until resources are released."""
     released = collector.released()
@@ -514,23 +535,31 @@ def export(collector, outdir):
         return summary
     from lerobot.datasets.image_writer import write_image
 
+    progress = ExportProgress()
     timeline = video_timeline([at for at, _ in collector.frames], collector.phase_started, collector.phase_ended,
                               collector.frame_observation_indices or None)
     write_json(outdir / "video_timeline.json", timeline)
+    completed_videos = 0
     for camera_index, name in enumerate(CAMERAS if collector.frames else ()):
         try:
+            progress.report("saving_frames", completed=0, total=len(collector.frames), unit="frames", camera=name)
             directory = outdir / "frames" / name
             directory.mkdir(parents=True)
             for index, (_, images) in enumerate(collector.frames):
                 write_image(images[camera_index], directory / f"frame-{index:06d}.png", compress_level=1)
+                progress.report("saving_frames", completed=index + 1, total=len(collector.frames), unit="frames", camera=name)
+            progress.report("encoding_videos", completed=completed_videos, total=len(CAMERAS), unit="videos", camera=name)
             encode_timestamped_video((images[camera_index] for _, images in collector.frames),
                                      outdir / f"{name}.mp4", timeline)
+            completed_videos += 1
+            progress.report("encoding_videos", completed=completed_videos, total=len(CAMERAS), unit="videos", camera=name, force=True)
         except TimeoutError:
             raise  # The export alarm is absolute; never continue into another encoder after it fires.
         except Exception as exc:  # noqa: BLE001 — artifacts survive an encoder error after hardware release.
             summary["video_export_errors"][name] = type(exc).__name__
     write_json(outdir / "summary.json", summary)
     try:
+        progress.report("rendering")
         render_report(outdir)
         summary["report_available"] = True
     except TimeoutError:
@@ -540,6 +569,7 @@ def export(collector, outdir):
     summary["status"] = ("TRACE_SAVED_WITH_EXPORT_ERRORS"
                          if summary["video_export_errors"] or summary["render_error_type"] else "TRACE_SAVED")
     write_json(outdir / "summary.json", summary)
+    progress.report("finalizing")
     return summary
 
 

@@ -433,6 +433,63 @@ def test_export_timeout_is_not_swallowed_and_retried(tmp_path, monkeypatch):
     assert (tmp_path / "summary.json").exists()
 
 
+def test_postrelease_progress_counts_written_frames_and_successful_videos_only(tmp_path, monkeypatch, capsys):
+    from lerobot.datasets import image_writer
+
+    collector = module.Collector(5)
+    collector.frames = [(1, ("a", "b", "c")), (1.1, ("d", "e", "f"))]
+    collector.phase_started, collector.phase_ended = 1, 1.2
+    written = []
+    monkeypatch.setattr(image_writer, "write_image", lambda image, *_a, **_kw: written.append(image))
+
+    def encode(images, path, timeline):
+        assert len(written) >= 2
+        if path.stem == "top":
+            raise ValueError("fake video failure")
+        list(images)
+
+    monkeypatch.setattr(module, "encode_timestamped_video", encode)
+    summary = module.export(collector, tmp_path)
+    captured = capsys.readouterr()
+    assert captured.out == ""  # Machine-readable CLI result stdout is unchanged.
+    events = [json.loads(line.removeprefix("[yamkit-export] ")) for line in captured.err.splitlines()]
+    assert summary["video_export_errors"] == {"top": "ValueError"}
+    assert all(value["resources_released"] for value in events)
+    for name in module.CAMERAS:
+        frames = [value for value in events if value["phase"] == "saving_frames" and value["camera"] == name]
+        assert frames[0]["completed"] == 0 and frames[-1]["completed"] == 2 and frames[-1]["total"] == 2
+    videos = [value for value in events if value["phase"] == "encoding_videos"]
+    assert [value["completed"] for value in videos] == [0, 0, 1, 1, 2]
+    assert all(value["total"] == 3 for value in videos)
+    assert events[-2]["phase"] == "rendering" and events[-2]["total"] is None
+    assert events[-1]["phase"] == "finalizing"
+
+
+def test_progress_never_announces_export_before_release(tmp_path, capsys):
+    collector = module.Collector(5)
+    collector.robots = [SimpleNamespace(_sides={"left": SimpleNamespace(arm=object())})]
+    module.export(collector, tmp_path)
+    assert "[yamkit-export]" not in capsys.readouterr().err
+
+
+def test_export_progress_rate_is_bounded_and_closed_observer_does_not_abort(monkeypatch, capsys):
+    clock = [1.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    progress = module.ExportProgress()
+    for completed in range(2701):
+        clock[0] += .001
+        progress.report("saving_frames", completed=completed, total=2700, unit="frames", camera="top")
+    events = capsys.readouterr().err.splitlines()
+    assert 2 <= len(events) <= 8
+    assert json.loads(events[-1].removeprefix("[yamkit-export] "))["completed"] == 2700
+
+    def broken(*_args, **_kwargs):
+        raise BrokenPipeError("observer closed")
+
+    monkeypatch.setattr("builtins.print", broken)
+    progress.report("rendering")  # A UI-only observer failure cannot cancel saved evidence.
+
+
 def test_actual_encoder_preserves_irregular_pts_all_original_frames_and_duration(tmp_path):
     import av
     from PIL import Image

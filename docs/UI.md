@@ -118,6 +118,32 @@ Playback covers the policy phase only, not startup or return home; it preserves 
 timing. Unrecorded historical runs cannot gain video retroactively. Saving, missing/partial
 recordings and upload failures are shown separately from the physical rollout result.
 
+### Rollout clocks and progress
+
+The Inference status panel separates **Preparing**, **Running policy**, **Returning home** /
+**Releasing arms**, **Saving locally**, and optional **Packaging / Uploading to HF**. Preparation
+includes model/client setup, cameras and startup homing; it does not consume the displayed
+policy interval. The rollout clock starts from the running process's policy-start marker and
+freezes when that interval ends. Elapsed / requested time and time remaining appear beside
+the progress bar and on enabled live-camera tiles. Reaching the requested time alone never
+declares the run finished or the arms released. These are UI-started session clocks, not
+camera-exposure timestamps or proof that the manipulation task succeeded.
+
+Progress during export counts actual completed work after hardware release. Stages without
+a measurable total, including preparation and HF upload, use an indeterminate bar rather
+than an invented percentage or ETA. Saving and upload errors remain separate from the
+physical run outcome; local originals are retained. Stop stays available during hardware
+execution, and its label changes to interrupt saving only after confirmed release.
+
+The clock survives a page refresh using server-reported timing. If status updates become
+unavailable, the UI marks the display stale and stops advancing its estimate; a lost browser
+connection does not stop the robot. Keep the physical cutoff accessible.
+
+Saved-video playback shows elapsed / total time both in the shared controls and over each
+camera view. Those clocks follow the video playback position when playing, pausing or
+scrubbing; they are not wall clocks. Timers are browser overlays and do not modify the
+original recording files or open additional camera streams.
+
 Record launches `yamkit record`, which installs the same operator processing used by
 native teleop. Unprocessed raw LeRobot YAM leader actions are rejected. Native bilateral
 feedback remains supported; recording and LeRobot teleoperation reject nonzero

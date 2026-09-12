@@ -7,6 +7,11 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const fmtBytes = (b) => b == null ? "–" : b > 1e9 ? (b / 1e9).toFixed(2) + " GB" : b > 1e6 ? (b / 1e6).toFixed(1) + " MB" : (b / 1e3).toFixed(0) + " kB";
 const fmtDate = (t) => t == null ? "–" : new Date(t * 1000).toLocaleString();
 const fmtDur = (s) => s == null ? "–" : s >= 60 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${Math.round(s)}s`;
+const fmtClock = (s) => {
+  if (s == null || !Number.isFinite(Number(s))) return "–";
+  const tenths = Math.max(0, Math.round(Number(s) * 10));
+  return `${String(Math.floor(tenths / 600)).padStart(2, "0")}:${String(Math.floor(tenths / 10) % 60).padStart(2, "0")}.${tenths % 10}`;
+};
 
 // series colors follow the active theme (validated pair per mode — see style.css)
 function seriesColors() {
@@ -61,14 +66,28 @@ async function refreshOverview() {
 let lastSessionKey = "";
 let sessionRequest = 0;
 let sessionApplied = 0;
+let sessionReceivedAt = null;
+let sessionDisconnected = false;
+let sessionFrozenDelta = null;
 async function refreshSession() {
   const request = ++sessionRequest;
+  const requestedAt = performance.now();
   try {
     const next = await api("/session");
     if (request < sessionApplied) return; // an older poll cannot restore a previous run/phase
     sessionApplied = request;
     session = next;
-  } catch { /* server gone */ }
+    sessionReceivedAt = performance.now();
+    // A delayed reply may contain an old snapshot. Await a prompt poll before
+    // advancing its display clock; do not compare browser and host wall clocks.
+    sessionDisconnected = sessionReceivedAt - requestedAt >= 3000;
+    sessionFrozenDelta = sessionDisconnected ? 0 : null;
+  } catch {
+    if (request < sessionApplied) return;
+    // Stop the display clock on a failed poll, without inventing a robot phase change.
+    if (!sessionDisconnected) sessionFrozenDelta = sessionReceivedAt == null ? 0 : Math.min(3, Math.max(0, (performance.now() - sessionReceivedAt) / 1000));
+    sessionDisconnected = true;
+  }
   updateSidebar();
   document.dispatchEvent(new CustomEvent("session"));
   // a session starting, ending or handing the cameras back changes what the tiles should show: refresh now
@@ -178,12 +197,124 @@ function camsHTML() {
   return `<div class="cams">` + cameraNames().map((c) => `
     <div class="cam" data-cam="${esc(c.name)}">
       <span class="label">${esc(c.name)}</span>
+      <span class="rollout-timer" hidden aria-label="Rollout policy time"></span>
       ${c.configured
         ? `<img src="/api/cameras/${encodeURIComponent(c.name)}/stream" alt="${esc(c.name)}"
              data-connected-at="${Date.now()}" onerror="cameraStreamError(this)" />
            <span class="preview-state">waiting for frames</span>`
         : `<div class="placeholder">no camera configured in rig.yaml</div>`}
     </div>`).join("") + `</div>`;
+}
+
+// The server owns phase transitions and the policy clock. These display-only clocks
+// never start hardware or infer completion from reaching the requested duration.
+const ROLLOUT_SAVE_PHASES = ["saving_frames", "encoding_videos", "rendering", "finalizing", "packaging", "uploading"];
+const rolloutProgressPending = (progress) => !!progress?.phase && !["done", "failed", "stopped"].includes(progress.phase);
+function rolloutProgressView(state, delta = 0, stale = false) {
+  const legacyPhase = state.parsed?.rollout_phase;
+  const p = state.rollout_progress || (state.mode === "rollout" && (state.active || state.meta?.operation_id) ? {
+    phase: !state.active ? state.stop_requested ? "stopped" : state.returncode === 0 ? "done" : "failed"
+      : legacyPhase === "released" ? "finalizing" : legacyPhase || "preparing",
+    resources_released: legacyPhase === "released", target_duration_s: state.meta?.duration,
+    capture_requested: state.meta?.capture_trace,
+    // Legacy snapshots do not have a trustworthy policy-only clock.
+    policy_elapsed_s: null, policy_timer_running: false,
+  } : null);
+  if (!p) return null;
+  const phase = p.phase || "preparing", moving = ["homing", "running", "returning_home", "releasing"].includes(phase);
+  const labels = {preparing: "Preparing cameras and arms…", homing: "Preparing — moving to the start pose",
+    running: "Policy running — 30 Hz", returning_home: "Returning home — keep clear; Stop releases the arms",
+    releasing: "Releasing arms…", saving_frames: "Arms released — saving recording frames",
+    encoding_videos: "Arms released — encoding camera videos", rendering: "Arms released — rendering recording details",
+    finalizing: "Arms released — finalizing local files", packaging: "Arms released — preparing HF upload",
+    uploading: "Arms released — uploading to Hugging Face", done: "Rollout finished",
+    stopped: "Rollout stopped", failed: "Rollout failed"};
+  const target = Number.isFinite(p.target_duration_s) && p.target_duration_s > 0 ? p.target_duration_s : null;
+  let elapsed = Number.isFinite(p.policy_elapsed_s) ? Math.max(0, p.policy_elapsed_s) : null;
+  const running = phase === "running" && p.policy_timer_running === true && !state.stopping;
+  if (elapsed != null && running) elapsed += Math.max(0, Math.min(3, delta));
+  if (elapsed != null && target != null) elapsed = Math.min(target, elapsed);
+  const remaining = elapsed != null && target != null ? Math.max(0, target - elapsed) : null;
+  const counted = Number.isFinite(p.completed) && Number.isFinite(p.total) && p.total > 0;
+  const stageCount = counted ? `${Math.min(p.total, Math.max(0, p.completed)).toLocaleString()} / ${p.total.toLocaleString()} ${p.unit || "items"}${p.camera ? ` · ${p.camera}` : ""}` : "";
+  const isSaving = ROLLOUT_SAVE_PHASES.includes(phase);
+  const finished = ["done", "failed", "stopped"].includes(phase);
+  let label = labels[phase] || "Waiting for operation status…";
+  if (p.postprocess_error) {
+    const outcome = p.outcome === "completed" ? "Rollout finished" : p.outcome === "stopped" ? "Rollout stopped" : "Rollout failed";
+    label = `${outcome} — ${p.postprocess_error === "upload_failed" ? "HF upload failed" : "recording saving incomplete"}`;
+  }
+  // Never claim released motors solely because a saving-like phase was reported.
+  if (!p.resources_released && (isSaving || phase === "done")) label = label.replace("Arms released — ", "");
+  if (state.stopping && !p.resources_released) label = "Stopping — releasing arms and finishing cleanup…";
+  const clock = elapsed == null ? ["preparing", "homing"].includes(phase) ? "Policy timer not started" : "Policy time unavailable"
+    : `${fmtClock(elapsed)}${target ? ` / ${fmtClock(target)}` : ""}`;
+  const phaseAge = Number.isFinite(p.phase_elapsed_s) ? p.phase_elapsed_s + (!finished ? Math.max(0, Math.min(3, delta)) : 0) : null;
+  const stage = ["preparing", "homing"].includes(phase) ? 0 : phase === "running" ? 1 : moving ? 2 : isSaving ? 3 : phase === "done" ? 4 : -1;
+  return {phase, label, clock, elapsed, target, remaining, stage, stageCount, phaseAge, stale, finished,
+    released: p.resources_released === true, capture: p.capture_requested, isSaving, postprocessError: p.postprocess_error,
+    barValue: counted ? Math.max(0, Math.min(p.total, p.completed)) : phase === "running" && elapsed != null && target ? elapsed : phase === "done" ? 1 : null,
+    barMax: counted ? p.total : phase === "running" && target ? target : 1};
+}
+
+function rolloutProgressHTML() {
+  return `<div class="rollout-progress" hidden>
+    <div class="rollout-progress-phase" data-rollout-phase role="status" aria-live="polite"></div>
+    <ol class="rollout-stages" aria-label="Rollout stages">${["Prepare", "Run", "Release", "Save", "Done"].map((stage, i) => `<li data-rollout-stage="${i}">${stage}</li>`).join("")}</ol>
+    <div class="rollout-clock-row"><span class="rollout-clock mono" data-rollout-clock></span><span class="hint" data-rollout-remaining></span></div>
+    <progress data-rollout-bar aria-label="Current rollout stage progress"></progress>
+    <div class="rollout-progress-detail"><span data-rollout-stage-count></span><span data-rollout-stage-time></span></div>
+    <div class="hint" data-rollout-note></div><div class="hint warn" role="status" data-rollout-stale hidden></div>
+  </div>`;
+}
+
+function renderRolloutProgress(root, model) {
+  if (!root) return;
+  root.hidden = !model;
+  if (!model) return;
+  const set = (selector, text) => { const node = $(selector, root); if (node && node.textContent !== text) node.textContent = text; };
+  set("[data-rollout-phase]", model.label);
+  set("[data-rollout-clock]", model.clock);
+  set("[data-rollout-remaining]", model.phase === "running" && model.remaining != null
+    ? model.remaining > 0 ? `${fmtClock(model.remaining)} remaining` : "Duration reached · waiting for cleanup" : "Policy time · excludes preparation and cleanup");
+  set("[data-rollout-stage-count]", model.stageCount || (model.finished ? model.label : model.isSaving ? "Working… progress reported when available" : model.label));
+  set("[data-rollout-stage-time]", model.phaseAge == null ? "" : `${fmtClock(model.phaseAge)} in this stage`);
+  set("[data-rollout-note]", model.finished ? `${model.released ? "Arms released. " : ""}${model.postprocessError ? "Local originals are retained; check the run log before retrying saving or upload. " : ""}Run completion does not prove task success.`
+    : model.released ? "Motors released. Saving and upload keep local originals; leave the UI service running."
+    : "Stay at the arms. Stop and physical power cutoff must remain accessible.");
+  const stale = $("[data-rollout-stale]", root);
+  stale.hidden = !model.stale;
+  set("[data-rollout-stale]", model.released ? "Status connection lost — showing the last confirmed status; arms were released. Check Lenovo for saving or upload progress."
+    : "Status connection lost — timer paused; physical execution may continue. Check Lenovo. Closing the browser is not Stop.");
+  const bar = $("[data-rollout-bar]", root);
+  bar.max = model.barMax;
+  if (model.barValue == null) bar.removeAttribute("value"); else bar.value = model.barValue;
+  bar.classList.toggle("paused", model.stale || ["failed", "stopped"].includes(model.phase));
+  bar.setAttribute("aria-label", `${model.label}${model.stageCount ? `: ${model.stageCount}` : ""}`);
+  root.querySelectorAll("[data-rollout-stage]").forEach((node) => {
+    const i = Number(node.dataset.rolloutStage);
+    node.classList.toggle("current", i === model.stage);
+    node.classList.toggle("complete", model.stage >= 0 && i < model.stage);
+    if (i === model.stage) node.setAttribute("aria-current", "step"); else node.removeAttribute("aria-current");
+    node.hidden = i === 3 && !model.capture && !model.isSaving;
+  });
+}
+
+function currentRolloutProgress() {
+  const age = sessionReceivedAt == null ? 0 : Math.max(0, (performance.now() - sessionReceivedAt) / 1000);
+  return rolloutProgressView(session, sessionFrozenDelta ?? Math.min(3, age), sessionDisconnected || age >= 3);
+}
+
+function updateRolloutClocks() {
+  const model = currentRolloutProgress();
+  renderRolloutProgress($("#inf-progress .rollout-progress"), model);
+  const view = pages.inference?._detailView;
+  if (view?.alive && view.body?.isConnected && view.progressOperationId && view.progressOperationId === session.rollout_progress?.operation_id)
+    renderRolloutProgress($("#run-live-progress .rollout-progress", view.body), model);
+  document.querySelectorAll(".cam .rollout-timer").forEach((node) => {
+    node.hidden = !model;
+    if (model) node.textContent = `${model.stale ? "Status paused" : "Rollout"} · ${model.phase === "running" ? "policy" : model.label.replace("Arms released — ", "")}${model.elapsed == null ? "" : ` · ${model.clock}`}`;
+  });
 }
 
 function armPanelHTML(armName, stt, role) {
@@ -793,7 +924,7 @@ pages.inference = {
         <div class="toolbar"><button id="btn-probe-saved">Probe saved observation</button><button id="btn-probe-live">Probe live active read</button></div>
         <div class="hint warn">Live probe is GRAVITY-COMPENSATION ACTIVE READ: motors are active and this is not guaranteed motion-free. All gripper calibrations must be valid first. A successful probe never approves motion or replays its chunk.</div>
       </div></details></div>
-      <div class="sect"><div class="sect-head">Operation</div><div id="inf-status" class="panel pad" role="status" aria-live="polite">No operation for this selection.</div><details class="advanced"><summary>Operation log</summary><pre id="inf-result" class="log tall"></pre></details></div>
+      <div class="sect"><div class="sect-head">Operation</div><div class="panel pad"><div id="inf-status" role="status" aria-live="polite">No operation for this selection.</div><div id="inf-progress">${rolloutProgressHTML()}</div></div><details class="advanced"><summary>Operation log</summary><pre id="inf-result" class="log tall"></pre></details></div>
       <div class="sect"><div class="sect-head">Cameras</div>
         <button id="btn-inf-cameras">Show camera previews</button>
         <div class="hint">Showing previews opens the cameras and sends no motor commands.</div>
@@ -863,6 +994,7 @@ pages.inference = {
       releaseCameraStreams(slot);
       slot.innerHTML = this._previews ? `<div id="cams-slot">${camsHTML()}</div>` : "";
       $("#btn-inf-cameras").textContent = this._previews ? "Hide camera previews" : "Show camera previews";
+      updateRolloutClocks();
     };
     $("#btn-inf-stop").onclick = (e) => doPost("/session/stop", {}, e.target);
     $("#btn-cloud-stop").onclick = (e) => doPost("/session/modal-shutdown", {}, e.target);
@@ -1023,7 +1155,7 @@ pages.inference = {
     $("#btn-inf-stop").disabled = !session.active;
     const rolloutPhase = session.parsed?.rollout_phase;
     $("#btn-inf-stop").textContent = session.active && session.mode === "rollout"
-      ? rolloutPhase === "released" ? "Interrupt saving" : "Stop and release arms"
+      ? session.rollout_progress?.resources_released || rolloutPhase === "released" ? "Interrupt saving" : "Stop and release arms"
       : "Stop local execution";
     const submitted = this._submitted;
     const matches = submitted && submitted.selection === JSON.stringify(selected) && submitted.saved === $("#inf-saved").value && submitted.id === session.meta?.operation_id;
@@ -1043,9 +1175,12 @@ pages.inference = {
         : phases[rolloutPhase] || "Preparing cameras and arms…";
       $("#inf-status").textContent = `${status} · ${session.meta?.task || ""}`;
     }
+    const progress = rolloutProgressView(session);
+    if (progress) $("#inf-status").textContent = `${progress.label} · ${session.meta?.task || ""}`;
     $("#inf-result").textContent = matches || managedRollout ? (session.log || []).join("\n") +
       (session.parsed?.result ? "\n" + JSON.stringify(session.parsed.result, null, 2) : "") : "";
     syncCams();
+    updateRolloutClocks();
   },
   async launch(path, extra, button) {
     if (this._launching || session.active) return;
@@ -1066,7 +1201,7 @@ pages.inference = {
     if (!el) return;
     try {
       const list = await api("/deployments");
-      this._uploadsPending = list.some((d) => d.status === "running" || d.recording?.state === "pending" || ["queued", "packaging", "uploading"].includes(d.upload?.status));
+      this._uploadsPending = list.some((d) => d.status === "running" || d.recording?.state === "pending" || rolloutProgressPending(d.rollout_progress) || ["queued", "packaging", "uploading"].includes(d.upload?.status));
       this._lastRunRefresh = Date.now();
       el.innerHTML = `<div class="panel">` + (list.length ? `<table><tr><th>run</th><th>task</th><th class="num">duration</th><th>status</th><th>recording</th><th>HF upload</th></tr>` +
         list.map((d) => `<tr class="click" onclick="location.hash='#/inference/${encodeURIComponent(d.id)}'">
@@ -1109,7 +1244,7 @@ function syncRunStop(view) {
   if (!button) return;
   button.hidden = !session.active;
   button.disabled = !session.active;
-  button.textContent = session.parsed?.rollout_phase === "released" ? "Interrupt current saving" : "Stop current local execution";
+  button.textContent = session.rollout_progress?.resources_released || session.parsed?.rollout_phase === "released" ? "Interrupt current saving" : "Stop current local execution";
 }
 
 async function renderRunDetail(el, id) {
@@ -1123,6 +1258,7 @@ async function renderRunDetail(el, id) {
   catch (e) { if (view.alive) view.body.innerHTML = errBanner(e.message); return; }
   if (!view.alive) return;
   view.body.innerHTML = `<div class="toolbar"><button id="run-stop" class="danger" hidden disabled>Stop current local execution</button></div><div id="run-summary" class="sect"></div>
+    <div id="run-live-progress">${rolloutProgressHTML()}</div>
     <div class="sect"><div class="sect-head">Recording</div><div id="run-recording"></div></div>
     <details class="advanced sect"><summary>Run details, artifacts and log</summary>
       <div id="run-diagnostics"></div><div id="run-artifacts" class="panel pad"></div>
@@ -1141,7 +1277,9 @@ function recordingLabel(d) {
 
 function updateRunDetail(view, d) {
   if (!view.alive || !view.body.isConnected) return;
-  view.pending = d.status === "running" || d.recording?.state === "pending" || ["queued", "packaging", "uploading"].includes(d.upload?.status);
+  view.pending = d.status === "running" || d.recording?.state === "pending" || rolloutProgressPending(d.rollout_progress) || ["queued", "packaging", "uploading"].includes(d.upload?.status);
+  view.progressOperationId = d.rollout_progress?.operation_id;
+  renderRolloutProgress($("#run-live-progress .rollout-progress", view.body), rolloutProgressView({rollout_progress: d.rollout_progress}));
   $("#run-summary", view.body).innerHTML = `<div class="kv panel">
       <div>status</div><div>${st(d.status === "success", d.status, d.status !== "failed")}${d.termination ? ` <span class="crumb">— ${esc(d.termination)}</span>` : ""}</div>
       <div>task</div><div>${esc(d.task ?? "–")}</div>
@@ -1174,8 +1312,8 @@ function updateRunDetail(view, d) {
     ${videos.length ? `<div class="cams rollout-replay">${videos.map((name) => {
       const label = ({"top.mp4": "Top camera", "left_wrist.mp4": "Left wrist", "right_wrist.mp4": "Right wrist"})[name] || name;
       const url = `/api/deployments/${encodeURIComponent(view.id)}/video/${encodeURIComponent(name)}`;
-      return `<div><div class="cam"><span class="label">${esc(label)}</span><video src="${url}" aria-label="${esc(label)} recording" preload="metadata" muted playsinline></video></div><a class="hint" href="${url}" download="${esc(name)}">Download video</a></div>`;
-    }).join("")}</div><div class="toolbar"><button id="run-play" class="primary">Play recording</button><span id="run-play-time" class="mono">0.0 s</span></div>
+      return `<div><div class="cam"><span class="label">${esc(label)}</span><span class="replay-timer" aria-label="Recorded video time"></span><video src="${url}" aria-label="${esc(label)} recording" preload="metadata" muted playsinline></video></div><a class="hint" href="${url}" download="${esc(name)}">Download video</a></div>`;
+    }).join("")}</div><div class="toolbar"><button id="run-play" class="primary">Play recording</button><span id="run-play-time" class="mono">00:00.0</span><span id="run-play-remaining" class="hint"></span></div>
       <input type="range" id="run-scrub" min="0" max="${recording.duration_s || 0}" step="0.01" value="0" aria-label="Recording playback position" />
       <div id="run-play-error" class="hint warn" role="status"></div>
       <div class="hint">Policy-phase video only; startup and return home are not recorded. Timing follows observation receipt, not camera exposure.</div>` : ""}</div>`;
@@ -1193,13 +1331,19 @@ function setupRunPlayback(slot, knownDuration) {
     button.textContent = "Play recording";
   };
   const update = () => {
-    const duration = knownDuration || lead.duration;
+    const duration = Number.isFinite(lead.duration) && lead.duration > 0 ? lead.duration : knownDuration;
     if (Number.isFinite(duration) && duration > 0) scrub.max = duration;
     scrub.value = lead.currentTime;
-    clock.textContent = `${lead.currentTime.toFixed(1)} / ${Number.isFinite(duration) ? duration.toFixed(1) : "…"} s`;
+    clock.textContent = `${fmtClock(lead.currentTime)} / ${Number.isFinite(duration) ? fmtClock(duration) : "…"}`;
+    $("#run-play-remaining", slot).textContent = Number.isFinite(duration) ? `${fmtClock(Math.max(0, duration - lead.currentTime))} remaining` : "";
+    videos.forEach((video) => {
+      const overlay = $(".replay-timer", video.parentElement);
+      const total = Number.isFinite(video.duration) ? video.duration : knownDuration;
+      if (overlay) overlay.textContent = `${fmtClock(video.currentTime)} / ${total ? fmtClock(total) : "…"}`;
+    });
   };
   const fail = () => { stop(); $("#run-play-error", slot).textContent = "Video playback failed. Try downloading the saved video; check the run log if export was incomplete."; };
-  videos.forEach((video) => { video.onerror = fail; video.onloadedmetadata = update; });
+  videos.forEach((video) => { video.onerror = fail; video.onloadedmetadata = video.ontimeupdate = update; });
   lead.onended = () => { stop(); update(); };
   scrub.oninput = () => {
     stop();
@@ -1225,7 +1369,7 @@ function setupRunPlayback(slot, knownDuration) {
   update();
   return () => {
     alive = false; stop();
-    videos.forEach((video) => { video.onerror = video.onloadedmetadata = video.onended = null; video.removeAttribute("src"); video.load(); });
+    videos.forEach((video) => { video.onerror = video.onloadedmetadata = video.onended = video.ontimeupdate = null; video.removeAttribute("src"); video.load(); });
   };
 }
 
@@ -1491,4 +1635,5 @@ document.querySelectorAll("#theme-switch button").forEach((b) => {
   setInterval(refreshSession, 1000);
   setInterval(refreshOverview, 5000);
   setInterval(refreshCameras, 1000);
+  setInterval(updateRolloutClocks, 100); // Display only; no HTTP, camera reads or phase transitions.
 })();

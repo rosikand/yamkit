@@ -340,6 +340,74 @@ def create_app(
     cameras = CameraHub(rig0.cameras if rig0 else {})
     run_dirs: dict[str, Path] = {}
     inference_launch_lock = threading.RLock()
+    progress_lock = threading.RLock()
+    progress_clocks: dict[str, tuple[float, float, dict]] = {}
+
+    def read_run_progress(run_dir: Path) -> dict | None:
+        """Small persisted post-run receipt; does not inspect devices or credential files."""
+        path = run_dir / "rollout-progress.json"
+        with progress_lock:
+            clock = progress_clocks.get(run_dir.name)
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 8192:
+                raise OSError("No safe progress receipt")
+            value = json.loads(path.read_text())
+            if not isinstance(value, dict):
+                raise TypeError("Invalid progress receipt")
+        except (OSError, ValueError, TypeError):
+            if not clock:
+                return None
+            value = dict(clock[2])
+        if clock:
+            # The newest optional write may have failed while an older disk receipt
+            # still exists. This process's current snapshot always wins over that file.
+            value = dict(clock[2])
+        value["server_time"] = time.time()
+        value["policy_timer_running"] = False
+        if clock and clock[0] == value.get("updated_at") and value.get("phase") not in ("done", "failed", "stopped"):
+            value["phase_elapsed_s"] = round(max(0.0, time.monotonic() - clock[1]), 3)
+        return value
+
+    def write_run_progress(run_dir: Path, progress: dict, phase: str) -> dict:
+        updated = time.time()
+        value = {**progress, "phase": phase, "policy_timer_running": False,
+                 "completed": None, "total": None, "unit": None, "camera": None,
+                 "server_time": updated, "updated_at": updated, "phase_elapsed_s": 0.0}
+        path = run_dir / "rollout-progress.json"
+        temporary = path.with_suffix(".json.tmp")
+        with progress_lock:
+            try:
+                temporary.write_text(json.dumps(value, indent=2) + "\n")
+                temporary.replace(path)
+            except OSError:
+                pass  # Optional display persistence must not interrupt artifact finalization/upload.
+            progress_clocks[run_dir.name] = (updated, time.monotonic(), value)
+            # Historical receipts stay on disk; retain only bounded live display clocks.
+            while len(progress_clocks) > 128:
+                progress_clocks.pop(next(iter(progress_clocks)))
+        return value
+
+    def complete_run_progress(run_dir: Path, progress: dict) -> None:
+        outcome = progress.get("outcome")
+        phase = ("stopped" if outcome == "stopped" else
+                 "failed" if outcome == "failed" or progress.get("postprocess_error") else "done")
+        write_run_progress(run_dir, progress, phase)
+
+    def current_session_status() -> dict[str, Any]:
+        status = sessions.status()
+        if status.get("mode") == "rollout" and not status.get("active"):
+            run_id = status.get("meta", {}).get("run_id")
+            if isinstance(run_id, str) and Path(run_id).name == run_id:
+                progress = read_run_progress(deployments.root / run_id)
+                if progress and progress.get("operation_id") == status.get("meta", {}).get("operation_id"):
+                    status["rollout_progress"] = progress
+        return status
+
+    def deployment_progress(run_dir: Path) -> dict | None:
+        status = sessions.status()
+        if status.get("meta", {}).get("run_id") == run_dir.name and status.get("active"):
+            return status.get("rollout_progress")
+        return read_run_progress(run_dir)
 
     def upload_status(run_dir: Path) -> dict | None:
         path = run_dir / "hf-upload.json"
@@ -370,26 +438,43 @@ def create_app(
         if previous and previous.get("status") in ("queued", "packaging", "uploading"):
             previous.update(status="interrupted", error="Dashboard restarted before upload completion; local artifacts retained")
             write_upload_status(old_run, previous)
+        progress = read_run_progress(old_run)
+        if progress and progress.get("phase") not in ("done", "failed", "stopped"):
+            write_run_progress(old_run, {**progress, "outcome": "failed", "postprocess_error": "interrupted"}, "failed")
 
     def upload_finalized_run(run_dir: Path, trace_dir: Path | None, repo_id: str) -> None:
         # This worker is not a managed hardware session. No session lock, child process or
         # motor/camera ownership is held while copying, hashing or contacting the Hub.
         pending = {"repo_id": repo_id, "retry_command": upload_retry(run_dir, repo_id, trace_dir)}
+        progress = read_run_progress(run_dir)
         try:
             from ..rollout_artifacts import package_rollout, upload_rollout
 
             write_upload_status(run_dir, {"status": "packaging", **pending})
+            if progress:
+                progress = write_run_progress(run_dir, progress, "packaging")
             bundle = package_rollout(run_dir, trace_dir=trace_dir)
             write_upload_status(run_dir, {"status": "uploading", **pending})
+            if progress:
+                progress = write_run_progress(run_dir, progress, "uploading")
             result = upload_rollout(bundle, repo_id=repo_id)
             write_upload_status(run_dir, result)
+            if progress:
+                complete_run_progress(run_dir, progress)
         except Exception as exc:  # noqa: BLE001 — post-run failures never affect hardware cleanup
             # Exceptions from HTTP clients can contain credentials and private endpoints.
             write_upload_status(run_dir, {"status": "failed", **pending,
                                           "error": f"{type(exc).__name__}: upload did not complete; local artifacts retained"})
+            if progress:
+                write_run_progress(run_dir, {**progress, "postprocess_error": "upload_failed"}, "failed")
 
     def finalize_run(run_dir: Path, status: dict) -> None:
         """Import known debug artifacts after the managed child and descendants exit."""
+        progress = status.get("rollout_progress")
+        if progress:
+            outcome = ("stopped" if status.get("stop_requested") else
+                       "failed" if status.get("returncode") != 0 else "completed")
+            progress = write_run_progress(run_dir, {**progress, "outcome": outcome}, "finalizing")
         try:
             source_value = status.get("meta", {}).get("debug_trace_dir")
             if source_value:
@@ -408,8 +493,23 @@ def create_app(
             with (run_dir / "log.txt").open("a") as logfile:
                 logfile.write(message + "\n")
             status = {**status, "log": [*status.get("log", []), message]}
+            if progress:
+                progress = {**progress, "postprocess_error": "artifact_import_incomplete"}
         finally:
             deployments.finalize(run_dir, status)
+        if progress:
+            # A successful physical return code does not imply all video encoders or
+            # the report renderer succeeded. Keep postprocessing errors separate.
+            try:
+                summary_path = run_dir / "summary.json"
+                if not summary_path.is_symlink() and summary_path.is_file() and summary_path.stat().st_size <= 65536:
+                    summary = json.loads(summary_path.read_text())
+                    if (summary.get("video_export_errors") or summary.get("render_error_type")
+                            or summary.get("status") in ("EXPORT_FAILED", "EXPORT_SKIPPED_RESOURCES_OPEN")):
+                        progress = {**progress, "postprocess_error": "recording_export_incomplete"}
+            except (OSError, ValueError, TypeError, AttributeError):
+                progress = {**progress, "postprocess_error": "recording_summary_unavailable"}
+            progress = write_run_progress(run_dir, progress, "finalizing")
         metadata_path = run_dir / "run_metadata.json"
         try:
             if metadata_path.is_file():
@@ -427,6 +527,8 @@ def create_app(
             threading.Thread(target=upload_finalized_run,
                              args=(run_dir, Path(source_value) if source_value else None, repo_id),
                              name=f"rollout-upload-{run_dir.name}", daemon=True).start()
+        elif progress:
+            complete_run_progress(run_dir, progress)
 
     def on_exit(status: dict[str, Any]) -> None:
         if status.get("mode") in ("push", "pull", "record"):
@@ -561,7 +663,7 @@ def create_app(
     # ---------------------------------------------------------------------------- sessions --
     @app.get("/api/session")
     def session_status() -> dict[str, Any]:
-        return sessions.status()
+        return current_session_status()
 
     @app.post("/api/session/stop")
     def session_stop() -> dict[str, Any]:
@@ -780,6 +882,7 @@ def create_app(
             run_dir = deployments.create({"active": True, "mode": mode, "meta": meta,
                                           "started_at": time.time()})
             meta["session_log_path"] = str(run_dir / "log.txt")
+            meta["run_id"] = run_dir.name
             if mode == "rollout":
                 snapshot = _rollout_metadata(options, require_rig())
                 snapshot["capture"] = {"requested": bool(meta.get("capture_trace")),
@@ -1046,7 +1149,8 @@ def create_app(
     # ------------------------------------------------------------------- deployments/models --
     @app.get("/api/deployments")
     def deployments_list() -> list[dict[str, Any]]:
-        return [{**entry, "upload": upload_status(deployments.root / entry["id"])}
+        return [{**entry, "upload": upload_status(deployments.root / entry["id"]),
+                 "rollout_progress": deployment_progress(deployments.root / entry["id"])}
                 for entry in catalog.list_deployments(deployments.root)]
 
     @app.get("/api/deployments/{run_id}")
@@ -1056,6 +1160,7 @@ def create_app(
             raise HTTPException(404, f"no deployment {run_id!r}")
         directory = deployments.root / run_id
         d["upload"] = upload_status(directory)
+        d["rollout_progress"] = deployment_progress(directory)
         d["artifacts"] = sorted(name for name in TRACE_FILES if not name.endswith(".mp4")
                                 and (directory / name).is_file() and not (directory / name).is_symlink())
         return d

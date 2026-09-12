@@ -25,6 +25,7 @@ def playback_js():
       }));
       const slot = {querySelectorAll:()=>videos};
     """)
+    ctx.eval(source[source.index("const fmtClock ="):source.index("// series colors")])
     ctx.eval(source[source.index("function setupRunPlayback"):source.index("// ---- models ----")])
     return ctx
 
@@ -49,7 +50,8 @@ def test_shared_play_pause_scrub_and_sync_controls_all_three_videos(playback_js)
     ctx.eval("$('#run-scrub').value='3.25'; $('#run-scrub').oninput();")
     assert ctx.eval("videos.every(video=>video.paused && video.currentTime===3.25)")
     assert ctx.eval("Object.keys(timers).length") == 0
-    assert ctx.eval("$('#run-play-time').textContent") == "3.3 / 5.0 s"
+    assert ctx.eval("$('#run-play-time').textContent") == "00:03.3 / 00:05.0"
+    assert ctx.eval("$('#run-play-remaining').textContent") == "00:01.8 remaining"
     ctx.eval("$('#run-play').onclick(); $('#run-play').onclick();")
     assert ctx.eval("videos.every(video=>video.paused)")
     assert ctx.eval("Object.keys(timers).length") == 0
@@ -69,7 +71,14 @@ def test_unknown_duration_uses_real_video_metadata(playback_js):
     ctx = playback_js
     ctx.eval("setupRunPlayback(slot,null); videos[0].duration=2.75; videos[0].onloadedmetadata();")
     assert ctx.eval("$('#run-scrub').max") == 2.75
-    assert ctx.eval("$('#run-play-time').textContent") == "0.0 / 2.8 s"
+    assert ctx.eval("$('#run-play-time').textContent") == "00:00.0 / 00:02.8"
+
+
+def test_video_duration_takes_precedence_over_summary_duration(playback_js):
+    ctx = playback_js
+    ctx.eval("setupRunPlayback(slot,60); videos[0].duration=19.75; videos[0].onloadedmetadata();")
+    assert ctx.eval("$('#run-scrub').max") == 19.75
+    assert ctx.eval("$('#run-play-time').textContent") == "00:00.0 / 00:19.8"
 
 
 def test_dispose_pauses_unloads_all_videos_and_removes_polling(playback_js):
@@ -134,6 +143,8 @@ def detail_js():
       function fmtDate(value) { return value; }
       function fmtDur(value) { return value; }
       function setupRunPlayback() { playbackStarts++; return ()=>{playbackDisposals++;}; }
+      function renderRolloutProgress() {} function rolloutProgressView() { return null; }
+      const rolloutProgressPending=(progress)=>!!progress?.phase&&!['done','failed','stopped'].includes(progress.phase);
       const view={id:'fixture',alive:true,body:{isConnected:true},replayKey:null};
       const detail={status:'success',task:'green bowl',videos:['top.mp4','left_wrist.mp4','right_wrist.mp4'],
         recording:{state:'available',duration_s:2},upload:{status:'uploading'}};
@@ -161,6 +172,16 @@ def test_pending_export_hides_partial_video_files_then_renders_finished_recordin
     ctx.eval("detail.recording.state='available'; updateRunDetail(view,detail);")
     assert ctx.eval("playbackStarts") == 1
     assert ctx.eval("$('#run-recording').innerHTML").count("<video") == 3
+
+
+def test_postprocess_still_polls_after_physical_result_before_upload_is_queued(detail_js):
+    ctx = detail_js
+    ctx.eval("detail.upload=null; detail.rollout_progress={phase:'finalizing',operation_id:'op1'}; updateRunDetail(view,detail);")
+    assert ctx.eval("view.pending")
+    assert ctx.eval("view.progressOperationId") == "op1"
+    ctx.eval("detail.rollout_progress.phase='done'; updateRunDetail(view,detail);")
+    assert not ctx.eval("view.pending")
+    assert ctx.eval("playbackStarts") == 1
 
 
 @pytest.mark.parametrize("detached", [False, True])
