@@ -692,7 +692,15 @@ def inference_js():
       var session={active:false,meta:{},parsed:{},log:[]};
       function $(id) { return nodes[id] ||= {value:'',checked:false,disabled:false,textContent:'',
         addEventListener:()=>{},innerHTML:''}; }
-      var document={getElementById:(id)=>$('#'+id)};
+      var visibilityHandlers=[];
+      var blurHandlers=[],windowFocused=true;
+      var window={addEventListener:(name,fn)=>{if(name==='blur')blurHandlers.push(fn);},
+        removeEventListener:(name,fn)=>{blurHandlers=blurHandlers.filter(item=>item!==fn);}};
+      var document={visibilityState:'visible',getElementById:(id)=>$('#'+id),
+        hasFocus:()=>windowFocused,
+        addEventListener:(name,fn)=>{if(name==='visibilitychange')visibilityHandlers.push(fn);},
+        removeEventListener:(name,fn)=>{visibilityHandlers=visibilityHandlers.filter(item=>item!==fn);}};
+      var pageCleanup=null;
       var timers={}, nextTimer=0;
       function setTimeout(callback){timers[++nextTimer]=callback;return nextTimer;}
       function clearTimeout(id){delete timers[id];}
@@ -766,7 +774,7 @@ def test_browser_attached_start_needs_qualification_for_current_mapping_acceptan
     assert ctx.eval("$('#btn-ro').disabled")  # The accepted form gets its own fresh check.
     _check_attached_browser(ctx)
     assert ctx.eval("$('#btn-ro').disabled") is False
-    assert "Qualified for this selection" in ctx.eval("$('#inf-qualification-status').textContent")
+    assert "Ready for this task" in ctx.eval("$('#inf-qualification-status').textContent")
 
 
 @pytest.mark.parametrize("node,value", [
@@ -779,7 +787,7 @@ def test_browser_attached_form_changes_invalidate_qualification(attached_browser
     assert ctx.eval("$('#btn-ro').disabled") is False
     ctx.eval(f"$({json.dumps('#' + node)}).value={json.dumps(value)}; pages.inference.syncForm()")
     assert ctx.eval("$('#btn-ro').disabled")
-    assert "Qualified for this selection" not in ctx.eval("$('#inf-qualification-status').textContent")
+    assert "Ready for this task" not in ctx.eval("$('#inf-qualification-status').textContent")
 
 
 def test_browser_attached_trace_selection_invalidates_qualification(attached_browser):
@@ -1041,3 +1049,209 @@ def test_browser_reopened_page_shows_actual_running_task_duration_not_defaults(i
     assert ctx.eval("$('#inf-mapping').checked") is False
     assert ctx.eval("$('#inf-task').disabled")
     assert ctx.eval("$('#btn-inf-stop').disabled") is False
+
+
+@pytest.fixture
+def preparation_browser(attached_browser):
+    ctx = attached_browser
+    ctx.eval("""
+      var qualificationReady=false, prepareFailure=null, prepareReused=false;
+      var confirmMessages=[],preparationSession=null,deferPrepare=false,resolvePrepare=null;
+      $('#inf-backend').value='external'; $('#inf-external-service').value='lambda-georgia';
+      $('#inf-controller').value='reference'; $('#inf-duration').value='20';
+      $('#inf-task').value='pick the red cube out of the green browl and place it on the table';
+      $('#inf-mapping').checked=true;
+      confirm=function(message){confirmMessages.push(message);return confirmResult;};
+      post=function(path,body){
+        posts.push({path,body});
+        if(path==='/inference/preflight')return Promise.resolve({ready:qualificationReady,can_prepare:!qualificationReady,
+          reason:qualificationReady?'ready':'Task preparation needed',selection_key:'checked-original-form',
+          checked_at:browserNow/1000,expires_at:qualificationReady?browserNow/1000+3600:null});
+        if(path==='/inference/prepare'){
+          if(prepareFailure)return Promise.reject(new Error(prepareFailure));
+          if(deferPrepare)return new Promise(resolve=>{resolvePrepare=resolve;});
+          if(prepareReused){qualificationReady=true;return Promise.resolve({ready:true,reused:true});}
+          preparationSession={active:true,mode:'inference-prepare',meta:{operation_id:'prepare1',task:body.task},
+            parsed:{preparation_phase:'warming_and_qualifying'},log:['simulated qualification'],returncode:null};
+          return Promise.resolve({ready:false,reused:false,preparing:true,operation_id:'prepare1',selection_key:'no-approval-key'});
+        }
+        return Promise.resolve({meta:{operation_id:'rollout1'}});
+      };
+      refreshSession=function(){if(preparationSession)session=preparationSession;return Promise.resolve();};
+      function finishPrep(changes={}){
+        qualificationReady=true;
+        session={...preparationSession,active:false,returncode:0,
+          parsed:{preparation_phase:'ready',result:{ready:true,selection_key:'no-approval-key',hardware_tested:false}},...changes};
+        preparationSession=session;
+        pages.inference.update();
+      }
+    """)
+    _check_attached_browser(ctx)
+    return ctx
+
+
+def _start_preparation(ctx):
+    ctx.eval("$('#btn-ro').onclick({target:$('#btn-ro')})")
+    _drain_js(ctx)
+
+
+def _posted(ctx, path):
+    return json.loads(ctx.eval(f"JSON.stringify(posts.filter(p=>p.path==={json.dumps(path)}))"))
+
+
+def test_browser_exact_new_prompt_prepares_in_ui_then_asks_fresh_confirmation(preparation_browser):
+    ctx = preparation_browser
+    assert not ctx.eval("$('#btn-ro').disabled")
+    _start_preparation(ctx)
+    assert ctx.eval("confirmMessages.length") == 0
+    assert not _posted(ctx, "/session/rollout")
+    prepared = _posted(ctx, "/inference/prepare")[0]["body"]
+    assert prepared["task"] == "pick the red cube out of the green browl and place it on the table"
+    assert prepared["mapping_accepted"] is False and prepared["supervised_confirmed"] is False
+    assert "confirm_motion" not in prepared
+    assert prepared["controller_mode"] == "reference" and prepared["image_encoding"] == "rgb8"
+    assert ctx.eval("$('#btn-inf-stop').textContent") == "Cancel preparation"
+    assert ctx.eval("$('#inf-task').disabled")
+    ctx.eval("confirmResult=true; finishPrep();")
+    _drain_js(ctx)
+    assert ctx.eval("confirmMessages.length") == 1
+    assert "green browl" in ctx.eval("confirmMessages[0]")
+    rollout = _posted(ctx, "/session/rollout")
+    assert len(rollout) == 1
+    assert rollout[0]["body"]["task"] == prepared["task"]
+    assert rollout[0]["body"]["mapping_accepted"] is True
+    assert rollout[0]["body"]["supervised_confirmed"] is True
+    assert rollout[0]["body"]["confirm_motion"] is True
+    ctx.eval("pages.inference.update();")
+    _drain_js(ctx)
+    assert len(_posted(ctx, "/session/rollout")) == 1
+
+
+def test_browser_ready_selection_refreshes_local_status_but_skips_gpu_preparation(preparation_browser):
+    ctx = preparation_browser
+    ctx.eval("qualificationReady=true; confirmResult=true;")
+    _check_attached_browser(ctx)
+    before = len(_posted(ctx, "/inference/preflight"))
+    _start_preparation(ctx)
+    assert len(_posted(ctx, "/inference/preflight")) == before + 1
+    assert not _posted(ctx, "/inference/prepare")
+    assert len(_posted(ctx, "/session/rollout")) == 1
+
+
+def test_browser_ready_cache_changed_in_another_tab_prepares_before_confirmation(preparation_browser):
+    ctx = preparation_browser
+    ctx.eval("qualificationReady=true; confirmResult=true;")
+    _check_attached_browser(ctx)
+    ctx.eval("qualificationReady=false;")
+    _start_preparation(ctx)
+    assert len(_posted(ctx, "/inference/prepare")) == 1
+    assert not _posted(ctx, "/session/rollout")
+    assert ctx.eval("confirmMessages.length") == 0
+
+
+def test_browser_idempotent_prepare_reuse_still_needs_fresh_confirmation(preparation_browser):
+    ctx = preparation_browser
+    ctx.eval("prepareReused=true; confirmResult=false;")
+    _start_preparation(ctx)
+    assert ctx.eval("confirmMessages.length") == 1
+    assert not _posted(ctx, "/session/rollout")
+    assert not ctx.eval("$('#btn-ro').disabled")
+
+
+@pytest.mark.parametrize("invalidate", [
+    "$('#btn-inf-stop').onclick({target:$('#btn-inf-stop')});",
+    "document.visibilityState='hidden'; visibilityHandlers.forEach(fn=>fn()); document.visibilityState='visible';",
+    "windowFocused=false; blurHandlers.forEach(fn=>fn()); windowFocused=true;",
+    "pageCleanup();",
+    "$('#inf-task').value='different task'; pages.inference.formChanged('inf-task');",
+    "$('#inf-duration').value='90'; pages.inference.formChanged('inf-duration');",
+])
+def test_browser_cancel_background_navigation_or_edit_never_carries_start_intent(preparation_browser, invalidate):
+    ctx = preparation_browser
+    _start_preparation(ctx)
+    ctx.eval("confirmResult=true; " + invalidate + " finishPrep();")
+    _drain_js(ctx)
+    assert not _posted(ctx, "/session/rollout")
+    assert ctx.eval("confirmMessages.length") == 0
+
+
+def test_browser_reload_after_preparation_does_not_restore_motion_intent(preparation_browser):
+    ctx = preparation_browser
+    _start_preparation(ctx)
+    ctx.eval("confirmResult=true; pageCleanup(); pages.inference.render({innerHTML:''},[]);")
+    _drain_js(ctx)
+    ctx.eval("finishPrep();")
+    _drain_js(ctx)
+    assert not _posted(ctx, "/session/rollout")
+    assert ctx.eval("confirmMessages.length") == 0
+
+
+@pytest.mark.parametrize("changes", [
+    {"returncode": 1}, {"stop_requested": True},
+    {"parsed": {"preparation_phase": "failed", "result": {"ready": False, "reason": "RPC failed"}}},
+    {"parsed": {"preparation_phase": "ready", "result": {"ready": True, "selection_key": "different-settings"}}},
+    {"meta": {"operation_id": "different-operation"}},
+])
+def test_browser_failed_cancelled_or_mismatched_preparation_never_launches(preparation_browser, changes):
+    ctx = preparation_browser
+    _start_preparation(ctx)
+    ctx.eval("confirmResult=true; finishPrep(" + json.dumps(changes) + ");")
+    _drain_js(ctx)
+    assert not _posted(ctx, "/session/rollout")
+    assert ctx.eval("confirmMessages.length") == 0
+
+
+def test_browser_preparation_endpoint_failure_does_not_retry_or_move(preparation_browser):
+    ctx = preparation_browser
+    ctx.eval("prepareFailure='service unavailable'; confirmResult=true;")
+    _start_preparation(ctx)
+    assert len(_posted(ctx, "/inference/prepare")) == 1
+    assert not _posted(ctx, "/session/rollout")
+    assert "Preparation failed" in ctx.eval("$('#inf-status').textContent")
+    assert ctx.eval("confirmMessages.length") == 0
+
+
+def test_browser_late_prepare_response_after_background_does_not_launch(preparation_browser):
+    ctx = preparation_browser
+    ctx.eval("deferPrepare=true; confirmResult=true;")
+    _start_preparation(ctx)
+    ctx.eval("document.visibilityState='hidden'; visibilityHandlers.forEach(fn=>fn()); document.visibilityState='visible'; "
+             "qualificationReady=true; resolvePrepare({ready:true,reused:true});")
+    _drain_js(ctx)
+    assert not _posted(ctx, "/session/rollout")
+    assert ctx.eval("confirmMessages.length") == 0
+
+
+def test_browser_postpreparation_memory_or_identity_failure_remains_blocking(preparation_browser):
+    ctx = preparation_browser
+    _start_preparation(ctx)
+    ctx.eval("""
+      const originalPost=post;
+      post=(path,body)=>path==='/inference/preflight'?Promise.resolve({ready:false,can_prepare:false,
+        reason:'Insufficient capture memory',checked_at:browserNow/1000,expires_at:browserNow/1000+3600}):originalPost(path,body);
+      confirmResult=true;finishPrep();
+    """)
+    _drain_js(ctx)
+    assert not _posted(ctx, "/session/rollout")
+    assert ctx.eval("confirmMessages.length") == 0
+    assert ctx.eval("$('#btn-ro').disabled")
+    assert "Insufficient capture memory" in ctx.eval("$('#inf-status').textContent")
+
+
+def test_browser_task_preparation_keeps_optional_archive_settings(preparation_browser):
+    ctx = preparation_browser
+    ctx.eval("$('#inf-trace').checked=true; $('#inf-upload').checked=true; $('#inf-upload-repo').value='owner/rollouts';")
+    _check_attached_browser(ctx)
+    _start_preparation(ctx)
+    ctx.eval("confirmResult=true;finishPrep();")
+    _drain_js(ctx)
+    for path in ("/inference/prepare", "/session/rollout"):
+        body = _posted(ctx, path)[0]["body"]
+        assert body["capture_trace"] and body["upload_repo_id"] == "owner/rollouts"
+
+
+def test_browser_manual_status_refresh_is_advanced_not_a_required_main_step():
+    source = (UI / "app.js").read_text()
+    button = source.index('id="btn-inf-preflight"')
+    assert source.index('id="inf-advanced"') < button < source.index("</details></div>", button)
+    assert "Recheck readiness" not in source

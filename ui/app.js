@@ -866,7 +866,30 @@ pages.inference = {
     this._checkSequence = (this._checkSequence || 0) + 1;
     this._defaultsLoaded = false;
     this._defaultsError = null;
+    this._prepareIntent = null;
+    this._startIntent = null;
+    this._startingPreparation = false;
+    this._prepareNotice = "";
     const form = this._form = {};
+    const abandonStart = () => {
+      if (this._prepareIntent || this._startIntent) {
+        this._prepareIntent = null;
+        this._startIntent = null;
+        this._prepareNotice = "Preparation can finish in the background. Click Start again when you return; no motion was approved.";
+      }
+    };
+    const backgrounded = () => { if (document.visibilityState !== "visible") abandonStart(); };
+    document.addEventListener("visibilitychange", backgrounded);
+    window.addEventListener("blur", abandonStart);
+    pageCleanup = () => {
+      this._prepareIntent = null;
+      this._startIntent = null;
+      this._form = null;
+      ++this._checkSequence;
+      clearTimeout(this._checkTimer);
+      document.removeEventListener("visibilitychange", backgrounded);
+      window.removeEventListener("blur", abandonStart);
+    };
     clearTimeout(this._checkTimer);
     el.innerHTML = `
       ${pageHead("Inference", "run a supervised task with your attached policy")}
@@ -889,12 +912,11 @@ pages.inference = {
         </div>
         <div class="inference-readiness" role="status" aria-live="polite">
           <div id="inf-qualification-status" class="hint"></div>
-          <button id="btn-inf-preflight">Recheck readiness</button>
         </div>
         <div class="toolbar inference-actions">
           <button id="btn-ro" class="primary">Start rollout</button><button id="btn-inf-stop" class="danger">Stop local execution</button>
         </div>
-        <div class="hint warn">Start enables motors and moves the selected followers. Stay at the arms with mounts secure, the area clear, Stop and power cutoff ready.</div>
+        <div class="hint warn">Start prepares a changed task if needed, then asks before moving the arms. Stay at the arms with mounts secure, the area clear, Stop and power cutoff ready.</div>
         <div class="hint">Duration is policy time; startup and return home take additional time. Normal completion returns home, then releases. Stop/fault releases without home. Closing the browser is not Stop.</div>
         <details class="advanced inference-advanced" id="inf-advanced"><summary>Advanced settings</summary>
         <div class="form-grid">
@@ -920,11 +942,12 @@ pages.inference = {
         </div>
         <div class="hint">Remote defaults: 30 Hz, HTTP, ten-step inference, raw RGB. Readiness is checked without opening hardware, and checked again by the server before Start.</div>
       <div class="sect"><div class="sect-head">Diagnostics · not needed for a normal run</div>
+        <div class="toolbar"><button id="btn-inf-preflight">Refresh local status</button></div>
         <label class="field">saved observation (.npz path inside this repository)<input type="text" id="inf-saved" placeholder="data/probes/observation.npz" /></label>
         <div class="toolbar"><button id="btn-probe-saved">Probe saved observation</button><button id="btn-probe-live">Probe live active read</button></div>
         <div class="hint warn">Live probe is GRAVITY-COMPENSATION ACTIVE READ: motors are active and this is not guaranteed motion-free. All gripper calibrations must be valid first. A successful probe never approves motion or replays its chunk.</div>
       </div></details></div>
-      <div class="sect"><div class="sect-head">Operation</div><div class="panel pad"><div id="inf-status" role="status" aria-live="polite">No operation for this selection.</div><div id="inf-progress">${rolloutProgressHTML()}</div></div><details class="advanced"><summary>Operation log</summary><pre id="inf-result" class="log tall"></pre></details></div>
+      <div class="sect"><div class="sect-head">Operation</div><div class="panel pad"><div id="inf-status" role="status" aria-live="polite">No operation for this selection.</div><div id="inf-preparation-progress" class="inference-preparation" hidden><progress aria-label="Software task preparation"></progress><div class="hint">Generated images and simulated arms only. No camera opens or motor commands. You will be asked before motion.</div></div><div id="inf-progress">${rolloutProgressHTML()}</div></div><details class="advanced"><summary>Operation log</summary><pre id="inf-result" class="log tall"></pre></details></div>
       <div class="sect"><div class="sect-head">Cameras</div>
         <button id="btn-inf-cameras">Show camera previews</button>
         <div class="hint">Showing previews opens the cameras and sends no motor commands.</div>
@@ -955,13 +978,7 @@ pages.inference = {
     });
     $("#btn-pc").onclick = (e) => this.launch("/session/policy-check", {}, e.target);
     $("#btn-prepare").onclick = (e) => this.launch("/session/modal-prepare", {}, e.target);
-    $("#btn-ro").onclick = (e) => {
-      this.syncForm();
-      if ($("#btn-ro").disabled) return;
-      const selected = this.selection();
-      if (!confirm(`Start ${selected.duration}-second rollout?\n\nTask: ${selected.task}\n${selected.policy} · ${selected.backend} · ${selected.controller_mode} controller\n\nMotors WILL move. Confirm you are at the arms, mounts secure, grippers empty, workspace clear, Stop and physical power cutoff ready. Normal completion returns home then releases; Stop/fault releases without home.`)) return;
-      this.launch("/session/rollout", { confirm_motion: true, supervised_confirmed: true }, e.target);
-    };
+    $("#btn-ro").onclick = (e) => this.startRollout(e.target);
     $("#btn-inf-preflight").onclick = () => this.checkAttachment();
     $("#btn-attach-owned").onclick = async () => {
       if (session.active) return;
@@ -996,7 +1013,12 @@ pages.inference = {
       $("#btn-inf-cameras").textContent = this._previews ? "Hide camera previews" : "Show camera previews";
       updateRolloutClocks();
     };
-    $("#btn-inf-stop").onclick = (e) => doPost("/session/stop", {}, e.target);
+    $("#btn-inf-stop").onclick = (e) => {
+      this._prepareIntent = null;
+      this._startIntent = null;
+      if (session.mode === "inference-prepare") this._prepareNotice = "Cancelling software preparation. No rollout will start.";
+      doPost("/session/stop", {}, e.target);
+    };
     $("#btn-cloud-stop").onclick = (e) => doPost("/session/modal-shutdown", {}, e.target);
     this.syncForm();
     this.refreshList();
@@ -1014,6 +1036,9 @@ pages.inference = {
     for (const id of ["mapping", "trace", "upload", "rtc", "crop"]) $("#inf-" + id).checked = false;
   },
   formChanged(id) {
+    this._prepareIntent = null;
+    this._startIntent = null;
+    this._prepareNotice = "";
     if (["inf-policy", "inf-task", "inf-backend", "inf-controller", "inf-arms", "inf-crop", "inf-modal-app", "inf-external-service"].includes(id))
       $("#inf-mapping").checked = false;
     this._qualification = null;
@@ -1069,6 +1094,107 @@ pages.inference = {
       if (JSON.stringify(this.selection()) !== key) this.scheduleCheck();
     }
   },
+  async startRollout(button) {
+    this.syncForm();
+    if ($("#btn-ro").disabled || document.visibilityState !== "visible" || document.hasFocus?.() === false) return;
+    const selected = this.selection(), key = JSON.stringify(selected);
+    if (["modal", "external"].includes(selected.backend)) {
+      const intent = this._startIntent = {form: this._form, key};
+      await this.checkAttachment(); // Fresh local state, not another GPU qualification.
+      if (this._startIntent !== intent || this._form !== intent.form || document.visibilityState !== "visible" || document.hasFocus?.() === false
+          || JSON.stringify(this.selection()) !== key) return;
+      this._startIntent = null;
+      this.syncForm();
+      if ($("#btn-ro").disabled) return;
+    }
+    const qualification = this._qualification?.key === key ? this._qualification : null;
+    if (["modal", "external"].includes(selected.backend) && !qualification?.ready) {
+      if (qualification?.can_prepare !== true) return;
+      return this.prepareForRollout(selected, button);
+    }
+    return this.confirmRollout(button);
+  },
+  async confirmRollout(button) {
+    const form = this._form, selected = this.selection(), key = JSON.stringify(selected);
+    if (!form || document.visibilityState !== "visible" || document.hasFocus?.() === false || session.active) return;
+    if (!confirm(`Start ${selected.duration}-second rollout?\n\nTask: ${selected.task}\n${selected.policy} · ${selected.backend} · ${selected.controller_mode} controller\n\nMotors WILL move. Confirm you are at the arms, mounts secure, grippers empty, workspace clear, Stop and physical power cutoff ready. Normal completion returns home then releases; Stop/fault releases without home.`)) return;
+    if (this._form !== form || document.visibilityState !== "visible" || document.hasFocus?.() === false || JSON.stringify(this.selection()) !== key) return;
+    this.syncForm();
+    if ($("#btn-ro").disabled) return; // Expiry, settings and operation ownership can change during the dialog.
+    this._prepareNotice = "";
+    return this.launch("/session/rollout", { confirm_motion: true, supervised_confirmed: true }, button);
+  },
+  preparationIntentCurrent(intent) {
+    return this._prepareIntent === intent && this._form === intent.form && !!$("#inf-policy")
+      && document.visibilityState === "visible" && document.hasFocus?.() !== false && JSON.stringify(this.selection()) === intent.key;
+  },
+  async prepareForRollout(selected, button) {
+    if (this._startingPreparation || this._prepareIntent || session.active) return;
+    const intent = this._prepareIntent = {form: this._form, key: JSON.stringify(selected), button,
+      operationId: null, selectionKey: null, finishing: false};
+    this._startingPreparation = true;
+    this._prepareNotice = "";
+    this.syncForm();
+    try {
+      // Software preparation is explicitly not mapping acceptance or permission to move.
+      const result = await post("/inference/prepare", {...selected, mapping_accepted: false, supervised_confirmed: false});
+      this._startingPreparation = false;
+      if (!this.preparationIntentCurrent(intent)) return;
+      if (result.ready === true && result.reused === true) {
+        intent.finishing = true;
+        return await this.finishPreparation(intent);
+      }
+      if (!result.preparing || !result.operation_id || !result.selection_key)
+        throw new Error(result.reason || "Software preparation did not start. No rollout was launched.");
+      intent.operationId = result.operation_id;
+      intent.selectionKey = result.selection_key;
+      await refreshSession();
+      this.checkPreparationCompletion();
+    } catch (e) {
+      if (this._prepareIntent === intent) {
+        this._prepareIntent = null;
+        this._prepareNotice = `Preparation failed: ${e.message}. No rollout was launched.`;
+      }
+    } finally {
+      this._startingPreparation = false;
+      if (this._form === intent.form) this.syncForm();
+    }
+  },
+  checkPreparationCompletion() {
+    const intent = this._prepareIntent;
+    if (!intent || !intent.operationId || intent.finishing) return;
+    if (!this.preparationIntentCurrent(intent)) { this._prepareIntent = null; return; }
+    if (session.meta?.operation_id !== intent.operationId) {
+      this._prepareIntent = null;
+      this._prepareNotice = "The active operation changed. Click Start again when the UI is idle; no rollout was approved.";
+      return;
+    }
+    if (session.active) return;
+    const result = session.parsed?.result;
+    if (session.mode !== "inference-prepare" || session.returncode !== 0 || session.stop_requested
+        || result?.ready !== true || result.selection_key !== intent.selectionKey) {
+      this._prepareIntent = null;
+      this._prepareNotice = session.stop_requested ? "Preparation cancelled. No rollout was launched."
+        : `Preparation did not complete: ${result?.reason || "see the operation log"}. No rollout was launched.`;
+      this._qualification = null;
+      this.scheduleCheck();
+      return;
+    }
+    intent.finishing = true;
+    this.finishPreparation(intent);
+  },
+  async finishPreparation(intent) {
+    if (!this.preparationIntentCurrent(intent) || session.active) return;
+    await this.checkAttachment(); // Passive local check only; never repeats GPU qualification.
+    if (!this.preparationIntentCurrent(intent) || session.active) return;
+    const ready = this._qualification?.key === intent.key && this._qualification.ready === true
+      && Number.isFinite(this._qualification.deadline) && Date.now() < this._qualification.deadline;
+    this._prepareIntent = null;
+    this._prepareNotice = ready ? "Task prepared. Confirm the supervised run to start motion."
+      : `Preparation finished, but Start is blocked: ${this._qualification?.reason || "current settings are not ready"}. No rollout was launched.`;
+    this.syncForm();
+    if (ready) await this.confirmRollout(intent.button);
+  },
   syncForm() {
     if (!$("#inf-policy")) return;
     // A newly opened tab must show the running job, not the next-run defaults.
@@ -1087,7 +1213,7 @@ pages.inference = {
     }
     const external = $("#inf-backend").value === "external";
     const modal = ["modal", "external"].includes($("#inf-backend").value);
-    const busy = session.active || this._launching || !this._defaultsLoaded;
+    const busy = session.active || this._launching || this._startingPreparation || !!this._prepareIntent || !this._defaultsLoaded;
     for (const id of ["preset", "policy", "task", "backend", "arms", "duration", "mapping", "saved"])
       $("#inf-" + id).disabled = busy;
     $("#inf-device").disabled = modal || busy;
@@ -1123,7 +1249,8 @@ pages.inference = {
       $("#inf-capture-note").textContent += ` Capture memory: ${(memory.required_bytes / 1e9).toFixed(2)} GB required, ${(memory.available_bytes / 1e9).toFixed(2)} GB available.`;
     }
     const qualified = qualification?.ready === true && Number.isFinite(qualification.deadline) && Date.now() < qualification.deadline;
-    const modalBlocked = modal && (!qualified || !selected.mapping_accepted);
+    const preparable = qualification?.can_prepare === true && !qualification.ready;
+    const modalBlocked = modal && ((!qualified && !preparable) || !selected.mapping_accepted);
     $("#inf-selection-summary").textContent = this._defaultsLoaded
       ? `${profile?.id === "molmoact2" ? "MolmoAct2" : selected.policy || "Choose a policy"} · ${external ? selected.external_service || "Choose an external service" : selected.backend} · ${modal ? selected.controller_mode + " controller · " : ""}${selected.arms?.length === 1 ? "One arm" : "Both arms"} · 30 Hz`
       : "Loading attached policy…";
@@ -1131,10 +1258,12 @@ pages.inference = {
     $("#inf-qualification-status").textContent = this._defaultsError || (!this._defaultsLoaded ? "Loading current settings…"
       : invalidSelection ? "Enter a task, policy and duration between 1 and 3600 seconds."
       : !modal ? "Local policy selected. Verify checkpoint and rig compatibility before Start."
-      : this._checking ? "Checking local qualification…"
-      : qualified ? `Qualified for this selection. Start within ${Math.ceil((qualification.deadline - Date.now()) / 1000)} seconds; the server checks again before launch.`
-      : qualification?.ready ? "Session expires too soon. Refresh it in Conductor and check again."
-      : qualification?.reason || "Checking these settings requires no hardware or cloud call. Use Recheck readiness if needed.");
+      : this._startingPreparation || session.active && session.mode === "inference-prepare" ? "Preparing the task with simulated inputs. The arms will not move until you confirm."
+      : this._checking ? "Loading current task status…"
+      : qualified ? "Ready for this task. Start asks for your supervised confirmation before moving the arms."
+      : preparable ? "Start will prepare this task first, then ask before moving the arms. No terminal steps needed."
+      : qualification?.ready ? "Session expires too soon. The attached model service must be refreshed before Start."
+      : qualification?.reason || "Loading the attached model’s local status…");
     const profileNote = profile ? `Revision ${profile.revision}. ${profile.mapping_note}` : "Custom checkpoints use the existing local LeRobot path; verify their rig compatibility before motion.";
     const blockedReason = qualified ? "Accept the verified YAM mapping before supervised Start."
       : qualification?.reason || "Physical remote rollout BLOCKED until this exact retained session passes the local check.";
@@ -1149,13 +1278,14 @@ pages.inference = {
     $("#btn-probe-live").disabled ||= external;
     $("#btn-inf-preflight").disabled = busy || this._checking || !modal || invalidSelection;
     $("#btn-inf-preflight").hidden = !modal;
-    $("#btn-ro").textContent = this._launching ? "Starting…" : `Start ${selected.duration || ""}s rollout`;
+    $("#btn-ro").textContent = this._launching ? "Starting…" : this._startingPreparation || !!this._prepareIntent ? "Preparing task…" : `Start ${selected.duration || ""}s rollout`;
     $("#btn-ro").disabled ||= busy || invalidSelection || modalBlocked || (selected.capture_trace && !captureSupported)
       || !!profile && (!profile.mapping_verified || (profile.id === "molmoact2" && selected.rtc));
     $("#btn-inf-stop").disabled = !session.active;
     const rolloutPhase = session.parsed?.rollout_phase;
     $("#btn-inf-stop").textContent = session.active && session.mode === "rollout"
       ? session.rollout_progress?.resources_released || rolloutPhase === "released" ? "Interrupt saving" : "Stop and release arms"
+      : session.mode === "inference-prepare" && session.active ? "Cancel preparation"
       : "Stop local execution";
     const submitted = this._submitted;
     const matches = submitted && submitted.selection === JSON.stringify(selected) && submitted.saved === $("#inf-saved").value && submitted.id === session.meta?.operation_id;
@@ -1177,7 +1307,19 @@ pages.inference = {
     }
     const progress = rolloutProgressView(session);
     if (progress) $("#inf-status").textContent = `${progress.label} · ${session.meta?.task || ""}`;
-    $("#inf-result").textContent = matches || managedRollout ? (session.log || []).join("\n") +
+    const preparing = this._startingPreparation || session.active && session.mode === "inference-prepare";
+    $("#inf-preparation-progress").hidden = !preparing;
+    if (session.mode === "inference-prepare") {
+      const phase = session.parsed?.preparation_phase;
+      const labels = {validating: "Preparing task — validating the attached model",
+        warming_and_qualifying: "Preparing task — warming the model and checking simulated execution",
+        checking: "Preparing task — saving the result", ready: "Task prepared. Click Start when you are ready.",
+        cancelled: "Preparation cancelled. No rollout was launched.", failed: "Task preparation failed. See the operation log."};
+      $("#inf-status").textContent = this._prepareNotice || `${session.stopping ? "Cancelling software preparation…"
+        : labels[phase] || (session.active ? "Preparing task with simulated inputs…" : "Software preparation finished.")} · ${session.meta?.task || ""}`;
+    } else if (this._startingPreparation) $("#inf-status").textContent = "Starting software-only task preparation…";
+    else if (this._prepareNotice) $("#inf-status").textContent = this._prepareNotice;
+    $("#inf-result").textContent = matches || managedRollout || session.mode === "inference-prepare" ? (session.log || []).join("\n") +
       (session.parsed?.result ? "\n" + JSON.stringify(session.parsed.result, null, 2) : "") : "";
     syncCams();
     updateRolloutClocks();
@@ -1213,6 +1355,7 @@ pages.inference = {
     } catch (e) { el.innerHTML = errBanner(e.message); }
   },
   update() {
+    this.checkPreparationCompletion();
     this.syncForm();
     const view = this._detailView;
     if (view?.alive) syncRunStop(view);
@@ -1244,7 +1387,8 @@ function syncRunStop(view) {
   if (!button) return;
   button.hidden = !session.active;
   button.disabled = !session.active;
-  button.textContent = session.rollout_progress?.resources_released || session.parsed?.rollout_phase === "released" ? "Interrupt current saving" : "Stop current local execution";
+  button.textContent = session.mode === "inference-prepare" ? "Cancel preparation"
+    : session.rollout_progress?.resources_released || session.parsed?.rollout_phase === "released" ? "Interrupt current saving" : "Stop current local execution";
 }
 
 async function renderRunDetail(el, id) {

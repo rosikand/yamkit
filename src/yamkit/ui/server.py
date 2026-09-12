@@ -58,6 +58,46 @@ def _capture_memory_preflight(duration: int) -> dict:
             "admission_passes": available >= required, "disk_free_bytes": shutil.disk_usage(ROOT).free}
 
 
+def _prompt_preparation_context(options, rig: RigConfig) -> dict:
+    """Validate everything except task warmup/qualification, without contacting the GPU or devices."""
+    from ..external_ops import http_credentials, owned_service
+    from ..inference.identity import http_runtime_binding
+    from ..inference.profiles import get_profile
+    from ..inference.qualification import is_cloud_host
+    from ..probes import preflight_live_probe
+
+    options.validate()
+    if (options.backend != "external" or options.controller_mode != "reference"
+            or get_profile(options.policy).id != "molmoact2" or options.call_mode != "http"
+            or options.execution_mode != "cuda_graph10" or options.image_encoding != "rgb8"
+            or options.center_crop or options.rtc or options.prediction_queue_threshold is not None
+            or options.jpeg_quality != 85 or options.supervised_confirmed or options.mapping_accepted):
+        raise ValueError("Prompt preparation requires the attached reference MolmoAct2 raw-RGB HTTP settings, without motion approval")
+    if is_cloud_host():
+        raise ValueError("Prepare the prompt on the Lenovo robot host")
+    profile = get_profile(options.policy)
+    specs, _ = preflight_live_probe(rig, options.arms or None, expected_state_names=profile.state_names)
+    if (len(specs) != 2 or any(spec.side != side or spec.arm_type != "yam" or spec.gripper != "linear_4310"
+                              for side, spec in zip(("left", "right"), specs))):
+        raise ValueError("Select the physically verified left and right YAM followers")
+    if (set(rig.cameras) != set(profile.image_keys) or options.fps != profile.fps
+            or any((rig.cameras[name].get("height"), rig.cameras[name].get("width")) != (480, 640)
+                   for name in profile.image_keys)):
+        raise ValueError("Prompt preparation requires the configured three full 640×480 cameras and 30 Hz actions")
+    credentials = http_credentials(options.external_service)  # Private local lookup, never returned.
+    receipt = owned_service(options.external_service) or {}
+    metadata = receipt.get("metadata", {})
+    binding = http_runtime_binding(profile, metadata, execution_mode=options.execution_mode,
+                                   task=options.task, image_hw=(480, 640), require_warmup=False,
+                                   endpoint_url=credentials["endpoint_url"])
+    expires = binding["http_session_expires_at"]
+    if time.time() + options.duration + 60 >= expires:
+        raise ValueError("The attached model session expires too soon; refresh that service before preparing a prompt")
+    return {"attachment_id": receipt["attachment_id"], "instance_id": metadata["instance_id"],
+            "inference_build_id": metadata["inference_build_id"], "expires_at": expires,
+            "selection_key": options.operation_key}
+
+
 def _rollout_metadata(options, rig: RigConfig) -> dict:
     """Capture source/configuration identity before launch without storing host credentials."""
     from ..inference.identity import inference_build_id
@@ -851,6 +891,7 @@ def create_app(
         """Read-only exact-form qualification check, without operator approval or a child process."""
         options = None
         capture_memory = None
+        can_prepare = False
         try:
             options = inference_options(body)
             validate_trace(body)
@@ -860,16 +901,66 @@ def create_app(
                 capture_memory = _capture_memory_preflight(int(body.duration))
                 if not capture_memory["admission_passes"]:
                     raise ValueError("Insufficient available memory to save this recording; free memory or turn recording off")
-            return {**modal_attachment(options, require_rig()), "capture_memory": capture_memory}
+            try:
+                return {**modal_attachment(options, require_rig()), "capture_memory": capture_memory,
+                        "can_prepare": False}
+            except (ValueError, KeyError, TypeError, OSError):
+                try:
+                    _prompt_preparation_context(dataclasses.replace(options, mapping_accepted=False, supervised_confirmed=False), require_rig())
+                    can_prepare = True
+                except (ValueError, KeyError, TypeError, OSError):
+                    pass  # Unsupported/stale infrastructure is never repaired by prompt preparation.
+                raise
         except HTTPException as exc:
             if exc.status_code != 422:
                 raise
             return {"ready": False, "reason": exc.detail, "selection_key": None,
-                    "checked_at": time.time(), "expires_at": None, "capture_memory": capture_memory}
+                    "checked_at": time.time(), "expires_at": None, "capture_memory": capture_memory,
+                    "can_prepare": False}
         except (ValueError, KeyError, TypeError, OSError) as exc:
             reason = str(exc) if isinstance(exc, ValueError) else "Retained session metadata or qualification is unavailable"
-            return {"ready": False, "reason": reason, "selection_key": options.operation_key,
-                    "checked_at": time.time(), "expires_at": None, "capture_memory": capture_memory}
+            return {"ready": False, "reason": reason, "selection_key": options.operation_key if options else None,
+                    "checked_at": time.time(), "expires_at": None, "capture_memory": capture_memory,
+                    "can_prepare": can_prepare}
+
+    @app.post("/api/inference/prepare")
+    def inference_prepare(body: InferenceBody) -> dict:
+        """Explicit software-only prompt warmup/qualification. Never chain this operation to motion."""
+        with inference_launch_lock:
+            if sessions.active:
+                raise HTTPException(409, "Wait for the current UI session to finish before preparing a prompt")
+            if body.mapping_accepted or body.supervised_confirmed:
+                raise HTTPException(422, "Prompt preparation cannot carry motion or mapping approval")
+            options = inference_options(body)
+            try:
+                validate_trace(body)
+                if body.capture_trace and not _capture_memory_preflight(int(body.duration))["admission_passes"]:
+                    raise ValueError("Insufficient available memory to save this recording; free memory or turn recording off")
+                try:
+                    current = modal_attachment(options, require_rig())
+                except (ValueError, KeyError, TypeError, OSError):
+                    current = None
+                if current:
+                    return {**current, "reused": True, "preparing": False}
+                context = _prompt_preparation_context(options, require_rig())
+                directory = ROOT / ".context" / "inference-preparation" / uuid.uuid4().hex
+                from ..rollout_artifacts import _safe_path
+
+                _safe_path(directory)
+                directory.mkdir(parents=True, exist_ok=False)
+                request_path = directory / "request.json"
+                request_path.write_text(json.dumps({"options": dataclasses.asdict(options), "expected": context,
+                                                    "capture_trace": body.capture_trace}, indent=2) + "\n")
+                state = inference_start(
+                    "inference-prepare", [], options,
+                    argv_override=[sys.executable, str(ROOT / "scripts" / "prepare_inference_prompt.py"), str(request_path)],
+                    extra_meta={"preparation_dir": str(directory), "hardware_tested": False})
+                return {"ready": False, "reused": False, "preparing": True,
+                        "operation_id": state["meta"]["operation_id"], "selection_key": options.operation_key,
+                        "session": state}
+            except (ValueError, KeyError, TypeError, OSError) as exc:
+                reason = str(exc) if isinstance(exc, ValueError) else "Prompt preparation inputs or local evidence are unavailable"
+                raise HTTPException(422, reason) from None
 
     def inference_start(mode: str, args: list[str], options, *, argv_override=None, extra_meta=None) -> dict:
         with inference_launch_lock:

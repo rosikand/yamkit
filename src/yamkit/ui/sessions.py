@@ -41,6 +41,7 @@ _OPERATOR_PHASE_RE = re.compile(r"\[yamkit-operator\] (starting|homing|synchroni
 _ROLLOUT_PHASE_RE = re.compile(r"\[yamkit-rollout\] (running|returning_home|releasing|released)\s*$")
 _EXPORT_PROGRESS_PREFIX = "[yamkit-export] "
 _EXPORT_PHASES = frozenset({"saving_frames", "encoding_videos", "rendering", "finalizing"})
+_PREPARATION_PHASE_RE = re.compile(r"^\[yamkit-prepare\] (validating|warming_and_qualifying|checking|ready|failed|cancelled)$")
 # lerobot-record progress (message wording varies between versions; match loosely)
 _EPISODE_RE = re.compile(r"[Rr]ecord(?:ing)?\s+episode\s+(\d+)")
 _PREPARING_RE = re.compile(r"Preparing episode\s+(\d+): waiting for operator readiness\.")
@@ -134,6 +135,10 @@ def _group_alive(pid: int) -> bool:
 def parse_line(line: str, parsed: dict[str, Any]) -> None:
     """Update the shared parsed-state dict from one line of child output (in place)."""
     line = _ANSI_RE.sub("", line)
+    preparation = _PREPARATION_PHASE_RE.match(line)
+    if preparation:
+        parsed["preparation_phase"] = preparation.group(1)
+        return
     m = _ROLLOUT_PHASE_RE.search(line)
     if m:
         phase = m.group(1)
@@ -419,6 +424,8 @@ class SessionManager:
             self.parsed = {"operator_phase": "starting"} if mode in ("teleop", "teleoperate", "record") else {}
             if mode == "rollout":
                 self.parsed["rollout_phase_since_monotonic"] = time.monotonic()
+            elif mode == "inference-prepare":
+                self.parsed["preparation_phase"] = "validating"
             self.mode = mode
             self.meta = meta or {}
             self._log_complete = False

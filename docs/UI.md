@@ -87,11 +87,32 @@ the inference service. Expired records are marked expired and can only suggest s
 their cached status cannot enable Start. A qualification for another host, service
 instance, controller or endpoint cannot supply the default task. The existing exact-form
 `POST /api/inference/preflight` and launch checks still validate the selected task,
-runtime identity, qualification, mapping, duration and service expiry. Editing a selection
-requires its readiness check again.
+runtime identity, qualification, mapping, duration and service expiry. Read-only checks
+update automatically when a selection changes; no separate readiness click is needed.
+
+For the attached Lambda reference service, **Start** prepares a changed prompt through
+the existing service and tunnel when necessary. Preparation uses generated images and
+fake arms, keeps the current model and controller unchanged, and never opens physical
+cameras or connects motors. It runs the existing host qualification only when the exact
+settings are not already ready; repeating a ready task does not repeat qualification.
+The UI shows preparation progress and a **Cancel preparation** control. It does not
+prepare prompts while typing or merely opening the page.
+
+After preparation succeeds, the foreground page asks for the normal supervised motion
+confirmation before starting the requested rollout. A confirmation from before preparation
+is not reused. Cancel, failure, changed settings, navigation, refresh, or leaving the tab
+cannot silently queue a physical run; return to Inference and click Start explicitly.
+Missing/expired services, incompatible runtime settings and insufficient recording memory
+remain errors, rather than triggering provisioning, restarting a service or shortening a run.
+Preparation does not approve physical mapping or prove that the manipulation will succeed.
+
+Prompt text is used exactly as entered. Preparing another task updates the service's current
+task-specific warm-up and qualification; previous receipts are preserved with the preparation
+evidence. Returning to an earlier task may therefore need preparation again. Do not prepare
+a prompt while an independently started terminal rollout is using the same service.
 
 With the scene prepared and the operator at the rig, review the task and duration,
-check readiness, then use the supervised Start action. Startup homes and opens both
+then use Start and its supervised confirmation. Startup homes and opens both
 followers before the policy interval begins. Healthy reference completion returns home
 while preserving the final gripper opening and then releases; Stop/fault releases without
 homing. The UI Stop button controls UI-started sessions only, not a rollout launched from
