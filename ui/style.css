@@ -142,6 +142,30 @@ td.actions button, td.actions a { font-size: 12px; margin-right: 6px; }
 details.advanced { margin-top: 12px; }
 details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; font-weight: 500; user-select: none; }
 details.advanced[open] > summary { color: var(--text-2); }
+.inference-card { padding: 22px; }
+.inference-summary { color: var(--text-2); font-size: 12.5px; margin-bottom: 18px; }
+.inference-main-fields { display: grid; grid-template-columns: minmax(0, 1fr) 165px; gap: 18px; margin-bottom: 14px; }
+.inference-main-fields input { font-size: 14px; padding: 10px 12px; }
+.inference-readiness { display: flex; align-items: center; gap: 16px; margin: 16px 0; }
+.inference-readiness .hint { margin: 0; flex: 1; color: var(--text-2); }
+.inference-readiness button { flex-shrink: 0; }
+.inference-actions { margin-bottom: 14px; }
+.inference-actions button { min-height: 40px; padding: 9px 18px; font-weight: 600; }
+details.inference-advanced { border-top: 1px solid var(--hairline); margin-top: 20px; padding-top: 14px; }
+.inference-advanced > .form-grid { margin-top: 16px; }
+@media (max-width: 640px) {
+  #sidebar { position: static; width: 100%; border-right: 0; border-bottom: 1px solid var(--border); }
+  #nav { flex-direction: row; flex-wrap: wrap; }
+  .brand { padding-bottom: 6px; }
+  .brand-sub { display: none; }
+  .side-foot { padding: 8px 12px; }
+  .side-session { margin-bottom: 6px; }
+  main { margin-left: 0; padding: 20px 16px 36px; }
+  .page-head { flex-wrap: wrap; }
+  .inference-card { padding: 16px; }
+  .inference-main-fields { grid-template-columns: 1fr; gap: 12px; }
+  .inference-readiness { align-items: flex-start; flex-direction: column; gap: 10px; }
+}
 .hint.warn { color: var(--warn); }
 .divider { border: 0; border-top: 1px solid var(--hairline); margin: 16px 0; }
 

@@ -727,37 +727,54 @@ pages.inference = {
     if (args.length) return renderRunDetail(el, decodeURIComponent(args[0]));
     this._runDetailId = null;
     this._submitted = null;
+    this._activeSelection = null;
     this._previews = false;
     this._qualification = null;
     this._checking = false;
-    this._checkSequence = 0;
+    this._checkSequence = (this._checkSequence || 0) + 1;
+    this._defaultsLoaded = false;
+    this._defaultsError = null;
+    const form = this._form = {};
+    clearTimeout(this._checkTimer);
     el.innerHTML = `
-      ${pageHead("Inference", "attach a qualified session, inspect the scene, then start a supervised rollout")}
-      <div class="sect"><div class="sect-head">Policy deployment</div><div class="panel pad">
+      ${pageHead("Inference", "run a supervised task with your attached policy")}
+      <div class="sect panel pad inference-card">
+        <div id="inf-selection-summary" class="inference-summary">Loading attached policy…</div>
+        <div class="inference-main-fields">
+          <label class="field">Task<input type="text" id="inf-task" value="" placeholder="Describe what the arms should do" /></label>
+          <label class="field">Duration (seconds)<input type="number" id="inf-duration" value="60" min="1" max="3600" /></label>
+        </div>
+        <div id="inf-attach-controls">
+          <label class="check"><input type="checkbox" id="inf-mapping" /> I verified the arm / camera mapping and gripper calibration.</label>
+        </div>
+        <div class="inference-readiness" role="status" aria-live="polite">
+          <div id="inf-qualification-status" class="hint"></div>
+          <button id="btn-inf-preflight">Recheck readiness</button>
+        </div>
+        <div class="toolbar inference-actions">
+          <button id="btn-ro" class="primary">Start rollout</button><button id="btn-inf-stop" class="danger">Stop local execution</button>
+        </div>
+        <div class="hint warn">Start enables motors and moves the selected followers. Stay at the arms with mounts secure, the area clear, Stop and power cutoff ready.</div>
+        <div class="hint">Duration is policy time; startup and return home take additional time. Normal completion returns home, then releases. Stop/fault releases without home. Closing the browser is not Stop.</div>
+        <details class="advanced inference-advanced" id="inf-advanced"><summary>Advanced settings</summary>
         <div class="form-grid">
           <label class="field">preset<select id="inf-preset"><option value="smolvla">SmolVLA base · forward check</option><option value="molmoact2">MolmoAct2 · bimanual YAM</option><option value="pi05">pi05 base · forward check</option><option value="custom">Custom compatible local checkpoint</option></select></label>
           <label class="field">backend<select id="inf-backend"><option value="local">Local (default)</option><option value="modal">Modal · retained MolmoAct2 session</option><option value="external">Lambda / own GPU host · SSH</option></select></label>
-          <label class="field">remote controller<select id="inf-controller"><option value="async">Experimental async chunks</option><option value="reference">Reference full chunks</option></select></label>
+          <label class="field">remote controller<select id="inf-controller"><option value="reference">Reference full chunks</option><option value="async">Experimental async chunks</option></select></label>
           <label class="field">checkpoint<input type="text" id="inf-policy" value="smolvla" list="policy-list" /></label>
-          <label class="field">task<input type="text" id="inf-task" value="put the red cube into the black container" /></label>
           <label class="field">followers<select id="inf-arms"><option value="">Both arms</option><option value="left">Left only (compatible local model)</option><option value="right">Right only (compatible local model)</option></select></label>
-          <label class="field">duration (seconds)<input type="number" id="inf-duration" value="5" min="1" max="3600" /></label>
           <label class="field">local device<select id="inf-device"><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="mps">MPS</option></select></label>
           <label class="field">Modal GPU<select id="inf-gpu"><option value="L40S">L40S · one container</option><option value="H100!">H100 · one retained container</option></select></label>
           <label class="field">Retained session<input type="text" id="inf-modal-app" placeholder="yamkit-vla-session-…" /></label>
           <label class="field">External service<input type="text" id="inf-external-service" placeholder="lambda-georgia" /></label>
         </div>
         <div class="toolbar"><button id="btn-attach-owned">Use owned MolmoAct2 session</button></div>
-        <div id="inf-attach-controls">
-          <div class="hint">Conductor prepares and qualifies the cloud session. Enter its exact warmed task above. This page attaches over HTTP using ten-step inference and raw RGB.</div>
-          <label class="check"><input type="checkbox" id="inf-mapping" /> I verified left/right arms, cameras and gripper calibration and accept this policy's YAM mapping.</label>
+        <div id="inf-capture-controls">
+          <hr class="divider" />
           <label class="check"><input type="checkbox" id="inf-trace" /> Save 30 fps video and joint traces (put the red cube into the black container, 5, 10, 20, 30, 45, 60 or 90 seconds).</label>
           <label class="check"><input type="checkbox" id="inf-upload" /> Upload finalized rollout to a private Hugging Face dataset.</label>
           <label class="field">rollout dataset<input type="text" id="inf-upload-repo" placeholder="your-namespace/yamkit-rollouts" /></label>
-          <div class="hint">Upload saves all debug data after the arms are released and video export finishes. Local originals are kept. Requires 5, 10, 20, 30, 45, 60 or 90 second capture.</div>
-          <div class="hint">MolmoAct2 action rate: 30 Hz. Debug video preserves the timing of those camera observations, including gaps.</div>
-          <div class="toolbar"><button id="btn-inf-preflight">Check retained session (no hardware)</button></div>
-          <div id="inf-qualification-status" class="hint"></div>
+          <div id="inf-capture-note" class="hint">Capture and upload are opt-in; export starts only after motor release. Local originals are kept.</div>
         </div>
         <datalist id="policy-list"></datalist>
         <div class="toolbar"><label class="check"><input type="checkbox" id="inf-rtc" /> Local RTC (policy must support guidance)</label>
@@ -766,41 +783,50 @@ pages.inference = {
         <div class="hint">Reference full chunks executes one complete prediction before requesting the next. Experimental async chunks requests predictions in the background. Both use unguided inference. Changing controller requires a matching qualification.</div>
         <div class="toolbar" style="margin-top:12px">
           <button id="btn-pc">Check (no hardware)</button><button id="btn-prepare">Prepare Modal</button>
-          <button id="btn-ro" class="danger">Start rollout</button><button id="btn-inf-stop" class="danger">Stop local execution</button>
           <button id="btn-cloud-stop">Shut down owned cloud service</button>
         </div>
-        <div class="hint warn">Start rollout enables motors and moves the followers. Normal completion returns them home slowly before release. Stop interrupts motion and releases the arms. Closing this browser is not Stop.</div>
-        <div class="hint">Retained sessions expire automatically. Conductor manages their preparation and shutdown. Check the session again after changing any rollout option.</div>
-      </div></div>
-      <div class="sect"><div class="sect-head">Action probe · never executes predicted positions</div><div class="panel pad">
+        <div class="hint">Remote defaults: 30 Hz, HTTP, ten-step inference, raw RGB. Readiness is checked without opening hardware, and checked again by the server before Start.</div>
+      <div class="sect"><div class="sect-head">Diagnostics · not needed for a normal run</div>
         <label class="field">saved observation (.npz path inside this repository)<input type="text" id="inf-saved" placeholder="data/probes/observation.npz" /></label>
         <div class="toolbar"><button id="btn-probe-saved">Probe saved observation</button><button id="btn-probe-live">Probe live active read</button></div>
         <div class="hint warn">Live probe is GRAVITY-COMPENSATION ACTIVE READ: motors are active and this is not guaranteed motion-free. All gripper calibrations must be valid first. A successful probe never approves motion or replays its chunk.</div>
-      </div></div>
-      <div class="sect"><div class="sect-head">Operation</div><div id="inf-status" class="panel pad">No operation for this selection.</div><pre id="inf-result" class="log tall"></pre></div>
+      </div></details></div>
+      <div class="sect"><div class="sect-head">Operation</div><div id="inf-status" class="panel pad" role="status" aria-live="polite">No operation for this selection.</div><details class="advanced"><summary>Operation log</summary><pre id="inf-result" class="log tall"></pre></details></div>
       <div class="sect"><div class="sect-head">Cameras</div>
         <button id="btn-inf-cameras">Show camera previews</button>
         <div class="hint">Showing previews opens the cameras and sends no motor commands.</div>
         <div id="inf-cams-content"></div></div>
       <div class="sect"><div class="sect-head">Runs</div><div id="run-list">loading…</div></div>`;
     this._profiles = [];
-    api("/inference/profiles").then((data) => { this._profiles = data.profiles; this._ownedService = data.owned_service;
-      if (data.rollout_repo) { $("#inf-upload-repo").value = data.rollout_repo; $("#inf-upload").checked = true; }
-      this.syncForm(); }).catch(() => {});
+    api("/inference/profiles").then((data) => {
+      if (this._form !== form || !$("#inf-policy")) return;
+      this._profiles = data.profiles || [];
+      this._ownedService = data.owned_service;
+      if (data.defaults) this.applyDefaults(data.defaults);
+      if (data.rollout_repo) $("#inf-upload-repo").value = data.rollout_repo;
+      this._defaultsLoaded = true;
+      this.syncForm();
+      this.scheduleCheck();
+    }).catch((e) => {
+      if (this._form !== form || !$("#inf-policy")) return;
+      this._defaultsError = `Could not load policy settings: ${e.message}. Reload this page to retry.`;
+      this.syncForm();
+    });
     api("/models").then((list) => {
       const dl = $("#policy-list");
       if (dl) dl.innerHTML = list.map((m) => `<option value="${esc(m.where === "cloud" ? m.repo_id : "outputs/" + m.path)}">${esc(m.policy_type ?? "")}</option>`).join("");
     }).catch(() => {});
-    $("#inf-preset").onchange = () => { $("#inf-policy").value = $("#inf-preset").value === "custom" ? "" : $("#inf-preset").value; this.syncForm(); };
+    $("#inf-preset").onchange = () => { $("#inf-policy").value = $("#inf-preset").value === "custom" ? "" : $("#inf-preset").value; this.formChanged("inf-policy"); };
     ["inf-backend", "inf-controller", "inf-policy", "inf-task", "inf-arms", "inf-duration", "inf-device", "inf-gpu", "inf-rtc", "inf-crop", "inf-saved", "inf-modal-app", "inf-external-service", "inf-mapping", "inf-trace", "inf-upload", "inf-upload-repo"].forEach((id) => {
-      document.getElementById(id).addEventListener("input", () => this.syncForm());
+      document.getElementById(id).addEventListener("input", () => this.formChanged(id));
     });
     $("#btn-pc").onclick = (e) => this.launch("/session/policy-check", {}, e.target);
     $("#btn-prepare").onclick = (e) => this.launch("/session/modal-prepare", {}, e.target);
     $("#btn-ro").onclick = (e) => {
       this.syncForm();
       if ($("#btn-ro").disabled) return;
-      if (!confirm("Start rollout? Motors will be enabled and the follower arms WILL move, then return home slowly after normal completion. Stop interrupts motion and releases the arms. Clear the workspace and supervise the run.")) return;
+      const selected = this.selection();
+      if (!confirm(`Start ${selected.duration}-second rollout?\n\nTask: ${selected.task}\n${selected.policy} · ${selected.backend} · ${selected.controller_mode} controller\n\nMotors WILL move. Confirm you are at the arms, mounts secure, grippers empty, workspace clear, Stop and physical power cutoff ready. Normal completion returns home then releases; Stop/fault releases without home.`)) return;
       this.launch("/session/rollout", { confirm_motion: true, supervised_confirmed: true }, e.target);
     };
     $("#btn-inf-preflight").onclick = () => this.checkAttachment();
@@ -822,6 +848,7 @@ pages.inference = {
       $("#inf-mapping").checked = false;
       this._qualification = null;
       this.syncForm();
+      this.scheduleCheck();
     };
     $("#btn-probe-saved").onclick = (e) => this.launch("/session/policy-probe", { saved: $("#inf-saved").value.trim() }, e.target);
     $("#btn-probe-live").onclick = (e) => {
@@ -840,74 +867,137 @@ pages.inference = {
     this.syncForm();
     this.refreshList();
   },
+  applyDefaults(defaults) {
+    this._followerArms = defaults.arms?.length === 2 ? [...defaults.arms] : ["left_follower", "right_follower"];
+    const fields = { policy: "policy", task: "task", backend: "backend", controller_mode: "controller",
+      duration: "duration", device: "device", gpu: "gpu", modal_app: "modal-app", external_service: "external-service" };
+    for (const [key, id] of Object.entries(fields)) {
+      if (key in defaults) $("#inf-" + id).value = defaults[key] ?? "";
+    }
+    $("#inf-preset").value = ["smolvla", "molmoact2", "pi05"].includes(defaults.policy) ? defaults.policy : "custom";
+    $("#inf-arms").value = defaults.arms?.length === 1 ? defaults.arms[0].replace("_follower", "") : "";
+    // Defaults are never approval and never opt in to recording or upload.
+    for (const id of ["mapping", "trace", "upload", "rtc", "crop"]) $("#inf-" + id).checked = false;
+  },
+  formChanged(id) {
+    if (["inf-policy", "inf-task", "inf-backend", "inf-controller", "inf-arms", "inf-crop", "inf-modal-app", "inf-external-service"].includes(id))
+      $("#inf-mapping").checked = false;
+    this._qualification = null;
+    this.syncForm();
+    this.scheduleCheck();
+  },
+  scheduleCheck() {
+    clearTimeout(this._checkTimer);
+    if (!this._defaultsLoaded || session.active || this._launching || !$("#inf-policy") || $("#inf-backend").value === "local") return;
+    const form = this._form;
+    this._checkTimer = setTimeout(() => {
+      if (this._form === form && $("#inf-policy")) this.checkAttachment();
+    }, 400);
+  },
   selection() {
     const modal = $("#inf-backend").value === "modal";
     const external = $("#inf-backend").value === "external", remote = modal || external;
     return { policy: $("#inf-policy").value.trim(), task: $("#inf-task").value.trim(),
       backend: $("#inf-backend").value, device: $("#inf-device").value, gpu: $("#inf-gpu").value,
       duration: Number($("#inf-duration").value), fps: 30, rtc: $("#inf-rtc").checked,
-      center_crop: $("#inf-crop").checked, async_chunks: true,
+      center_crop: $("#inf-crop").checked, async_chunks: !remote || $("#inf-controller").value !== "reference",
       controller_mode: remote ? $("#inf-controller").value : "async",
       modal_app: modal ? $("#inf-modal-app").value.trim() || null : null,
       external_service: external ? $("#inf-external-service").value.trim() || null : null,
       call_mode: remote ? "http" : "remote", execution_mode: remote ? "cuda_graph10" : "eager",
+      image_encoding: "rgb8", jpeg_quality: 85, prediction_queue_threshold: null,
       mapping_accepted: remote && $("#inf-mapping").checked,
       capture_trace: remote && ($("#inf-trace").checked || $("#inf-upload").checked),
       upload_repo_id: remote && $("#inf-upload").checked ? $("#inf-upload-repo").value.trim() : null,
-      arms: $("#inf-arms").value ? [$("#inf-arms").value] : null };
+      arms: $("#inf-arms").value ? [$("#inf-arms").value] : remote ? this._followerArms || ["left_follower", "right_follower"] : null };
   },
   async checkAttachment() {
-    if (this._checking || session.active) return;
+    clearTimeout(this._checkTimer);
+    if (this._checking || session.active || this._launching || !this._defaultsLoaded) return;
     const selected = this.selection(), key = JSON.stringify(selected), sequence = ++this._checkSequence;
+    const form = this._form;
     const requestedAt = Date.now();
     this._checking = true;
     this._qualification = null;
     this.syncForm();
     try {
       const result = await post("/inference/preflight", selected);
-      if (sequence !== this._checkSequence || JSON.stringify(this.selection()) !== key) return;
+      if (this._form !== form || !$("#inf-policy") || sequence !== this._checkSequence || JSON.stringify(this.selection()) !== key) return;
       this._qualification = { ...result, key,
         deadline: requestedAt + Math.max(0, (result.expires_at - result.checked_at - selected.duration - 60) * 1000) };
     } catch (e) {
-      if (sequence === this._checkSequence && JSON.stringify(this.selection()) === key)
+      if (this._form === form && $("#inf-policy") && sequence === this._checkSequence && JSON.stringify(this.selection()) === key)
         this._qualification = { key, ready: false, reason: e.message };
     } finally {
+      if (this._form !== form || !$("#inf-policy")) return;
       this._checking = false;
       this.syncForm();
+      if (JSON.stringify(this.selection()) !== key) this.scheduleCheck();
     }
   },
   syncForm() {
     if (!$("#inf-policy")) return;
+    // A newly opened tab must show the running job, not the next-run defaults.
+    // Import display settings only: a prior job's approvals are never inherited.
+    if (this._defaultsLoaded && session.active && session.mode === "rollout" && session.meta?.policy
+        && this._submitted?.id !== session.meta.operation_id) {
+      const activeSelection = JSON.stringify(session.meta);
+      if (this._activeSelection !== activeSelection) {
+        this.applyDefaults(session.meta);
+        this._activeSelection = activeSelection;
+        this._qualification = null;
+      }
+    }
     const external = $("#inf-backend").value === "external";
     const modal = ["modal", "external"].includes($("#inf-backend").value);
-    $("#inf-device").disabled = modal;
-    $("#inf-controller").disabled = !modal || session.active || this._launching;
-    $("#inf-gpu").disabled = !modal || external;
-    $("#inf-modal-app").disabled = !modal || external;
-    $("#inf-external-service").disabled = !external;
+    const busy = session.active || this._launching || !this._defaultsLoaded;
+    for (const id of ["preset", "policy", "task", "backend", "arms", "duration", "mapping", "saved"])
+      $("#inf-" + id).disabled = busy;
+    $("#inf-device").disabled = modal || busy;
+    $("#inf-controller").disabled = !modal || busy;
+    $("#inf-gpu").disabled = !modal || external || busy;
+    $("#inf-modal-app").disabled = !modal || external || busy;
+    $("#inf-external-service").disabled = !external || busy;
     $("#inf-attach-controls").hidden = !modal;
-    $("#btn-attach-owned").disabled = session.active || this._launching;
-    $("#inf-rtc").disabled = modal;
+    $("#inf-capture-controls").hidden = !modal;
+    $("#btn-attach-owned").disabled = busy;
+    $("#btn-attach-owned").hidden = !this._ownedService;
+    $("#inf-rtc").disabled = modal || busy;
     if (modal) $("#inf-rtc").checked = false;
-    $("#inf-crop").disabled = !modal;
+    $("#inf-crop").disabled = !modal || busy;
     if (!modal) $("#inf-crop").checked = false;
-    $("#inf-trace").disabled = modal && $("#inf-upload").checked;
-    if ($("#inf-trace").disabled) $("#inf-trace").checked = true;
-    $("#inf-upload-repo").disabled = !modal || !$("#inf-upload").checked;
+    const captureSupported = modal && $("#inf-policy").value.trim() === "molmoact2"
+      && $("#inf-task").value.trim() === "put the red cube into the black container"
+      && [5, 10, 20, 30, 45, 60, 90].includes(Number($("#inf-duration").value));
+    if (!captureSupported) $("#inf-trace").checked = $("#inf-upload").checked = false;
+    if ($("#inf-upload").checked) $("#inf-trace").checked = true;
+    $("#inf-trace").disabled = busy || !captureSupported || $("#inf-upload").checked;
+    $("#inf-upload").disabled = busy || !captureSupported;
+    $("#inf-upload-repo").disabled = busy || !modal || !$("#inf-upload").checked;
+    $("#inf-capture-note").textContent = captureSupported
+      ? "Capture and upload are opt-in. Export starts after motor release; local originals are kept. Capture memory admission remains enforced."
+      : "Capture / upload is unavailable for this task or duration under the current validated capture guard. This run uses live inference without saved video.";
     const selected = this.selection();
     const profile = this._profiles.find((p) => p.id === selected.policy || p.repo_id === selected.policy);
     const qualification = this._qualification?.key === JSON.stringify(selected) ? this._qualification : null;
     const qualified = qualification?.ready === true && Number.isFinite(qualification.deadline) && Date.now() < qualification.deadline;
     const modalBlocked = modal && (!qualified || !selected.mapping_accepted);
-    $("#inf-qualification-status").textContent = this._checking ? "Checking local qualification…"
+    $("#inf-selection-summary").textContent = this._defaultsLoaded
+      ? `${profile?.id === "molmoact2" ? "MolmoAct2" : selected.policy || "Choose a policy"} · ${external ? selected.external_service || "Choose an external service" : selected.backend} · ${modal ? selected.controller_mode + " controller · " : ""}${selected.arms?.length === 1 ? "One arm" : "Both arms"} · 30 Hz`
+      : "Loading attached policy…";
+    const invalidSelection = !selected.task || !selected.policy || !Number.isFinite(selected.duration) || selected.duration < 1 || selected.duration > 3600;
+    $("#inf-qualification-status").textContent = this._defaultsError || (!this._defaultsLoaded ? "Loading current settings…"
+      : invalidSelection ? "Enter a task, policy and duration between 1 and 3600 seconds."
+      : !modal ? "Local policy selected. Verify checkpoint and rig compatibility before Start."
+      : this._checking ? "Checking local qualification…"
       : qualified ? `Qualified for this selection. Start within ${Math.ceil((qualification.deadline - Date.now()) / 1000)} seconds; the server checks again before launch.`
       : qualification?.ready ? "Session expires too soon. Refresh it in Conductor and check again."
-      : qualification?.reason || "Check this exact session and task before Start. No hardware or cloud call is made by this check.";
+      : qualification?.reason || "Checking these settings requires no hardware or cloud call. Use Recheck readiness if needed.");
     const profileNote = profile ? `Revision ${profile.revision}. ${profile.mapping_note}` : "Custom checkpoints use the existing local LeRobot path; verify their rig compatibility before motion.";
     const blockedReason = qualified ? "Accept the verified YAM mapping before supervised Start."
       : qualification?.reason || "Physical remote rollout BLOCKED until this exact retained session passes the local check.";
     $("#inf-profile-note").textContent = profileNote + (modalBlocked ? ` ${blockedReason}` : "");
-    ["btn-pc", "btn-prepare", "btn-ro", "btn-probe-saved", "btn-probe-live", "btn-cloud-stop"].forEach((id) => { document.getElementById(id).disabled = session.active || this._launching; });
+    ["btn-pc", "btn-prepare", "btn-ro", "btn-probe-saved", "btn-probe-live", "btn-cloud-stop"].forEach((id) => { document.getElementById(id).disabled = busy; });
     $("#btn-pc").hidden = modal;
     $("#btn-prepare").hidden = modal;
     $("#btn-cloud-stop").hidden = modal;
@@ -915,8 +1005,10 @@ pages.inference = {
     $("#btn-cloud-stop").disabled = true;
     $("#btn-probe-saved").disabled ||= external;
     $("#btn-probe-live").disabled ||= external;
-    $("#btn-inf-preflight").disabled = session.active || this._checking || this._launching || !modal;
-    $("#btn-ro").disabled ||= modalBlocked || !!profile && (!profile.mapping_verified || (profile.id === "molmoact2" && selected.rtc));
+    $("#btn-inf-preflight").disabled = busy || this._checking || !modal || invalidSelection;
+    $("#btn-inf-preflight").hidden = !modal;
+    $("#btn-ro").textContent = this._launching ? "Starting…" : `Start ${selected.duration || ""}s rollout`;
+    $("#btn-ro").disabled ||= busy || invalidSelection || modalBlocked || !!profile && (!profile.mapping_verified || (profile.id === "molmoact2" && selected.rtc));
     $("#btn-inf-stop").disabled = !session.active;
     const rolloutPhase = session.parsed?.rollout_phase;
     $("#btn-inf-stop").textContent = session.active && session.mode === "rollout"
@@ -924,7 +1016,10 @@ pages.inference = {
       : "Stop local execution";
     const submitted = this._submitted;
     const matches = submitted && submitted.selection === JSON.stringify(selected) && submitted.saved === $("#inf-saved").value && submitted.id === session.meta?.operation_id;
-    $("#inf-status").textContent = matches ? `${session.mode}: ${session.active ? (session.stopping ? "stopping local process…" : "running…") : session.stop_requested ? "stopped by user" : session.returncode === 0 ? "completed" : "failed or stopped"} · operation ${submitted.id}` : "No completed operation for this selection. Changing options invalidates the displayed readiness result.";
+    $("#inf-status").textContent = matches ? `${session.mode}: ${session.active ? (session.stopping ? "stopping local process…" : "running…") : session.stop_requested ? "stopped by user" : session.returncode === 0 ? "completed" : "failed or stopped"} · operation ${submitted.id}`
+      : session.active ? `Another ${session.mode || "UI"} operation is active. Start is locked; do not run a second job.`
+      : session.mode === "rollout" && session.meta?.operation_id ? `Last UI rollout: ${session.stop_requested ? "stopped" : session.returncode === 0 ? "completed" : "failed or stopped"} · ${session.meta.task || ""}. See Runs below; completion alone does not prove task success.`
+      : "Idle. No rollout is running in this UI. Runs started separately in a terminal must be stopped in that terminal.";
     const managedRollout = session.active && session.mode === "rollout";
     if (managedRollout) {
       const phases = {
@@ -944,14 +1039,16 @@ pages.inference = {
   async launch(path, extra, button) {
     if (this._launching || session.active) return;
     const selected = this.selection();
+    const saved = $("#inf-saved").value, form = this._form;
     this._launching = true;
     this.syncForm();
     try {
       const result = await post(path, { ...selected, ...extra });
-      this._submitted = { id: result.meta?.operation_id, selection: JSON.stringify(selected), saved: $("#inf-saved").value };
+      if (this._form === form)
+        this._submitted = { id: result.meta?.operation_id, selection: JSON.stringify(selected), saved };
       await refreshSession();
     } catch (e) { alert(e.message); }
-    finally { this._launching = false; this.syncForm(); }
+    finally { this._launching = false; if (this._form === form) this.syncForm(); }
   },
   async refreshList() {
     const el = $("#run-list");

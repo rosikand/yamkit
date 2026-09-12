@@ -601,6 +601,9 @@ def inference_js():
       function $(id) { return nodes[id] ||= {value:'',checked:false,disabled:false,textContent:'',
         addEventListener:()=>{},innerHTML:''}; }
       var document={getElementById:(id)=>$('#'+id)};
+      var timers={}, nextTimer=0;
+      function setTimeout(callback){timers[++nextTimer]=callback;return nextTimer;}
+      function clearTimeout(id){delete timers[id];}
       function pageHead(){return '';} function camsHTML(){return '';} function syncCams(){}
       function esc(s){return s;} function errBanner(s){return s;}
       function confirm(){return confirmResult;} function alert(s){alerts.push(s);}
@@ -842,3 +845,82 @@ def test_browser_modal_start_stays_disabled_after_ready_result(inference_js):
     """)
     assert ctx.eval("$('#btn-ro').disabled")
     assert "BLOCKED" in ctx.eval("$('#inf-profile-note').textContent")
+
+
+def test_browser_defaults_sync_reference_selection_without_replaying_approval(inference_js):
+    ctx = inference_js
+    ctx.eval("""
+      pages.inference.applyDefaults({policy:'molmoact2', backend:'external',
+        external_service:'lambda-georgia', controller_mode:'reference',
+        task:'put the red cube into the green bowl', duration:60,
+        arms:['left_follower','right_follower'],mapping_accepted:true,
+        supervised_confirmed:true,capture_trace:true,upload_repo_id:'example/rollouts'});
+      pages.inference.syncForm();
+    """)
+    selected = json.loads(ctx.eval("JSON.stringify(pages.inference.selection())"))
+    assert selected["task"] == "put the red cube into the green bowl"
+    assert selected["duration"] == 60
+    assert selected["external_service"] == "lambda-georgia"
+    assert selected["controller_mode"] == "reference" and selected["async_chunks"] is False
+    assert selected["arms"] == ["left_follower", "right_follower"]
+    assert selected["image_encoding"] == "rgb8" and selected["center_crop"] is False
+    assert selected["mapping_accepted"] is False and selected["capture_trace"] is False
+    assert selected["upload_repo_id"] is None
+    assert "supervised_confirmed" not in selected and "confirm_motion" not in selected
+    assert ctx.eval("$('#btn-ro').disabled")
+    assert ctx.eval("$('#inf-upload').disabled")
+
+
+def test_browser_task_change_revokes_mapping_and_auto_checks_without_motion(attached_browser):
+    ctx = attached_browser
+    ctx.eval("$('#inf-mapping').checked=true")
+    _check_attached_browser(ctx)
+    ctx.eval("$('#inf-task').value='new task'; pages.inference.formChanged('inf-task')")
+    assert ctx.eval("$('#inf-mapping').checked") is False
+    assert ctx.eval("$('#btn-ro').disabled")
+    ctx.eval("Object.values(timers)[0]()")
+    _drain_js(ctx)
+    requests = json.loads(ctx.eval("JSON.stringify(posts)"))
+    assert requests[-1]["path"] == "/inference/preflight"
+    assert requests[-1]["body"]["task"] == "new task"
+    assert all("confirm_motion" not in request["body"] for request in requests)
+
+
+def test_browser_defaults_loading_failure_keeps_start_locked(inference_js):
+    ctx = inference_js
+    ctx.eval("""
+      api=()=>Promise.reject(new Error('offline'));
+      pages.inference.render({innerHTML:''},[]);
+    """)
+    assert ctx.eval("$('#btn-ro').disabled")
+    _drain_js(ctx)
+    assert "Could not load policy settings" in ctx.eval("$('#inf-qualification-status').textContent")
+    assert ctx.eval("$('#btn-ro').disabled")
+    assert ctx.eval("posts.length") == 0
+
+
+def test_browser_reloaded_active_session_locks_fields_and_keeps_stop(attached_browser):
+    ctx = attached_browser
+    ctx.eval("session={active:true,mode:'rollout',meta:{task:'pick'},parsed:{rollout_phase:'running'}}; pages.inference.syncForm()")
+    assert ctx.eval("$('#inf-task').disabled")
+    assert ctx.eval("$('#inf-duration').disabled")
+    assert ctx.eval("$('#btn-ro').disabled")
+    assert ctx.eval("$('#btn-inf-stop').disabled") is False
+
+
+def test_browser_reopened_page_shows_actual_running_task_duration_not_defaults(inference_js):
+    ctx = inference_js
+    ctx.eval("""
+      session={active:true,mode:'rollout',parsed:{rollout_phase:'running'},meta:{
+        operation_id:'active-job',policy:'molmoact2',backend:'external',
+        external_service:'lambda-georgia',controller_mode:'reference',
+        task:'put the red cube into the green bowl',duration:5,
+        mapping_accepted:true,supervised_confirmed:true}};
+      $('#inf-duration').value='60'; $('#inf-task').value='old task';
+      pages.inference.syncForm();
+    """)
+    assert ctx.eval("Number($('#inf-duration').value)") == 5
+    assert ctx.eval("$('#inf-task').value") == "put the red cube into the green bowl"
+    assert ctx.eval("$('#inf-mapping').checked") is False
+    assert ctx.eval("$('#inf-task').disabled")
+    assert ctx.eval("$('#btn-inf-stop').disabled") is False

@@ -38,7 +38,7 @@ Navigation is a fixed left sidebar; the theme switcher (Light / Dark / System) l
 | **Live** | camera tiles (top / left wrist / right wrist), follower joint+gripper state, CAN/camera/rig status, current mode + loop rate, read-only controls (`yamkit read` stream), Park arms (`yamkit rest`: every arm moves slowly home and is released) |
 | **Record** | camera tiles, teleop pair status (engaged, tracking error, Hz), dataset name / task / episodes / durations form (recording rate fixed at 30 fps unless changed under "Advanced", capped by the slowest camera), Start Teleop / Start Recording / Park / Stop, episode + elapsed progress, live log. Normal Start/Stop use configured homing; clicking Stop again during the return releases immediately. Startup and operator-session faults release without another home move |
 | **Datasets** | LeRobot v3 datasets under `data/datasets/` and, when signed in, the account's Hub datasets in the same table with a local / cloud / both tag, Upload and Download buttons and Hub links; per-episode detail page with synchronized videos and state/action small-multiple charts |
-| **Inference** | local/Modal selection, model/task/options, checks, explicit cloud preparation/shutdown and saved/live probes; camera previews opt in. Compatible local rollout requires motion confirmation. All physical Modal rollout is disabled by the performance gate. Run history includes latency, status, termination reason, logs and replay videos (`outputs/ui/deployments/`) |
+| **Inference** | Task, duration, current service and a supervised Start/Stop workflow. Advanced model, transport, capture and diagnostic settings are collapsed by default; camera previews opt in. A remote rollout requires current host qualification for its exact settings plus mapping acceptance and supervised motion confirmation. Run history includes latency, status, termination reason, logs and any captured replay videos (`outputs/ui/deployments/`) |
 | **Models** | checkpoint directories under `outputs/` and the account's Hub models, tagged local / cloud / both; per-checkpoint detail page with file sizes and `config.json` / `train_config.json` contents; Upload buttons; Hub models get their own detail page and can be typed straight into the rollout form |
 | **Settings** | Hugging Face sign-in (the token goes to `data/hf/token`, never through the rig) and the rig's hub settings (account, private, default destination); view/edit `configs/rig.yaml`: structured fields for the control knobs, read-only arm/camera tables (with the discovery notes: model, serial, USB port), and a raw-YAML editor. Every save is validated server-side first (parse → `RigConfig` → `validate()`), raw YAML is written verbatim (comments kept), saving is refused while a hardware session runs, and the camera feeds are reloaded from the saved file (no restart). The rig file holds hardware identifiers only — no credentials pass through the UI. |
 
@@ -66,9 +66,41 @@ cloud service. **Show camera previews** can open physical cameras but never arms
 Prepare Modal and remote checks/probes are explicit billable operations; live probes
 require their own active-read motor approval. Stop local execution and shutting down
 the owned cloud service are separate actions. Readiness or confirmation cannot bypass
-the [physical Modal performance gate](REMOTE_PERFORMANCE.md). Molmo's source mapping
-is reviewed, but physical validation was not performed; base SmolVLA/pi05 physical
-mapping and guided remote RTC remain unsupported. See [the Modal workflow](MODAL.md).
+the [physical remote performance gate](REMOTE_PERFORMANCE.md). Base SmolVLA/pi05 physical
+mapping and guided remote RTC remain unsupported. See [the Modal workflow](MODAL.md)
+and [existing Lambda service workflow](LAMBDA.md).
+
+## Inference defaults and a supervised run
+
+Opening Inference selects a locally attached MolmoAct2 service when one exists. The
+task comes from that service's matching reference qualification on this host, rather
+than a fixed scene prompt. It defaults to a 60-second policy interval, the rig's
+followers, reference execution, HTTP `cuda_graph10`, full raw RGB images and no crop.
+Advanced settings remain available without filling the main form. Capture and upload
+start disabled, and no motion or mapping confirmation is inherited from an earlier run.
+Without a matching saved task, enter the task explicitly; without an attachment, local
+inference remains available.
+
+`GET /api/inference/profiles` reads only local attachment receipts and qualification
+JSON for these suggestions. It does not read the external bearer credential or contact
+the inference service. Expired records are marked expired and can only suggest settings;
+their cached status cannot enable Start. A qualification for another host, service
+instance, controller or endpoint cannot supply the default task. The existing exact-form
+`POST /api/inference/preflight` and launch checks still validate the selected task,
+runtime identity, qualification, mapping, duration and service expiry. Editing a selection
+requires its readiness check again.
+
+With the scene prepared and the operator at the rig, review the task and duration,
+check readiness, then use the supervised Start action. Startup homes and opens both
+followers before the policy interval begins. Healthy reference completion returns home
+while preserving the final gripper opening and then releases; Stop/fault releases without
+homing. The UI Stop button controls UI-started sessions only, not a rollout launched from
+a separate terminal. Keep the physical cutoff accessible throughout the run.
+
+Debug capture currently supports only the reviewed black-container task and its allowed
+durations. A different task can run with capture/upload disabled; changing the task does
+not silently expand the capture contract. When capture is selected, its unchanged memory
+admission must pass, and export/upload occurs only after hardware release.
 
 Record launches `yamkit record`, which installs the same operator processing used by
 native teleop. Unprocessed raw LeRobot YAM leader actions are rejected. Native bilateral

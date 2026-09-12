@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import shlex
 import shutil
 import subprocess
@@ -164,6 +165,112 @@ class ProbeBody(InferenceBody):
     saved: str | None = None
     live: bool = False
     confirm_active_read: bool = False
+
+
+def _inference_selection_defaults(rig: RigConfig | None) -> dict:
+    """Suggest a form selection from local records, never readiness or approval.
+
+    Only attachment receipts and qualification JSON are read. Credentials, remote
+    transports and hardware are deliberately outside this page-load path; the
+    existing exact-form preflight remains responsible for qualification checks.
+    """
+    from .. import external_ops
+    from ..inference import qualification
+    from ..inference.identity import inference_build_id
+    from ..inference.profiles import get_profile
+
+    defaults = InferenceBody(policy="molmoact2").model_dump()
+    defaults["arms"] = ([pair.follower for pair in rig.pairs] or None) if rig else None
+    result = {"defaults": defaults, "defaults_source": "local", "external_services": []}
+    directory = external_ops.DATA_DIR / "inference" / "external"
+    if not directory.is_dir() or directory.is_symlink():
+        return result
+    profile = get_profile("molmoact2")
+    build = inference_build_id()
+    now = time.time()
+
+    def timestamp(value):
+        try:
+            return value if type(value) in (int, float) and math.isfinite(value) and value > 0 else None
+        except OverflowError:
+            return None
+
+    def saved_reference(name, receipt):
+        path = qualification.DATA_DIR / "qualifications" / f"external-{name}-molmoact2-reference.json"
+        try:
+            if (path.is_symlink() or path.parent.is_symlink() or not path.is_file()
+                    or not 0 < path.stat().st_size <= 10_000_000):
+                return None
+            record = json.loads(path.read_text())
+            settings = record["settings"]
+            metadata = receipt["metadata"]
+            expected = {"backend": "external", "external_service_name": name, "profile": profile.id,
+                        "model_revision": profile.revision, "controller_mode": "reference",
+                        "call_mode": "http", "execution_mode": "cuda_graph10", "image_encoding": "rgb8",
+                        "crop": "none", "image_hw": [480, 640], "fps": 30,
+                        "inference_build_id": build,
+                        "reference_contract": qualification.REFERENCE_CONTRACT}
+            if (record.get("schema_version") != 1 or record.get("hardware_tested") is not False
+                    or record.get("host") != qualification.host_identity()
+                    or any(settings.get(key) != value for key, value in expected.items())
+                    or any(not metadata.get(key) or settings.get(key) != metadata[key] for key in (
+                        "instance_id", "inference_build_id", "execution_identity", "external_service",
+                        "runtime_provenance", "http_endpoint", "http_session_expires_at"))
+                    or settings.get("http_endpoint") != receipt.get("http_endpoint")
+                    or settings.get("http_session_expires_at") != receipt.get("http_session_expires_at")
+                    or any(not settings.get(key) or settings[key] != metadata.get("graph_warmup", {}).get(field)
+                           for key, field in (("graph_signature_sha256", "signature_sha256"),
+                                              ("graph_cache_key_sha256", "cache_key_sha256")))):
+                return None
+            task = settings.get("task")
+            created = timestamp(record.get("created_unix_s"))
+            expires = timestamp(receipt.get("http_session_expires_at"))
+            if not isinstance(task, str) or not 1 <= len(task.strip()) <= 2048 or created is None or expires is None:
+                return None
+            expires = min(expires, created + qualification.MAX_AGE_S)
+            return {"task": task, "created_at": created, "expires_at": expires,
+                    "expired": not created <= now < expires}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return None
+
+    try:
+        candidates = sorted(directory.iterdir(), key=lambda path: path.name)
+    except OSError:
+        return result
+    for candidate in candidates:
+        try:
+            if candidate.is_symlink() or not candidate.is_dir():
+                continue
+            receipt = external_ops.owned_service(candidate.name)
+            if (not receipt or receipt.get("status") != "ready" or receipt.get("profile_id") != profile.id
+                    or receipt.get("revision") != profile.revision or receipt.get("transport") != "http"
+                    or receipt.get("execution_mode") != "cuda_graph10"):
+                continue
+            expires = timestamp(receipt.get("http_session_expires_at"))
+            result["external_services"].append({
+                "name": candidate.name, "profile_id": profile.id,
+                "attached_at": timestamp(receipt.get("attached_at")), "expires_at": expires,
+                "expired": expires is None or now >= expires,
+                "reference_qualification": saved_reference(candidate.name, receipt),
+            })
+        except (OSError, ValueError, TypeError):
+            continue
+    if result["external_services"]:
+        # Prefer a current matching selection, then the latest retained selection.
+        # Neither the receipt's cached status nor this ordering can enable Start.
+        def preference(service):
+            saved = service["reference_qualification"]
+            return (bool(saved and not saved["expired"] and not service["expired"]),
+                    not service["expired"], bool(saved),
+                    saved["created_at"] if saved else service["attached_at"] or 0)
+
+        selected = max(result["external_services"], key=preference)
+        saved = selected["reference_qualification"]
+        defaults.update(backend="external", external_service=selected["name"],
+                        controller_mode="reference", async_chunks=False, call_mode="http", execution_mode="cuda_graph10",
+                        task=saved["task"] if saved else "")
+        result["defaults_source"] = "external_reference_qualification" if saved else "external_attachment"
+    return result
 
 
 class ConfigBody(BaseModel):
@@ -679,9 +786,10 @@ def create_app(
         from ..modal_ops import credential_status, owned_service
 
         rig = load_rig()
+        selection = _inference_selection_defaults(rig)
         return {"profiles": list_profiles(), "credentials": credential_status(),
-                "owned_service": owned_service(), "default_backend": "local",
-                "rollout_repo": rig.hub.rollout_repo if rig else None}
+                "owned_service": owned_service(), "default_backend": selection["defaults"]["backend"],
+                "rollout_repo": rig.hub.rollout_repo if rig else None, **selection}
 
     @app.post("/api/session/rollout")
     def session_rollout(body: RolloutBody) -> dict[str, Any]:
