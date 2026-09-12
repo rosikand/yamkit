@@ -64,15 +64,16 @@ def camera_js():
     quickjs = pytest.importorskip("quickjs")
     ctx = quickjs.Context()
     ctx.eval("""
-      let now=1000,stopRequestsPending=0;
+      let now=1000,stopRequestsPending=0,focused=true,camerasFlight=null,cameraRequests=0;
       Date.now=()=>now;
       const image={src:'/api/cameras/top/stream',dataset:{connectedAt:'1000'},onerror:()=>{},
         getAttribute(name){return this[name]||null;},removeAttribute(name){delete this[name];}};
       const label={textContent:''};const tile={dataset:{cam:'top'},querySelectorAll:()=>[image]};
       const slot={querySelectorAll:selector=>selector==='.cam'?[tile]:[image],innerHTML:'original'};
-      const document={visibilityState:'visible',querySelectorAll:()=>[image]};
+      const document={visibilityState:'visible',hasFocus:()=>focused,querySelectorAll:()=>[image]};
       const overview={cameras:[{name:'top',preview_source:'direct',preview_generation:0,preview_state:'live'}]};
       function $(selector){return selector==='#cams-slot'?slot:selector==='img'?image:label;}
+      function pollRead(){cameraRequests++;return Promise.resolve(overview.cameras);}
     """)
     ctx.eval(SOURCE[SOURCE.index("let camsRendered = null;"):SOURCE.index("function camsHTML()")])
     ctx.eval("camsRendered=cameraKey();")
@@ -108,10 +109,49 @@ def test_stop_pending_does_not_reopen_paused_previews(camera_js):
     assert ctx.eval("image.src") == "/api/cameras/top/stream"
 
 
-def test_hidden_page_markup_defers_stream_src_until_visibility_returns():
+def test_unfocused_visible_window_pauses_and_cannot_reopen_stream_on_status_poll(camera_js):
+    ctx = camera_js
+    ctx.eval("focused=false;syncCams();now=2000;syncCams();refreshCameras();")
+    drain(ctx)
+    assert ctx.eval("image.src===undefined")
+    assert ctx.eval("image.dataset.pausedSrc") == "/api/cameras/top/stream"
+    assert ctx.eval("cameraRequests") == 0
+    ctx.eval("focused=true;syncCams();refreshCameras();")
+    drain(ctx)
+    assert ctx.eval("image.src") == "/api/cameras/top/stream"
+    assert ctx.eval("cameraRequests") == 1
+    assert ctx.eval("slot.innerHTML") == "original"
+
+
+def test_focus_without_rendered_preview_intent_does_not_request_or_open_camera(camera_js):
+    ctx = camera_js
+    ctx.eval("releaseCameraStreams();$=()=>null;focused=true;syncCams();refreshCameras();")
+    drain(ctx)
+    assert ctx.eval("cameraRequests") == 0
+    assert ctx.eval("image.src===undefined")
+    assert ctx.eval("image.dataset.pausedSrc===undefined")
+
+
+def test_hidden_or_unfocused_page_markup_defers_stream_src_until_foreground():
     markup = SOURCE[SOURCE.index("function camsHTML()"):SOURCE.index("const ROLLOUT_SAVE_PHASES")]
-    assert 'document.visibilityState === "hidden" ? "data-paused-src" : "src"' in markup
+    assert 'cameraPreviewsActive() ? "src" : "data-paused-src"' in markup
     assert "releaseCameraStreams();" in SOURCE[SOURCE.index("function cleanupPage()"):]
+
+
+@pytest.mark.parametrize("route", ["#inference", "#/inference", "#deployments", "#/deployments"])
+def test_inference_hash_alias_never_falls_back_to_live_camera_page(route):
+    quickjs = pytest.importorskip("quickjs")
+    ctx = quickjs.Context()
+    ctx.eval("""
+      let liveRenders=0,inferenceRenders=0;
+      const pages={live:{render(){liveRenders++;}},inference:{render(){inferenceRenders++;}}};
+      const document={querySelectorAll:()=>[]};const location={hash:''};
+      function releaseCameraStreams(){}function $(){return {};}
+    """)
+    ctx.eval(SOURCE[SOURCE.index("let current = null;"):SOURCE.index('window.addEventListener("hashchange"')])
+    ctx.eval(f"location.hash='{route}';route();")
+    assert ctx.eval("inferenceRenders") == 1
+    assert ctx.eval("liveRenders") == 0
 
 
 def test_status_wording_distinguishes_delay_error_and_completed_work():

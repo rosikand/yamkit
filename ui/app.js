@@ -175,10 +175,11 @@ function cameraNames() {
 let camsRendered = null;
 const cameraKey = () => (overview?.cameras || []).map((c) =>
   `${c.name}:${c.preview_source || "direct"}:${c.preview_generation || 0}`).join("|");
+const cameraPreviewsActive = () => document.visibilityState === "visible" && document.hasFocus?.() !== false;
 
 // Poll status only; pixels remain one MJPEG connection per visible tile.
 async function refreshCameras() {
-  if (!$("#cams-slot") || document.visibilityState === "hidden" || stopRequestsPending) return;
+  if (!$("#cams-slot") || !cameraPreviewsActive() || stopRequestsPending) return;
   if (camerasFlight) return camerasFlight;
   camerasFlight = (async () => {
     try {
@@ -186,7 +187,7 @@ async function refreshCameras() {
       if (overview) overview.cameras = cameras;
       syncCams();
     } catch {
-      if (document.visibilityState !== "hidden") document.querySelectorAll(".cam .preview-state").forEach((el) => {
+      if (cameraPreviewsActive()) document.querySelectorAll(".cam .preview-state").forEach((el) => {
         el.textContent = "preview unavailable";
       });
     }
@@ -227,7 +228,7 @@ function pauseCameraStreams(root = document) {
 function syncCams() {
   const slot = $("#cams-slot");
   if (!slot) return;
-  if (document.visibilityState === "hidden" || stopRequestsPending) { pauseCameraStreams(slot); return; }
+  if (!cameraPreviewsActive() || stopRequestsPending) { pauseCameraStreams(slot); return; }
   if (cameraKey() !== camsRendered) {
     releaseCameraStreams(slot);
     slot.innerHTML = camsHTML();
@@ -267,7 +268,7 @@ function camsHTML() {
       <span class="label">${esc(c.name)}</span>
       <span class="rollout-timer" hidden aria-label="Rollout policy time"></span>
       ${c.configured
-        ? `<img ${document.visibilityState === "hidden" ? "data-paused-src" : "src"}="/api/cameras/${encodeURIComponent(c.name)}/stream" alt="${esc(c.name)}"
+        ? `<img ${cameraPreviewsActive() ? "src" : "data-paused-src"}="/api/cameras/${encodeURIComponent(c.name)}/stream" alt="${esc(c.name)}"
              data-connected-at="${Date.now()}" onerror="cameraStreamError(this)" />
            <span class="preview-state">waiting for frames</span>`
         : `<div class="placeholder">no camera configured in rig.yaml</div>`}
@@ -1846,7 +1847,7 @@ function cleanupPage() {
 }
 function route() {
   cleanupPage();
-  let [page, ...args] = (location.hash.replace(/^#\//, "") || "live").split("/");
+  let [page, ...args] = (location.hash.replace(/^#\/?/, "") || "live").split("/");
   if (page === "deployments") page = "inference"; // old links keep working
   const p = pages[page] || pages.live;
   current = p;
@@ -1855,12 +1856,7 @@ function route() {
 }
 window.addEventListener("hashchange", route);
 
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") {
-    pauseCameraStreams();
-    pollControllers.forEach((controller) => controller.abort());
-    return;
-  }
+function refreshVisiblePolling() {
   // Finish any intentional GET cancellations before starting one fresh poll per
   // resource. Only existing opted-in camera tiles resume; no new preview is enabled.
   Promise.allSettled([sessionFlight, overviewFlight, camerasFlight]).then(() => {
@@ -1870,7 +1866,17 @@ document.addEventListener("visibilitychange", () => {
     refreshCameras();
     syncCams();
   });
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    pauseCameraStreams();
+    pollControllers.forEach((controller) => controller.abort());
+    return;
+  }
+  refreshVisiblePolling();
 });
+window.addEventListener("blur", () => pauseCameraStreams());
+window.addEventListener("focus", refreshVisiblePolling);
 
 document.addEventListener("session", () => current?.update && current.update());
 document.addEventListener("overview", () => (current === pages.live || current === pages.record) && current.update && current.update());

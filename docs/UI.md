@@ -71,9 +71,13 @@ tests/test_ui.py  hardware-free tests (parsers, sessions with stub children, API
 The frontend is a single-page app (`ui/app.js`) with hash routing; it polls `/api/session` (1 s)
 and `/api/overview` (5 s). Background status requests have a five-second timeout and at most
 one outstanding request per resource, so slow replies do not build a request backlog.
-Hidden tabs pause status polling and release their MJPEG browser connections; returning
-refreshes status and resumes only previews that were already shown. Inference camera
-previews remain opt-in. Chart colors are the validated categorical pair per theme
+Hidden tabs pause status polling and release their MJPEG browser connections. Camera
+previews also pause in unfocused windows, so multiple visible windows cannot fill the
+browser's connection pool with streams and block navigation or Stop. Returning to a
+focused window refreshes status and resumes only previews that were already shown.
+Inference camera previews remain opt-in. The Inference URL is `/#/inference`; the older
+`/#inference` form also selects Inference rather than falling back to Live.
+Chart colors are the validated categorical pair per theme
 (light: state `#2a78d6` / action `#eb6834`; dark: `#3987e5` / `#d95926`). The Inter variable
 font is vendored at `ui/InterVariable.woff2`, so the UI needs no network access.
 
