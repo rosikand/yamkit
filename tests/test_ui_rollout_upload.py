@@ -20,12 +20,13 @@ inference_ui = _inference_ui
 attached_modal = _attached_modal
 inference_js = _inference_js
 attached_browser = _attached_browser
+TASK = "put the red cube into the green bowl"
 
 
 @pytest.fixture
 def upload_trial(attached_modal):
     state = attached_modal
-    state.expected_override["task"] = server.TRACE_TASK
+    state.expected_override["task"] = TASK
     scripts = state.ui.root / "scripts"
     scripts.mkdir()
     (scripts / "trace_rollout.py").write_text('''
@@ -33,6 +34,7 @@ import argparse,json,os,pathlib,subprocess,sys,time
 from yamkit.camera_ownership import claim_from_env
 p=argparse.ArgumentParser()
 p.add_argument('--run',action='store_true');p.add_argument('--duration',type=int)
+p.add_argument('--task',required=True)
 p.add_argument('--modal-app');p.add_argument('--rig');p.add_argument('--output-dir')
 p.add_argument('--backend',choices=['modal','external'],default='modal')
 p.add_argument('--confirm-supervised',action='store_true')
@@ -42,6 +44,7 @@ root=pathlib.Path(a.rig).parent
 runs=list((root/'outputs/ui/deployments').glob('*/run_metadata.json'))
 assert len(runs)==1
 assert json.loads(runs[0].read_text())['provenance']['kind']=='before_managed_child_launch'
+assert json.loads(runs[0].read_text())['configuration']['task']==a.task
 print('ARCHIVE_FIRST '+os.environ.get('HF_TOKEN',''),flush=True)
 for i in range(650): print('line-'+str(i),flush=True)
 lease.release()
@@ -58,7 +61,7 @@ subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'])
 
 def launch(ui, **extra):
     return ui.client.post("/api/session/rollout", json=attached_payload(
-        task=server.TRACE_TASK, confirm_motion=True, mapping_accepted=True,
+        task=TASK, confirm_motion=True, mapping_accepted=True,
         supervised_confirmed=True, **extra))
 
 
@@ -93,6 +96,8 @@ def test_upload_starts_after_release_and_finalization_without_blocking_stop_or_n
         assert "ARCHIVE_FIRST" not in "\n".join(ui.manager.log)
         snapshot = json.loads((run_dir / "run_metadata.json").read_text())
         assert snapshot["capture"]["log_complete"]
+        assert snapshot["capture"]["requested"] and snapshot["capture"]["upload_requested"]
+        assert snapshot["configuration"]["task"] == TASK
         assert snapshot["model"]["revision"]
         assert "can_serial" not in json.dumps(snapshot) and "notes" not in json.dumps(snapshot)
         assert "http_endpoint" not in json.dumps(snapshot) and "modal_app" not in json.dumps(snapshot)
@@ -171,7 +176,7 @@ def test_invalid_destinations_are_rejected_before_child(attached_modal, repo_id)
 
 @pytest.mark.parametrize("duration", [31, 46, 61, 91])
 def test_upload_requires_supported_complete_capture(attached_modal, duration):
-    attached_modal.expected_override["task"] = server.TRACE_TASK
+    attached_modal.expected_override["task"] = TASK
     result = launch(attached_modal.ui, upload_repo_id="owner/private-rollouts", duration=duration)
     assert result.status_code == 422
     assert "5, 10, 20, 30, 45, 60 or 90" in result.text
@@ -181,7 +186,7 @@ def test_upload_requires_supported_complete_capture(attached_modal, duration):
 @pytest.mark.parametrize("duration", [30, 45, 60, 90])
 def test_upload_capture_keeps_supported_duration_in_trace_command(attached_modal, monkeypatch, duration):
     state = attached_modal
-    state.expected_override["task"] = server.TRACE_TASK
+    state.expected_override["task"] = TASK
     launched = []
 
     def start(mode, argv, meta):
@@ -194,6 +199,7 @@ def test_upload_capture_keeps_supported_duration_in_trace_command(attached_modal
     mode, argv, meta = launched[0]
     assert mode == "rollout" and Path(argv[1]).name == "trace_rollout.py"
     assert argv[argv.index("--duration") + 1] == str(duration)
+    assert argv[argv.index("--task") + 1] == TASK
     assert meta["capture_trace"] and meta["upload_repo_id"] == "owner/private-rollouts"
     assert state.ui.manager._proc is None  # The test never starts a control child.
 

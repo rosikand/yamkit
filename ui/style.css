@@ -61,6 +61,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { height: 100%; }
 body {
   margin: 0;
@@ -144,6 +145,13 @@ details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 12
 details.advanced[open] > summary { color: var(--text-2); }
 .inference-card { padding: 22px; }
 .inference-summary { color: var(--text-2); font-size: 12.5px; margin-bottom: 18px; }
+.inference-recording { padding: 12px 0; margin-bottom: 10px; border-bottom: 1px solid var(--hairline); }
+.inference-recording .field { max-width: 480px; margin-top: 10px; }
+.rollout-replay { margin: 14px 0; }
+.rollout-replay .cam video { width: 100%; display: block; }
+#run-scrub { width: 100%; margin-top: 12px; }
+#run-list .panel { overflow-x: auto; }
+#run-list table { min-width: 720px; }
 .inference-main-fields { display: grid; grid-template-columns: minmax(0, 1fr) 165px; gap: 18px; margin-bottom: 14px; }
 .inference-main-fields input { font-size: 14px; padding: 10px 12px; }
 .inference-readiness { display: flex; align-items: center; gap: 16px; margin: 16px 0; }

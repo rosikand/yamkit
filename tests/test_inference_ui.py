@@ -35,6 +35,10 @@ def inference_ui(rig, tmp_path, monkeypatch):
     monkeypatch.setattr(modal_ops, "owned_service", lambda: None)
     monkeypatch.setattr(_Camera, "ensure_running", forbidden)
     monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setattr(server, "_capture_memory_preflight", lambda duration: {
+        "available_bytes": 16_000_000_000, "required_bytes": 8_010_125_312,
+        "admission_passes": True, "disk_free_bytes": 100_000_000_000,
+    })
     for spec in rig.followers():
         spec.gripper_limits = [0.0, 6.5]
     rig.cameras = {name: {"type": "opencv", "index_or_path": i, "width": 640, "height": 480}
@@ -321,7 +325,7 @@ def test_attached_rollout_denies_child_when_preview_retains_camera(attached_moda
 
 @pytest.mark.parametrize("route", ["/api/inference/preflight", "/api/session/rollout"])
 @pytest.mark.parametrize("changes", [
-    {"task": "a different qualified task"}, {"duration": 6}, {"duration": 31}, {"center_crop": True},
+    {"duration": 6}, {"duration": 31}, {"center_crop": True},
     {"prediction_queue_threshold": 15}, {"arms": ["right_follower", "left_follower"]},
     {"arms": []}, {"call_mode": "remote", "execution_mode": "eager"},
 ])
@@ -348,6 +352,94 @@ def test_attached_debug_capture_rejects_options_outside_reviewed_bounds(attached
     assert not attached_modal.ui.seen
     assert not attached_modal.ui.manager.active
     assert not (attached_modal.ui.root / ".context" / "rollout-traces").exists()
+
+
+@pytest.mark.parametrize("task", ["put the red cube into the green bowl", "place the blue block on the mat"])
+@pytest.mark.parametrize("upload", [False, True])
+def test_capture_preserves_any_exact_qualified_task_in_managed_child(attached_modal, monkeypatch, task, upload):
+    state = attached_modal
+    state.expected_override.update(task=task, controller_mode="reference")
+    body = attached_payload(task=task, controller_mode="reference", async_chunks=False,
+                            capture_trace=not upload, upload_repo_id="owner/private-rollouts" if upload else None)
+    preflight = state.ui.client.post("/api/inference/preflight", json=body)
+    assert preflight.json()["ready"] is True, preflight.text
+    assert preflight.json()["capture_memory"]["admission_passes"] is True
+    launched = []
+    monkeypatch.setattr(state.ui.manager, "start", lambda mode, argv, meta: launched.append((argv, meta)) or {
+        "active": True, "mode": mode, "meta": meta,
+    })
+    response = state.ui.client.post("/api/session/rollout", json={
+        **body, "confirm_motion": True, "mapping_accepted": True, "supervised_confirmed": True,
+    })
+    assert response.status_code == 200, response.text
+    argv, meta = launched[0]
+    assert Path(argv[1]).name == "trace_rollout.py"
+    assert argv[argv.index("--task") + 1] == task
+    assert argv[argv.index("--controller-mode") + 1] == "reference"
+    assert meta["task"] == task and meta["capture_trace"] is True
+    assert meta["upload_repo_id"] == body["upload_repo_id"]
+    run_dir = Path(meta["session_log_path"]).parent
+    snapshot = json.loads((run_dir / "run_metadata.json").read_text())
+    assert snapshot["configuration"]["task"] == task
+    assert snapshot["capture"] == {"requested": True, "upload_requested": upload}
+    assert not state.ui.seen and not state.ui.manager.active
+
+
+@pytest.mark.parametrize("route", ["/api/inference/preflight", "/api/session/rollout"])
+def test_capture_does_not_allow_unqualified_changed_task(attached_modal, route):
+    body = attached_payload(task="put the red cube into the green bowl", capture_trace=True)
+    if route.endswith("rollout"):
+        body.update(confirm_motion=True, mapping_accepted=True, supervised_confirmed=True)
+    response = attached_modal.ui.client.post(route, json=body)
+    if route.endswith("preflight"):
+        assert response.status_code == 200 and response.json()["ready"] is False
+        assert "Qualification settings changed" in response.json()["reason"]
+    else:
+        assert response.status_code == 422 and "Qualification settings changed" in response.text
+    assert not attached_modal.ui.seen and not attached_modal.ui.manager.active
+
+
+def test_recording_memory_is_read_only_and_uses_exact_recorder_threshold(monkeypatch, tmp_path):
+    import numpy as np
+
+    original_read = Path.read_text
+    available_kib = 8_010_125_312 // 1024
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setattr(np, "empty", lambda *_args, **_kwargs: pytest.fail("preflight allocated frame memory"))
+
+    def read(path, *args, **kwargs):
+        if path == Path("/proc/meminfo"):
+            return f"MemAvailable: {available_kib} kB\n"
+        if path == Path("/proc/self/cgroup"):
+            return ""
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    status = server._capture_memory_preflight(90)
+    assert status["required_bytes"] == 8_010_125_312
+    assert status["frame_bytes"] == 7_473_254_400
+    assert status["headroom_bytes"] == 536_870_912
+    assert status["available_bytes"] == status["required_bytes"]
+    assert status["admission_passes"] is True and status["disk_free_bytes"] > 0
+    available_kib -= 1
+    assert server._capture_memory_preflight(90)["admission_passes"] is False
+
+
+def test_capture_rechecks_memory_at_start_after_passing_preflight(attached_modal, monkeypatch):
+    ui = attached_modal.ui
+    body = attached_payload(capture_trace=False, upload_repo_id="owner/private-rollouts", duration=90)
+    assert ui.client.post("/api/inference/preflight", json=body).json()["ready"] is True
+    memory = {"available_bytes": 8_010_125_311, "required_bytes": 8_010_125_312, "admission_passes": False}
+    monkeypatch.setattr(server, "_capture_memory_preflight", lambda duration: memory)
+    preflight = ui.client.post("/api/inference/preflight", json=body)
+    assert preflight.json()["ready"] is False
+    assert preflight.json()["capture_memory"] == memory
+    response = ui.client.post("/api/session/rollout", json={
+        **body, "confirm_motion": True, "mapping_accepted": True, "supervised_confirmed": True,
+    })
+    assert response.status_code == 422 and "Insufficient available memory" in response.text
+    assert not ui.seen and not ui.manager.active
+    assert not (ui.root / ".context" / "rollout-traces").exists()
 
 
 @pytest.mark.parametrize("value", ["true", "false", 1, 0, None])
@@ -868,7 +960,7 @@ def test_browser_defaults_sync_reference_selection_without_replaying_approval(in
     assert selected["upload_repo_id"] is None
     assert "supervised_confirmed" not in selected and "confirm_motion" not in selected
     assert ctx.eval("$('#btn-ro').disabled")
-    assert ctx.eval("$('#inf-upload').disabled")
+    assert ctx.eval("$('#inf-upload').disabled") is False
 
 
 def test_browser_task_change_revokes_mapping_and_auto_checks_without_motion(attached_browser):
@@ -884,6 +976,28 @@ def test_browser_task_change_revokes_mapping_and_auto_checks_without_motion(atta
     assert requests[-1]["path"] == "/inference/preflight"
     assert requests[-1]["body"]["task"] == "new task"
     assert all("confirm_motion" not in request["body"] for request in requests)
+
+
+def test_browser_recording_choice_is_not_silently_dropped_for_unsupported_duration(attached_browser):
+    ctx = attached_browser
+    ctx.eval("$('#inf-trace').checked=true; $('#inf-duration').value='6'; pages.inference.syncForm()")
+    assert json.loads(ctx.eval("JSON.stringify(pages.inference.selection())"))["capture_trace"] is True
+    assert ctx.eval("$('#btn-ro').disabled")
+    assert ctx.eval("$('#inf-trace').disabled") is False  # Can explicitly turn it off to resolve the conflict.
+    assert "turn recording off" in ctx.eval("$('#inf-capture-note').textContent")
+
+
+def test_browser_local_recording_and_hf_destination_remain_separate_opt_ins(attached_browser):
+    ctx = attached_browser
+    ctx.eval("$('#inf-task').value='put the red cube into the green bowl'; $('#inf-trace').checked=true; pages.inference.syncForm()")
+    assert ctx.eval("$('#inf-upload').disabled") is False
+    assert ctx.eval("$('#inf-upload-destination').hidden")
+    selected = json.loads(ctx.eval("JSON.stringify(pages.inference.selection())"))
+    assert selected["capture_trace"] and selected["upload_repo_id"] is None
+    ctx.eval("$('#inf-upload').checked=true; $('#inf-upload-repo').value='owner/rollouts'; pages.inference.syncForm()")
+    assert ctx.eval("$('#inf-upload-destination').hidden") is False
+    selected = json.loads(ctx.eval("JSON.stringify(pages.inference.selection())"))
+    assert selected["capture_trace"] and selected["upload_repo_id"] == "owner/rollouts"
 
 
 def test_browser_defaults_loading_failure_keeps_start_locked(inference_js):

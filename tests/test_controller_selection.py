@@ -115,10 +115,9 @@ def test_reference_keeps_each_motion_approval(attached_modal, missing):  # noqa:
 
 @pytest.mark.parametrize("capture", [False, True])
 def test_reference_managed_launch_and_snapshot_keep_selection(attached_modal, capture, monkeypatch):  # noqa: F811
-    from yamkit.ui import server
-
     state = attached_modal
-    state.expected_override.update(controller_mode="reference", task=server.TRACE_TASK)
+    task = "put the red cube into the green bowl"
+    state.expected_override.update(controller_mode="reference", task=task)
     ui = state.ui
     launched = []
     original = ui.manager.start
@@ -130,13 +129,14 @@ def test_reference_managed_launch_and_snapshot_keep_selection(attached_modal, ca
 
     monkeypatch.setattr(ui.manager, "start", fake_start)
     response = ui.client.post("/api/session/rollout", json=attached_payload(
-        controller_mode="reference", async_chunks=False, task=server.TRACE_TASK,
+        controller_mode="reference", async_chunks=False, task=task,
         capture_trace=capture, confirm_motion=True, mapping_accepted=True, supervised_confirmed=True,
     ))
     assert response.status_code == 200, response.text
     assert response.json()["meta"]["controller_mode"] == "reference"
     argv = launched[0] if capture else next(args for args in ui.seen if "--controller-mode" in args)
     assert argv[argv.index("--controller-mode") + 1] == "reference"
+    assert argv[argv.index("--task") + 1] == task
     if capture:
         assert "--run" in argv and "--confirm-supervised" in argv
     snapshots = list((ui.root / "outputs/ui/deployments").glob("*/run_metadata.json"))
@@ -154,7 +154,7 @@ def test_browser_controller_change_invalidates_qualified_start(attached_browser)
     ctx.eval("$('#inf-controller').value='reference'; pages.inference.syncForm();")
     assert ctx.eval("$('#btn-ro').disabled") is True
     selected = json.loads(ctx.eval("JSON.stringify(pages.inference.selection())"))
-    assert selected["controller_mode"] == "reference" and selected["async_chunks"] is True
+    assert selected["controller_mode"] == "reference" and selected["async_chunks"] is False
     ctx.eval("$('#btn-inf-preflight').onclick();")
     _drain_js(ctx)
     assert ctx.eval("$('#btn-ro').disabled") is False

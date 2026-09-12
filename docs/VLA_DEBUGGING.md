@@ -50,17 +50,20 @@ Stop button, session log and camera handoff apply only to its managed child.
 1. Have Conductor prepare and qualify a retained MolmoAct2 HTTP graph session.
    Its private endpoint credential and exact qualification must exist on the
    Lenovo. Cloud-account credentials stay in Conductor.
-2. Click **Use owned MolmoAct2 session** in Inference. Select both followers and
-   enter the exact qualified task: `pick up the orange lid and place it into the black circular container`.
-   Use a five-second first debug trial and enable **Save 30 fps video and joint traces**.
-   The initial debug helper supports five or ten seconds and this exact task.
-   Accept the physically checked mapping before checking the session.
-3. Click **Check retained session (no hardware)** after setting all options.
+2. Open Inference and review its attached service, exact qualified task and both
+   followers. A currently qualified task such as `put the red cube into the green bowl`
+   is preserved verbatim through inference and recording; a changed task requires a
+   matching qualification. Enable **Save recording locally**, or **Also upload to Hugging Face**
+   to retain a local recording and upload a private copy. Captured policy durations are
+   5, 10, 20, 30, 45, 60 and 90 seconds. Accept the physically checked mapping.
+3. Check the displayed readiness after setting all options (or use **Recheck readiness**).
    It reads local qualification and configuration;
    it neither opens hardware nor starts a GPU. Expired, changed-task, changed-source
    or mismatched sessions stay blocked. The session must cover the selected duration
    plus 30 seconds for startup and 30 seconds for return home. Changing any option
-   requires another check.
+   requires another check. Available memory must also cover the complete selected
+   recording plus 512 MiB of headroom; 90 seconds requires 8,010,125,312 bytes. The
+   check reads Linux host/cgroup limits and disk space without allocating frames.
 4. Start only when supervising the cleared workspace and after the explicit
    motion confirmation. For an assistant-run trial, approve its exact command
    first. No yellow-button press is needed.
@@ -77,8 +80,10 @@ during supervised tests. Completing this sequence does not establish task succes
 
 ## What the debug artifacts show
 
-Debug capture observes the existing control path and preserves the model,
-30 Hz cadence, action freshness checks, joint/gripper clamps, and firmware timeout.
+Debug capture observes the selected control path and preserves its model,
+30 Hz cadence, action freshness/bounds checks and firmware timeout. Reference mode
+keeps its literal interpolation without policy speed/acceleration shaping; capture
+does not change controller semantics.
 It does not open a second camera or robot reader. Every existing camera observation
 is copied into bounded memory at the policy's nominal 30 Hz cadence. The helper
 checks available memory before hardware startup. Video encoding, JSON export and
@@ -110,9 +115,12 @@ must remain visible when interpreting the plots.
 The standalone capture helper defaults to a no-hardware plan:
 
 ```bash
-.venv/bin/python scripts/trace_rollout.py --plan --duration 5
+.venv/bin/python scripts/trace_rollout.py --plan --duration 5 \
+  --task 'put the red cube into the green bowl' --controller-mode reference
 ```
 
 Its `--run` mode energizes and moves the arms and requires separate explicit
 approval. Artifacts from standalone use remain under `.context/rollout-traces/`;
-managed UI runs also copy their reviewed artifacts into the run's history.
+managed UI runs also copy their reviewed artifacts into the run's history. Click the
+rollout to view recorded camera playback after saving finishes. No recording is
+available for an earlier run that did not enable capture.

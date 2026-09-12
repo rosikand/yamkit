@@ -92,6 +92,27 @@ def test_explicit_run_keeps_canonical_flags(monkeypatch, duration):
     assert "--no-home" not in argv and "--prediction-queue-threshold" not in argv
 
 
+@pytest.mark.parametrize("task", ["put the red cube into the green bowl", "  place the blue block on the mat  "])
+def test_selected_task_is_preserved_in_plan_arguments_and_export(task, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(module, "execute", lambda *_: pytest.fail("plan executed"))
+    assert module.main(["--plan", "--task", task, "--controller-mode", "reference"]) == 0
+    assert json.loads(capsys.readouterr().out)["task"] == task
+    args = module.parse_args(["--plan", "--task", task, "--controller-mode", "reference"])
+    argv = module.rollout_arguments(args)
+    assert argv[argv.index("--task") + 1] == task
+    collector = module.Collector(5, controller_mode="reference", task=task)
+    summary = module.export(collector, tmp_path)
+    assert summary["task"] == task
+    assert json.loads((tmp_path / "summary.json").read_text())["task"] == task
+
+
+@pytest.mark.parametrize("task", ["", "  ", "x" * 2049])
+def test_invalid_task_never_executes(task, monkeypatch):
+    monkeypatch.setattr(module, "execute", lambda *_: pytest.fail("invalid task executed"))
+    with pytest.raises(SystemExit):
+        module.main(["--run", "--task", task, "--modal-app", "yamkit-vla-test", "--confirm-supervised"])
+
+
 def test_reference_plan_flags_and_startup_failure_preserve_controller(tmp_path):
     args = module.parse_args(["--plan", "--controller-mode", "reference"])
     argv = module.rollout_arguments(args)
@@ -490,7 +511,8 @@ def test_renderer_failure_retains_complete_evidence(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("fault", [False, True])
-def test_execute_uses_canonical_cli_and_preserves_full_metrics_after_fault(tmp_path, monkeypatch, capsys, fault):
+@pytest.mark.parametrize("task", [module.TASK, "put the red cube into the green bowl"])
+def test_execute_uses_canonical_cli_and_preserves_full_metrics_after_fault(tmp_path, monkeypatch, capsys, fault, task):
     import os
 
     from yamkit import cli, paths
@@ -500,11 +522,12 @@ def test_execute_uses_canonical_cli_and_preserves_full_metrics_after_fault(tmp_p
     monkeypatch.setenv("YAMKIT_PREVIEW_TEST", "managed-session")
     output = tmp_path / ".context" / "rollout-traces" / "ui-selected-session"
     args = module.parse_args(["--run", "--modal-app", "yamkit-vla-test", "--confirm-supervised",
-                              "--output-dir", str(output)])
+                              "--output-dir", str(output), "--task", task])
     metrics = {"executed_actions": 1, "failed": fault, "samples": [{"value": n} for n in range(2000)]}
 
     def fake_cli(*, args, standalone_mode):
         assert args[0] == "rollout" and standalone_mode is False
+        assert args[args.index("--task") + 1] == task
         assert os.environ["YAMKIT_PREVIEW_TEST"] == "managed-session"
         cli._print_inference_result(metrics)
         if fault:
@@ -514,6 +537,10 @@ def test_execute_uses_canonical_cli_and_preserves_full_metrics_after_fault(tmp_p
     assert module.execute(args) == int(fault)
     assert json.loads((output / "metrics.json").read_text()) == metrics
     summary = json.loads((output / "summary.json").read_text())
+    assert summary["task"] == task
+    saved_plan = json.loads((output / "plan.json").read_text())
+    assert saved_plan["task"] == task
+    assert saved_plan["argv"][saved_plan["argv"].index("--task") + 1] == task
     assert summary["rollout_error"] == (
         {"type": "RemoteFault", "message": "fake inference fault after normal cleanup"} if fault else None)
     assert json.loads(capsys.readouterr().out)["trace_directory"] == str(output)
@@ -656,7 +683,7 @@ def test_execute_marks_interrupted_export_without_losing_summary(tmp_path, monke
     monkeypatch.setattr(cli, "app", lambda **kw: None)
     output = tmp_path / ".context" / "rollout-traces" / "interrupted-export"
     args = module.parse_args(["--run", "--modal-app", "yamkit-vla-test", "--confirm-supervised",
-                              "--output-dir", str(output)])
+                              "--output-dir", str(output), "--task", "put the red cube into the green bowl"])
 
     def failed_export(collector, directory):
         module.write_json(directory / "summary.json", {"status": "EXPORTING", "frame_count": 7})
@@ -667,6 +694,7 @@ def test_execute_marks_interrupted_export_without_losing_summary(tmp_path, monke
     summary = json.loads((output / "summary.json").read_text())
     assert summary["status"] == "EXPORT_FAILED" and summary["frame_count"] == 7
     assert summary["error_type"] == "TimeoutError"
+    assert summary["task"] == "put the red cube into the green bowl"
     assert (output / "export-error.json").exists()
 
 

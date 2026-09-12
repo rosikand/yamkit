@@ -12,6 +12,7 @@ from yamkit.ui import server
 
 attached_modal = _attached_modal
 inference_ui = _inference_ui
+TASK = "put the red cube into the green bowl"
 
 
 @pytest.mark.parametrize("failure", [None, "symlink", "copy"])
@@ -19,7 +20,7 @@ inference_ui = _inference_ui
 def test_managed_trace_exports_only_whitelisted_regular_files_after_exit(attached_modal, failure, duration, monkeypatch):
     state = attached_modal
     ui = state.ui
-    state.expected_override["task"] = server.TRACE_TASK
+    state.expected_override["task"] = TASK
     if failure == "copy":
         def fail_copy(*args):
             raise OSError("simulated artifact copy failure")
@@ -33,6 +34,7 @@ from yamkit.camera_ownership import claim_from_env
 p=argparse.ArgumentParser()
 p.add_argument('--run',action='store_true');p.add_argument('--duration',type=int)
 p.add_argument('--modal-app');p.add_argument('--rig');p.add_argument('--output-dir')
+p.add_argument('--task')
 p.add_argument('--backend',choices=['modal','external'],default='modal')
 p.add_argument('--confirm-supervised',action='store_true')
 a=p.parse_args()
@@ -58,7 +60,7 @@ d.rename(renamed)
 d.symlink_to(renamed,target_is_directory=True)
 ''' if failure == "symlink" else ""))
     response = ui.client.post("/api/session/rollout", json=attached_payload(
-        task=server.TRACE_TASK, capture_trace=True, confirm_motion=True,
+        task=TASK, capture_trace=True, confirm_motion=True,
         duration=duration,
         mapping_accepted=True, supervised_confirmed=True,
     ))

@@ -13,17 +13,24 @@ the next startup marks the retained receipt interrupted and exposes a retry comm
 
 ## Enable post-run upload
 
-In Inference, enable **Upload finalized rollout to HF** and select a private dataset
-destination such as `rohanlux/yamkit-rollouts`. Upload includes debug capture. The
-current full capture helper supports the five- or ten-second MolmoAct2 orange-lid
-trial with all three cameras; its existing validation still applies. Other saved
-run directories can be bundled manually, with missing data explicitly listed.
+In Inference, enable **Save recording locally** to retain camera videos, original RGB
+frames and joint/timing traces without uploading. Enable **Also upload to Hugging Face** and
+select a private dataset destination such as `rohanlux/yamkit-rollouts` to upload the
+same recording; local originals are kept. Both options default off.
+
+Capture supports the exact currently qualified MolmoAct2 task at 5, 10, 20, 30, 45, 60
+or 90 seconds with all three cameras and both named followers. It preserves the selected
+task, reference/async controller and raw-RGB HTTP graph settings; qualification, memory
+admission and hardware confirmation remain required. Other saved run directories can be
+bundled manually, with missing data explicitly listed. An unrecorded rollout has no
+video to recover retroactively.
 
 `hub.rollout_repo` in `configs/rig.yaml` stores only the optional default destination.
 The HF token stays in HF's existing token file under `data/hf/`. A managed API request
 can opt in with `upload_repo_id`; this is separate from motion confirmation.
 
-Runs show upload status and a private HF link when uploaded. A failed or interrupted
+Click a rollout in Inference history or Runs to play its local camera recordings after
+export finishes. Runs show upload status and a private HF link when uploaded. A failed or interrupted
 upload leaves the run and bundle available locally. Retry a finalized run without
 opening hardware:
 

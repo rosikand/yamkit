@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -235,24 +236,152 @@ def model_detail(outputs_dir: Path, d: Path) -> dict[str, Any] | None:
 
 
 # ------------------------------------------------------------------------------- deployments --
+_TRACE_CAMERAS = ("top", "left_wrist", "right_wrist")
+
+
+def _deployment_directory(depl_dir: Path, run_id: str) -> Path | None:
+    """A run and its artifacts must be real children, never aliases to another run."""
+    if not run_id or Path(run_id).name != run_id or run_id in (".", ".."):
+        return None
+    directory = depl_dir / run_id
+    try:
+        if (directory.is_symlink() or not directory.is_dir()
+                or directory.resolve().parent != depl_dir.resolve()):
+            return None
+    except OSError:
+        return None
+    return directory
+
+
+def _deployment_file(path: Path) -> bool:
+    try:
+        return not path.is_symlink() and path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _deployment_json(path: Path) -> dict[str, Any]:
+    """Read bounded public run metadata, without following artifact symlinks."""
+    try:
+        if not _deployment_file(path) or path.stat().st_size > 2 * 1024 * 1024:
+            return {}
+        value = json.loads(path.read_text())
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _deployment_videos(directory: Path) -> list[str]:
+    videos = [path.name for path in directory.glob("*.mp4") if _deployment_file(path)]
+    ordered = [f"{camera}.mp4" for camera in _TRACE_CAMERAS]
+    return sorted(videos, key=lambda name: (ordered.index(name) if name in ordered else len(ordered), name))
+
+
+def _recording_summary(directory: Path, meta: dict, videos: list[str], *, timing: bool) -> dict[str, Any]:
+    """Separate physical-run outcome from whether its saved recording can be replayed.
+
+    Old runs lack an explicit capture selection, so retained trace metadata is also
+    recognized. Original paths are evidence only: this reader never opens them.
+    A successful process exit alone does not imply successful video export.
+    """
+    snapshot = _deployment_json(directory / "run_metadata.json")
+    capture = snapshot.get("capture")
+    capture = capture if isinstance(capture, dict) else {}
+    original_paths = snapshot.get("original_paths")
+    original_paths = original_paths if isinstance(original_paths, dict) else {}
+    summary = _deployment_json(directory / "summary.json")
+    timeline = _deployment_json(directory / "video_timeline.json") if timing else {}
+    requested = capture.get("requested") if type(capture.get("requested")) is bool else None
+    trace_present = bool(summary or original_paths.get("trace_dir")
+                         or _deployment_file(directory / "trace.json")
+                         or _deployment_file(directory / "export-error.json"))
+    if trace_present:
+        requested = True
+    expected_cameras = list(_TRACE_CAMERAS) if requested else [Path(name).stem for name in videos]
+    missing = [camera for camera in expected_cameras if f"{camera}.mp4" not in videos]
+    export_status = summary.get("status")
+    if export_status not in ("EXPORTING", "EXPORT_SKIPPED_RESOURCES_OPEN", "EXPORT_FAILED",
+                              "TRACE_SAVED_WITH_EXPORT_ERRORS", "TRACE_SAVED"):
+        export_status = None
+    errors = []
+    if summary.get("video_export_errors"):
+        errors.append("One or more camera videos did not export.")
+    if summary.get("render_error_type"):
+        errors.append("The diagnostic report did not export.")
+    if summary.get("overflow") or summary.get("trace_error_types"):
+        errors.append("The recording contains capture errors or dropped data.")
+    if (_deployment_file(directory / "export-error.json")
+            or export_status in ("EXPORT_FAILED", "EXPORT_SKIPPED_RESOURCES_OPEN")
+            or (export_status == "EXPORTING" and meta.get("status") != "running")):
+        errors.append("Recording export did not complete.")
+    if export_status == "TRACE_SAVED_WITH_EXPORT_ERRORS" and not errors:
+        errors.append("The recording reported export errors.")
+    if requested and meta.get("status") == "running":
+        state = "pending"
+    elif videos:
+        state = "partial" if missing or errors else "available"
+    elif requested:
+        state = "unavailable"
+    else:
+        state = "not_recorded"
+
+    def number(value):
+        try:
+            return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
+        except OverflowError:
+            return None
+
+    frame_count = summary.get("frame_count")
+    return {
+        "requested": requested,
+        "state": state,
+        "video_count": len(videos),
+        "expected_video_count": len(expected_cameras),
+        "missing_cameras": missing,
+        "frame_count": frame_count if type(frame_count) is int and frame_count >= 0 else None,
+        "duration_s": number(timeline.get("duration_s")),
+        "policy_phase_offset_s": number(timeline.get("policy_phase_offset_s")),
+        "timestamp_basis": ("Original observation receipt; not camera exposure" if timeline else None),
+        "export_status": export_status,
+        "errors": errors,
+        "resources_released": (summary.get("resources_released")
+                               if type(summary.get("resources_released")) is bool else None),
+    }
+
+
 def list_deployments(depl_dir: Path) -> list[dict[str, Any]]:
     out = []
     if depl_dir.is_dir():
         for d in sorted(depl_dir.iterdir(), reverse=True):
-            meta = _read_json(d / "meta.json")
-            if meta is not None:
-                meta["has_log"] = (d / "log.txt").is_file()
-                meta["videos"] = sorted(p.name for p in d.glob("*.mp4"))
+            if _deployment_directory(depl_dir, d.name) is None:
+                continue
+            meta = _deployment_json(d / "meta.json")
+            if meta:
+                meta["id"] = d.name
+                meta["has_log"] = _deployment_file(d / "log.txt")
+                meta["videos"] = _deployment_videos(d)
+                meta["recording"] = _recording_summary(d, meta, meta["videos"], timing=False)
                 out.append(meta)
     return out
 
 
 def deployment_detail(depl_dir: Path, run_id: str) -> dict[str, Any] | None:
-    d = depl_dir / run_id
-    meta = _read_json(d / "meta.json")
-    if meta is None:
+    d = _deployment_directory(depl_dir, run_id)
+    if d is None:
         return None
+    meta = _deployment_json(d / "meta.json")
+    if not meta:
+        return None
+    meta["id"] = run_id
     log_file = d / "log.txt"
-    meta["log"] = log_file.read_text().splitlines()[-300:] if log_file.is_file() else []
-    meta["videos"] = sorted(p.name for p in d.glob("*.mp4"))
+    meta["log"] = []
+    if _deployment_file(log_file):
+        try:
+            with log_file.open("rb") as stream:
+                stream.seek(max(0, log_file.stat().st_size - 64 * 1024))
+                meta["log"] = stream.read(64 * 1024).decode("utf-8", errors="replace").splitlines()[-300:]
+        except OSError:
+            pass
+    meta["videos"] = _deployment_videos(d)
+    meta["recording"] = _recording_summary(d, meta, meta["videos"], timing=True)
     return meta

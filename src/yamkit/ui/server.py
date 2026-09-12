@@ -8,6 +8,7 @@ or opening any page never connects to (and never energises) an arm.
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 import json
 import math
 import shlex
@@ -38,10 +39,23 @@ from .preview_proxy import PreviewStreamingResponse, PreviewUnavailable, fetch_s
 from .sessions import DeploymentLog, SessionManager
 
 FRONTEND_DIR = ROOT / "ui"
-TRACE_TASK = "put the red cube into the black container"
 TRACE_FILES = frozenset({"summary.json", "trace.json", "metrics.json", "frame_timestamps.json", "video_timeline.json", "export-error.json",
                          "top.mp4", "left_wrist.mp4", "right_wrist.mp4",
                          "report.html", "joints-left.png", "joints-right.png"})
+
+
+def _capture_memory_preflight(duration: int) -> dict:
+    """Reuse the recorder's Linux admission budget without imports that open devices or allocating frames."""
+    source = Path(__file__).resolve().parents[3] / "scripts" / "trace_rollout.py"
+    spec = importlib.util.spec_from_file_location("_yamkit_capture_preflight", source)
+    recorder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(recorder)
+    planned = recorder.plan(duration)
+    available = recorder.available_memory_bytes()
+    required = planned["max_frame_bytes"] + planned["memory_headroom_bytes"]
+    return {"available_bytes": available, "frame_bytes": planned["max_frame_bytes"],
+            "headroom_bytes": planned["memory_headroom_bytes"], "required_bytes": required,
+            "admission_passes": available >= required, "disk_free_bytes": shutil.disk_usage(ROOT).free}
 
 
 def _rollout_metadata(options, rig: RigConfig) -> dict:
@@ -400,7 +414,8 @@ def create_app(
         try:
             if metadata_path.is_file():
                 snapshot = json.loads(metadata_path.read_text())
-                snapshot["capture"] = {"log_complete": status.get("log_complete", False)}
+                snapshot["capture"] = {**snapshot.get("capture", {}),
+                                       "log_complete": status.get("log_complete", False)}
                 metadata_path.write_text(json.dumps(snapshot, indent=2) + "\n")
         except (OSError, ValueError, TypeError):
             # Preserve the original snapshot and let packaging report a durable failure.
@@ -718,13 +733,13 @@ def create_app(
             body.capture_trace = True  # All camera frames and trace data must exist for the upload.
         if body.capture_trace and (
                 body.backend not in ("modal", "external") or body.policy not in ("molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot")
-                or body.task != TRACE_TASK or body.duration not in (5, 10, 20, 30, 45, 60, 90)
+                or body.duration not in (5, 10, 20, 30, 45, 60, 90)
                 or body.call_mode != "http" or body.execution_mode != "cuda_graph10"
                 or body.image_encoding != "rgb8" or body.center_crop or body.rtc
                 or (body.controller_mode == "async" and not body.async_chunks)
                 or body.prediction_queue_threshold not in (None, 30)
                 or body.arms not in (None, ["left_follower", "right_follower"])):
-            raise ValueError("Debug capture requires the task 'put the red cube into the black container', 5, 10, 20, 30, 45, 60 or 90 seconds, both named followers, and the unchanged raw-RGB HTTP graph settings")
+            raise ValueError("Debug capture requires a currently qualified task, 5, 10, 20, 30, 45, 60 or 90 seconds, both named followers, and the unchanged raw-RGB HTTP graph settings")
         if (body.capture_trace and body.arms is None
                 and [pair.follower for pair in require_rig().pairs] != ["left_follower", "right_follower"]):
             raise ValueError("Debug capture requires the rig's default followers to be left_follower then right_follower")
@@ -733,21 +748,26 @@ def create_app(
     def inference_preflight(body: InferenceBody) -> dict:
         """Read-only exact-form qualification check, without operator approval or a child process."""
         options = None
+        capture_memory = None
         try:
             options = inference_options(body)
             validate_trace(body)
             if sessions.active:
                 raise ValueError("Wait for the current UI session to finish before checking another rollout")
-            return modal_attachment(options, require_rig())
+            if body.capture_trace:
+                capture_memory = _capture_memory_preflight(int(body.duration))
+                if not capture_memory["admission_passes"]:
+                    raise ValueError("Insufficient available memory to save this recording; free memory or turn recording off")
+            return {**modal_attachment(options, require_rig()), "capture_memory": capture_memory}
         except HTTPException as exc:
             if exc.status_code != 422:
                 raise
             return {"ready": False, "reason": exc.detail, "selection_key": None,
-                    "checked_at": time.time(), "expires_at": None}
+                    "checked_at": time.time(), "expires_at": None, "capture_memory": capture_memory}
         except (ValueError, KeyError, TypeError, OSError) as exc:
             reason = str(exc) if isinstance(exc, ValueError) else "Retained session metadata or qualification is unavailable"
             return {"ready": False, "reason": reason, "selection_key": options.operation_key,
-                    "checked_at": time.time(), "expires_at": None}
+                    "checked_at": time.time(), "expires_at": None, "capture_memory": capture_memory}
 
     def inference_start(mode: str, args: list[str], options, *, argv_override=None, extra_meta=None) -> dict:
         with inference_launch_lock:
@@ -762,6 +782,8 @@ def create_app(
             meta["session_log_path"] = str(run_dir / "log.txt")
             if mode == "rollout":
                 snapshot = _rollout_metadata(options, require_rig())
+                snapshot["capture"] = {"requested": bool(meta.get("capture_trace")),
+                                       "upload_requested": bool(meta.get("upload_repo_id"))}
                 snapshot["original_paths"] = {"deployment_dir": str(run_dir), "rig_path": str(rig_path),
                                                "trace_dir": meta.get("debug_trace_dir")}
                 (run_dir / "run_metadata.json").write_text(json.dumps(snapshot, indent=2) + "\n")
@@ -799,8 +821,12 @@ def create_app(
             raise HTTPException(422, "explicit motion confirmation is required")
         try:
             validate_trace(body)
+            if body.capture_trace and not _capture_memory_preflight(int(body.duration))["admission_passes"]:
+                raise ValueError("Insufficient available memory to save this recording; free memory or turn recording off")
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
+        except (OSError, KeyError, TypeError) as exc:
+            raise HTTPException(422, "Recording memory admission could not be checked") from exc
         if body.backend in ("modal", "external"):
             try:
                 modal_attachment(options, rig)
@@ -825,7 +851,7 @@ def create_app(
         if body.capture_trace:
             trace_dir = ROOT / ".context" / "rollout-traces" / uuid.uuid4().hex
             trace_args = [sys.executable, str(ROOT / "scripts" / "trace_rollout.py"), "--run",
-                          "--duration", str(int(body.duration)), "--backend", body.backend,
+                          "--duration", str(int(body.duration)), "--task", body.task, "--backend", body.backend,
                           "--rig", str(rig_path), "--output-dir", str(trace_dir), "--confirm-supervised"]
             trace_args += (["--external-service", body.external_service] if body.backend == "external"
                            else ["--modal-app", body.modal_app])
@@ -1036,9 +1062,10 @@ def create_app(
 
     @app.get("/api/deployments/{run_id}/artifact/{filename}")
     def deployment_artifact(run_id: str, filename: str) -> FileResponse:
-        directory = (deployments.root / run_id).resolve()
+        requested = deployments.root / run_id
+        directory = requested.resolve()
         path = directory / filename
-        if (directory.parent != deployments.root.resolve() or filename not in TRACE_FILES
+        if (requested.is_symlink() or directory.parent != deployments.root.resolve() or filename not in TRACE_FILES
                 or path.is_symlink() or not path.is_file() or path.resolve().parent != directory):
             raise HTTPException(404, "no such debug artifact")
         headers = {"X-Content-Type-Options": "nosniff"}
@@ -1048,8 +1075,11 @@ def create_app(
 
     @app.get("/api/deployments/{run_id}/video/{filename}")
     def deployment_video(run_id: str, filename: str, request: Request) -> Response:
-        p = (deployments.root / run_id / filename).resolve()
-        if deployments.root.resolve() not in p.parents or not p.is_file() or p.suffix != ".mp4":
+        requested = deployments.root / run_id
+        directory = requested.resolve()
+        p = directory / filename
+        if (requested.is_symlink() or directory.parent != deployments.root.resolve() or p.is_symlink()
+                or p.resolve().parent != directory or not p.is_file() or p.suffix != ".mp4"):
             raise HTTPException(404, "no such video")
         return _range_response(p, request, media_type="video/mp4")
 

@@ -38,7 +38,7 @@ Navigation is a fixed left sidebar; the theme switcher (Light / Dark / System) l
 | **Live** | camera tiles (top / left wrist / right wrist), follower joint+gripper state, CAN/camera/rig status, current mode + loop rate, read-only controls (`yamkit read` stream), Park arms (`yamkit rest`: every arm moves slowly home and is released) |
 | **Record** | camera tiles, teleop pair status (engaged, tracking error, Hz), dataset name / task / episodes / durations form (recording rate fixed at 30 fps unless changed under "Advanced", capped by the slowest camera), Start Teleop / Start Recording / Park / Stop, episode + elapsed progress, live log. Normal Start/Stop use configured homing; clicking Stop again during the return releases immediately. Startup and operator-session faults release without another home move |
 | **Datasets** | LeRobot v3 datasets under `data/datasets/` and, when signed in, the account's Hub datasets in the same table with a local / cloud / both tag, Upload and Download buttons and Hub links; per-episode detail page with synchronized videos and state/action small-multiple charts |
-| **Inference** | Task, duration, current service and a supervised Start/Stop workflow. Advanced model, transport, capture and diagnostic settings are collapsed by default; camera previews opt in. A remote rollout requires current host qualification for its exact settings plus mapping acceptance and supervised motion confirmation. Run history includes latency, status, termination reason, logs and any captured replay videos (`outputs/ui/deployments/`) |
+| **Inference** | Task, duration, optional local recording/HF copy, current service and a supervised Start/Stop workflow. Advanced model, transport and diagnostic settings are collapsed by default; camera previews opt in. A remote rollout requires current host qualification for its exact settings plus mapping acceptance and supervised motion confirmation. Click a rollout to view its recording, status, timing, logs and any debug artifacts (`outputs/ui/deployments/`) |
 | **Models** | checkpoint directories under `outputs/` and the account's Hub models, tagged local / cloud / both; per-checkpoint detail page with file sizes and `config.json` / `train_config.json` contents; Upload buttons; Hub models get their own detail page and can be typed straight into the rollout form |
 | **Settings** | Hugging Face sign-in (the token goes to `data/hf/token`, never through the rig) and the rig's hub settings (account, private, default destination); view/edit `configs/rig.yaml`: structured fields for the control knobs, read-only arm/camera tables (with the discovery notes: model, serial, USB port), and a raw-YAML editor. Every save is validated server-side first (parse → `RigConfig` → `validate()`), raw YAML is written verbatim (comments kept), saving is refused while a hardware session runs, and the camera feeds are reloaded from the saved file (no restart). The rig file holds hardware identifiers only — no credentials pass through the UI. |
 
@@ -97,10 +97,26 @@ while preserving the final gripper opening and then releases; Stop/fault release
 homing. The UI Stop button controls UI-started sessions only, not a rollout launched from
 a separate terminal. Keep the physical cutoff accessible throughout the run.
 
-Debug capture currently supports only the reviewed black-container task and its allowed
-durations. A different task can run with capture/upload disabled; changing the task does
-not silently expand the capture contract. When capture is selected, its unchanged memory
-admission must pass, and export/upload occurs only after hardware release.
+Enable **Save recording locally** to retain all three camera videos, original RGB frames
+and joint/timing traces. **Also upload to Hugging Face** also enables local recording; local originals
+remain if upload fails. The destination appears only when upload is selected, defaults to
+the configured `hub.rollout_repo`, and must name a private HF dataset. Both choices start
+off and do not grant motion approval.
+
+Recording supports the exact currently qualified MolmoAct2 task, including changed scene
+prompts after matching host qualification, at 5, 10, 20, 30, 45, 60 or 90 seconds. The selected
+task is passed unchanged to inference and stored in recording provenance; no scene prompt
+is substituted. Both named followers and the unchanged raw-RGB HTTP graph settings remain
+required. Unsupported settings block the selected recording instead of silently disabling it.
+Read-only preflight reports available/required RAM and disk space, and Start rechecks RAM
+before its child. The recorder retains its independent pre-hardware admission check: a
+90-second capture needs 8,010,125,312 available bytes, including 512 MiB headroom. No frames
+are allocated by the UI check. Video export and HF upload occur only after hardware release.
+
+Click a rollout in Inference history or Runs to play the saved top and wrist camera videos.
+Playback covers the policy phase only, not startup or return home; it preserves observation
+timing. Unrecorded historical runs cannot gain video retroactively. Saving, missing/partial
+recordings and upload failures are shown separately from the physical rollout result.
 
 Record launches `yamkit record`, which installs the same operator processing used by
 native teleop. Unprocessed raw LeRobot YAM leader actions are rejected. Native bilateral

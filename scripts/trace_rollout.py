@@ -45,8 +45,8 @@ MAX_ROLLOUT_WALL_S = 150  # Startup + at most 90 policy seconds + bounded return
 MAX_EXPORT_WALL_S = 240
 
 
-def plan(duration=5, controller_mode="async"):
-    return {"status": "PLAN_ONLY", "hardware_opened": False, "task": TASK,
+def plan(duration=5, controller_mode="async", *, task=TASK):
+    return {"status": "PLAN_ONLY", "hardware_opened": False, "task": task,
             "duration_s": duration, "controller_mode": controller_mode,
             "maximum_rollout_wall_s": MAX_ROLLOUT_WALL_S,
             "maximum_export_wall_s": MAX_EXPORT_WALL_S,
@@ -70,6 +70,7 @@ def parse_args(argv=None):
     mode.add_argument("--plan", action="store_true")
     mode.add_argument("--run", action="store_true")
     parser.add_argument("--duration", type=int, choices=(5, 10, 20, 30, 45, 60, MAX_DURATION_S), default=5)
+    parser.add_argument("--task", default=TASK, help="Exact task from the current host qualification")
     parser.add_argument("--modal-app")
     parser.add_argument("--backend", choices=("modal", "external"), default="modal")
     parser.add_argument("--external-service")
@@ -78,6 +79,8 @@ def parse_args(argv=None):
     parser.add_argument("--rig", type=Path, help="Selected rig inside this repository; normal CLI validation still applies")
     parser.add_argument("--output-dir", type=Path, help="New directory inside this repository's .context/rollout-traces")
     args = parser.parse_args(argv)
+    if not args.task.strip() or len(args.task) > 2048:
+        parser.error("task must contain 1–2048 characters")
     if args.backend == "external":
         if (args.modal_app or not args.external_service
                 or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", args.external_service) is None):
@@ -122,9 +125,10 @@ def available_memory_bytes(meminfo=Path('/proc/meminfo'), cgroup_root=Path('/sys
 
 
 class Collector:
-    def __init__(self, duration, *, clock=time.monotonic, controller_mode="async"):
+    def __init__(self, duration, *, clock=time.monotonic, controller_mode="async", task=TASK):
         self.duration, self.clock = duration, clock
         self.controller_mode = controller_mode
+        self.task = task
         self.events, self.frames, self.chunks, self.robots = [], [], [], []
         self.metrics = None
         self.rollout_error = None
@@ -478,7 +482,7 @@ def export(collector, outdir):
     """Only call after rollout unwound; no image writes until resources are released."""
     released = collector.released()
     summary = {"status": "EXPORTING", "qualification_evidence": False,
-               "instrumented_rollout": True, "task": TASK, "duration_s": collector.duration,
+               "instrumented_rollout": True, "task": collector.task, "duration_s": collector.duration,
                "resources_released": released, "production_guards_unchanged": True,
                "guard_scope": "Capture leaves the selected controller unchanged; reference explicitly disables policy speed/acceleration shaping",
                "policy_speed_clamp_enabled": collector.controller_mode != "reference",
@@ -549,7 +553,7 @@ def render_report(outdir):
 
 def rollout_arguments(args):
     result = ["rollout", "--policy", "molmoact2", "--backend", args.backend, "--call-mode", "http",
-            "--execution-mode", "cuda_graph10", "--task", TASK, "--arms", "left_follower",
+            "--execution-mode", "cuda_graph10", "--task", args.task, "--arms", "left_follower",
             "--arms", "right_follower", "--duration", str(args.duration),
             "--accept-mapping", "--confirm-supervised"]
     if getattr(args, "controller_mode", "async") != "async":
@@ -591,8 +595,9 @@ def execute(args):
         if not args.rig.is_relative_to(ROOT.resolve()) or not args.rig.is_file():
             raise ValueError("Selected rig must be an existing file inside this repository")
     outdir.mkdir(parents=True, exist_ok=False)
-    collector = Collector(args.duration, controller_mode=args.controller_mode)
-    write_json(outdir / "plan.json", {**plan(args.duration, args.controller_mode), "argv": rollout_arguments(args)})
+    collector = Collector(args.duration, controller_mode=args.controller_mode, task=args.task)
+    write_json(outdir / "plan.json", {**plan(args.duration, args.controller_mode, task=args.task),
+                                     "argv": rollout_arguments(args)})
     status, error_type = 0, None
     try:
         with install_hooks(collector), wall_limit(MAX_ROLLOUT_WALL_S):
@@ -620,7 +625,7 @@ def execute(args):
         except (OSError, ValueError):
             summary = {}
         summary.update(status="EXPORT_FAILED", error_type=type(exc).__name__,
-                       controller_mode=args.controller_mode,
+                       controller_mode=args.controller_mode, task=args.task,
                        resources_released=collector.released(), rollout_error=collector.rollout_error)
         write_json(outdir / "summary.json", summary)
         write_json(outdir / "export-error.json", summary)
@@ -635,7 +640,7 @@ def execute(args):
 def main(argv=None):
     args = parse_args(argv)
     if not args.run:
-        print(json.dumps(plan(args.duration, args.controller_mode)), flush=True)
+        print(json.dumps(plan(args.duration, args.controller_mode, task=args.task)), flush=True)
         return 0
     return execute(args)
 

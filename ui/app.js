@@ -726,6 +726,7 @@ pages.inference = {
   async render(el, args) {
     if (args.length) return renderRunDetail(el, decodeURIComponent(args[0]));
     this._runDetailId = null;
+    this._detailView = null;
     this._submitted = null;
     this._activeSelection = null;
     this._previews = false;
@@ -743,6 +744,14 @@ pages.inference = {
         <div class="inference-main-fields">
           <label class="field">Task<input type="text" id="inf-task" value="" placeholder="Describe what the arms should do" /></label>
           <label class="field">Duration (seconds)<input type="number" id="inf-duration" value="60" min="1" max="3600" /></label>
+        </div>
+        <div id="inf-capture-controls" class="inference-recording">
+          <div class="toolbar">
+            <label class="check"><input type="checkbox" id="inf-trace" /> Save recording locally</label>
+            <label class="check"><input type="checkbox" id="inf-upload" /> Also upload to Hugging Face</label>
+          </div>
+          <label class="field" id="inf-upload-destination" hidden>Private HF dataset<input type="text" id="inf-upload-repo" placeholder="your-namespace/yamkit-rollouts" /></label>
+          <div id="inf-capture-note" class="hint">Save all three camera videos and joint traces, then click the run below to watch. Upload keeps the local originals.</div>
         </div>
         <div id="inf-attach-controls">
           <label class="check"><input type="checkbox" id="inf-mapping" /> I verified the arm / camera mapping and gripper calibration.</label>
@@ -769,13 +778,6 @@ pages.inference = {
           <label class="field">External service<input type="text" id="inf-external-service" placeholder="lambda-georgia" /></label>
         </div>
         <div class="toolbar"><button id="btn-attach-owned">Use owned MolmoAct2 session</button></div>
-        <div id="inf-capture-controls">
-          <hr class="divider" />
-          <label class="check"><input type="checkbox" id="inf-trace" /> Save 30 fps video and joint traces (put the red cube into the black container, 5, 10, 20, 30, 45, 60 or 90 seconds).</label>
-          <label class="check"><input type="checkbox" id="inf-upload" /> Upload finalized rollout to a private Hugging Face dataset.</label>
-          <label class="field">rollout dataset<input type="text" id="inf-upload-repo" placeholder="your-namespace/yamkit-rollouts" /></label>
-          <div id="inf-capture-note" class="hint">Capture and upload are opt-in; export starts only after motor release. Local originals are kept.</div>
-        </div>
         <datalist id="policy-list"></datalist>
         <div class="toolbar"><label class="check"><input type="checkbox" id="inf-rtc" /> Local RTC (policy must support guidance)</label>
           <label class="check"><input type="checkbox" id="inf-crop" /> Optional center crop to 16:9 at remote policy boundary</label></div>
@@ -907,8 +909,8 @@ pages.inference = {
       call_mode: remote ? "http" : "remote", execution_mode: remote ? "cuda_graph10" : "eager",
       image_encoding: "rgb8", jpeg_quality: 85, prediction_queue_threshold: null,
       mapping_accepted: remote && $("#inf-mapping").checked,
-      capture_trace: remote && ($("#inf-trace").checked || $("#inf-upload").checked),
-      upload_repo_id: remote && $("#inf-upload").checked ? $("#inf-upload-repo").value.trim() : null,
+      capture_trace: $("#inf-trace").checked || $("#inf-upload").checked,
+      upload_repo_id: $("#inf-upload").checked ? $("#inf-upload-repo").value.trim() : null,
       arms: $("#inf-arms").value ? [$("#inf-arms").value] : remote ? this._followerArms || ["left_follower", "right_follower"] : null };
   },
   async checkAttachment() {
@@ -944,6 +946,9 @@ pages.inference = {
       const activeSelection = JSON.stringify(session.meta);
       if (this._activeSelection !== activeSelection) {
         this.applyDefaults(session.meta);
+        $("#inf-trace").checked = session.meta.capture_trace === true;
+        $("#inf-upload").checked = !!session.meta.upload_repo_id;
+        if (session.meta.upload_repo_id) $("#inf-upload-repo").value = session.meta.upload_repo_id;
         this._activeSelection = activeSelection;
         this._qualification = null;
       }
@@ -959,27 +964,32 @@ pages.inference = {
     $("#inf-modal-app").disabled = !modal || external || busy;
     $("#inf-external-service").disabled = !external || busy;
     $("#inf-attach-controls").hidden = !modal;
-    $("#inf-capture-controls").hidden = !modal;
     $("#btn-attach-owned").disabled = busy;
     $("#btn-attach-owned").hidden = !this._ownedService;
     $("#inf-rtc").disabled = modal || busy;
     if (modal) $("#inf-rtc").checked = false;
     $("#inf-crop").disabled = !modal || busy;
     if (!modal) $("#inf-crop").checked = false;
-    const captureSupported = modal && $("#inf-policy").value.trim() === "molmoact2"
-      && $("#inf-task").value.trim() === "put the red cube into the black container"
+    const captureSupported = modal && ["molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot"].includes($("#inf-policy").value.trim())
+      && !!$("#inf-task").value.trim() && !$("#inf-arms").value && !$("#inf-crop").checked
       && [5, 10, 20, 30, 45, 60, 90].includes(Number($("#inf-duration").value));
-    if (!captureSupported) $("#inf-trace").checked = $("#inf-upload").checked = false;
     if ($("#inf-upload").checked) $("#inf-trace").checked = true;
-    $("#inf-trace").disabled = busy || !captureSupported || $("#inf-upload").checked;
-    $("#inf-upload").disabled = busy || !captureSupported;
+    $("#inf-trace").disabled = busy || (!captureSupported && !$("#inf-trace").checked) || $("#inf-upload").checked;
+    $("#inf-upload").disabled = busy || (!captureSupported && !$("#inf-upload").checked);
     $("#inf-upload-repo").disabled = busy || !modal || !$("#inf-upload").checked;
+    $("#inf-upload-destination").hidden = !$("#inf-upload").checked;
     $("#inf-capture-note").textContent = captureSupported
-      ? "Capture and upload are opt-in. Export starts after motor release; local originals are kept. Capture memory admission remains enforced."
-      : "Capture / upload is unavailable for this task or duration under the current validated capture guard. This run uses live inference without saved video.";
+      ? $("#inf-trace").checked
+        ? "Saves all three camera videos and joint traces after motor release. Click the completed run below to watch; local originals are kept."
+        : "Recording is off. Enable local saving before Start to watch this rollout later."
+      : "Recording requires a qualified MolmoAct2 remote session, both followers, full images, and 5, 10, 20, 30, 45, 60 or 90 seconds. Change these settings or turn recording off.";
     const selected = this.selection();
     const profile = this._profiles.find((p) => p.id === selected.policy || p.repo_id === selected.policy);
     const qualification = this._qualification?.key === JSON.stringify(selected) ? this._qualification : null;
+    if (selected.capture_trace && qualification?.capture_memory) {
+      const memory = qualification.capture_memory;
+      $("#inf-capture-note").textContent += ` Capture memory: ${(memory.required_bytes / 1e9).toFixed(2)} GB required, ${(memory.available_bytes / 1e9).toFixed(2)} GB available.`;
+    }
     const qualified = qualification?.ready === true && Number.isFinite(qualification.deadline) && Date.now() < qualification.deadline;
     const modalBlocked = modal && (!qualified || !selected.mapping_accepted);
     $("#inf-selection-summary").textContent = this._defaultsLoaded
@@ -1008,7 +1018,8 @@ pages.inference = {
     $("#btn-inf-preflight").disabled = busy || this._checking || !modal || invalidSelection;
     $("#btn-inf-preflight").hidden = !modal;
     $("#btn-ro").textContent = this._launching ? "Starting…" : `Start ${selected.duration || ""}s rollout`;
-    $("#btn-ro").disabled ||= busy || invalidSelection || modalBlocked || !!profile && (!profile.mapping_verified || (profile.id === "molmoact2" && selected.rtc));
+    $("#btn-ro").disabled ||= busy || invalidSelection || modalBlocked || (selected.capture_trace && !captureSupported)
+      || !!profile && (!profile.mapping_verified || (profile.id === "molmoact2" && selected.rtc));
     $("#btn-inf-stop").disabled = !session.active;
     const rolloutPhase = session.parsed?.rollout_phase;
     $("#btn-inf-stop").textContent = session.active && session.mode === "rollout"
@@ -1055,26 +1066,27 @@ pages.inference = {
     if (!el) return;
     try {
       const list = await api("/deployments");
-      this._uploadsPending = list.some((d) => d.status === "running" || ["queued", "packaging", "uploading"].includes(d.upload?.status));
+      this._uploadsPending = list.some((d) => d.status === "running" || d.recording?.state === "pending" || ["queued", "packaging", "uploading"].includes(d.upload?.status));
       this._lastRunRefresh = Date.now();
-      el.innerHTML = `<div class="panel">` + (list.length ? `<table><tr><th>run</th><th>kind</th><th>model</th><th>task</th><th class="num">latency</th><th class="num">duration</th><th>status</th><th>termination</th><th>HF upload</th></tr>` +
+      el.innerHTML = `<div class="panel">` + (list.length ? `<table><tr><th>run</th><th>task</th><th class="num">duration</th><th>status</th><th>recording</th><th>HF upload</th></tr>` +
         list.map((d) => `<tr class="click" onclick="location.hash='#/inference/${encodeURIComponent(d.id)}'">
-          <td class="mono">${esc(d.id)}</td><td>${esc(d.kind ?? "–")}</td><td class="mono">${esc(d.policy ?? "–")}</td><td>${esc(d.task ?? "–")}</td>
-          <td class="num">${d.first_call_ms != null ? d.first_call_ms.toFixed(0) + " ms" : "–"}</td>
+          <td class="mono"><a href="#/inference/${encodeURIComponent(d.id)}">${esc(d.id)}</a></td><td>${esc(d.task ?? "–")}</td>
           <td class="num">${fmtDur(d.duration_s)}</td>
           <td>${st(d.status === "success", d.status ?? "?", d.status === "running" || d.status === "stopped")}</td>
-          <td>${esc(d.termination ?? "–")}</td><td>${esc(d.upload?.status || "off")}</td></tr>`).join("") + `</table>`
+          <td>${esc(recordingLabel(d))}</td><td>${esc(d.upload?.status || "off")}</td></tr>`).join("") + `</table>`
         : `<div class="empty">no policy runs yet — run a policy check or rollout above</div>`) + `</div>`;
     } catch (e) { el.innerHTML = errBanner(e.message); }
   },
   update() {
     this.syncForm();
-    if (this._runDetailId && Date.now() - (this._lastUploadRefresh || 0) > 2000) {
-      this._lastUploadRefresh = Date.now();
-      const id = this._runDetailId;
-      api(`/deployments/${encodeURIComponent(id)}`).then((d) => {
-        if (this._runDetailId === id && $("#run-upload")) $("#run-upload").innerHTML = rolloutUploadHTML(d.upload);
-      }).catch(() => {});
+    const view = this._detailView;
+    if (view?.alive) syncRunStop(view);
+    if (view?.alive && view.pending && !view.requestBusy && Date.now() - view.lastRefresh > 2000) {
+      view.requestBusy = true;
+      view.lastRefresh = Date.now();
+      api(`/deployments/${encodeURIComponent(view.id)}`).then((d) => {
+        if (view.alive) updateRunDetail(view, d);
+      }).catch(() => {}).finally(() => { view.requestBusy = false; });
     }
     if (this._wasActive !== session.active || this._uploadsPending && Date.now() - (this._lastRunRefresh || 0) > 2000) {
       this._wasActive = session.active; this.refreshList();
@@ -1091,31 +1103,130 @@ function rolloutUploadHTML(upload) {
     (upload.retry_command ? `<div class="hint mono">${esc(upload.retry_command)}</div>` : "");
 }
 
+function syncRunStop(view) {
+  if (!view.body?.isConnected) return;
+  const button = $("#run-stop", view.body);
+  if (!button) return;
+  button.hidden = !session.active;
+  button.disabled = !session.active;
+  button.textContent = session.parsed?.rollout_phase === "released" ? "Interrupt current saving" : "Stop current local execution";
+}
+
 async function renderRunDetail(el, id) {
   pages.inference._runDetailId = id;
+  const view = pages.inference._detailView = {id, alive: true, pending: false, lastRefresh: Date.now(), replayKey: null};
+  pageCleanup = () => { view.alive = false; view.cleanupPlayback?.(); };
   el.innerHTML = `<a class="back" href="#/inference">← inference</a>${pageHead(id)}<div id="run-detail">loading…</div>`;
+  view.body = $("#run-detail");
   let d;
   try { d = await api(`/deployments/${encodeURIComponent(id)}`); }
-  catch (e) { $("#run-detail").innerHTML = errBanner(e.message); return; }
-  $("#run-detail").innerHTML = `
-    <div class="sect"><div class="kv panel">
+  catch (e) { if (view.alive) view.body.innerHTML = errBanner(e.message); return; }
+  if (!view.alive) return;
+  view.body.innerHTML = `<div class="toolbar"><button id="run-stop" class="danger" hidden disabled>Stop current local execution</button></div><div id="run-summary" class="sect"></div>
+    <div class="sect"><div class="sect-head">Recording</div><div id="run-recording"></div></div>
+    <details class="advanced sect"><summary>Run details, artifacts and log</summary>
+      <div id="run-diagnostics"></div><div id="run-artifacts" class="panel pad"></div>
+      <pre id="run-log" class="log tall"></pre></details>`;
+  $("#run-stop", view.body).onclick = (event) => doPost("/session/stop", {}, event.target);
+  syncRunStop(view);
+  updateRunDetail(view, d);
+}
+
+function recordingLabel(d) {
+  const state = d.recording?.state;
+  return ({available: "Watch recording", pending: "Recording / saving…", partial: "Partial recording",
+    unavailable: "Recording unavailable", not_recorded: "Not recorded"})[state]
+    || (d.videos?.length ? "Watch recording" : "Not recorded");
+}
+
+function updateRunDetail(view, d) {
+  if (!view.alive || !view.body.isConnected) return;
+  view.pending = d.status === "running" || d.recording?.state === "pending" || ["queued", "packaging", "uploading"].includes(d.upload?.status);
+  $("#run-summary", view.body).innerHTML = `<div class="kv panel">
       <div>status</div><div>${st(d.status === "success", d.status, d.status !== "failed")}${d.termination ? ` <span class="crumb">— ${esc(d.termination)}</span>` : ""}</div>
-      <div>kind</div><div>${esc(d.kind)}</div>
-      <div>model</div><div class="mono">${esc(d.policy ?? "–")}</div>
       <div>task</div><div>${esc(d.task ?? "–")}</div>
       <div>started</div><div>${fmtDate(d.started_at)}</div>
-      <div>duration</div><div>${fmtDur(d.duration_s)}</div>
+      <div>session duration</div><div>${fmtDur(d.duration_s)}</div>
+      <div>HF upload</div><div id="run-upload">${rolloutUploadHTML(d.upload)}</div>
+    </div>`;
+  $("#run-diagnostics", view.body).innerHTML = `<div class="kv panel sect">
+      <div>kind</div><div>${esc(d.kind)}</div>
+      <div>model</div><div class="mono">${esc(d.policy ?? "–")}</div>
       <div>latency (first call)</div><div>${d.first_call_ms != null ? d.first_call_ms.toFixed(0) + " ms" : "–"}</div>
       <div>latency (next calls)</div><div>${d.step_call_ms ? d.step_call_ms.map((x) => x.toFixed(0)).join(" / ") + " ms" : "–"}</div>
       <div>exit code</div><div class="mono">${d.returncode ?? "–"}</div>
-      <div>HF upload</div><div id="run-upload">${rolloutUploadHTML(d.upload)}</div>
-    </div></div>
-    ${(d.videos || []).length ? `<div class="sect"><div class="sect-head">Replay</div><div class="cams">` + d.videos.map((v) => `
-      <div class="cam"><span class="label">${esc(v)}</span>
-        <video controls src="/api/deployments/${encodeURIComponent(id)}/video/${encodeURIComponent(v)}"></video></div>`).join("") + `</div></div>` : ""}
-    ${(d.artifacts || []).length ? `<div class="sect"><div class="sect-head">Debug artifacts</div><div class="panel pad">` + d.artifacts.map((name) =>
-      `<a href="/api/deployments/${encodeURIComponent(id)}/artifact/${encodeURIComponent(name)}" target="_blank" rel="noopener">${esc(name)}</a>`).join(" · ") + `</div></div>` : ""}
-    <div class="sect"><div class="sect-head">Log</div><pre class="log tall">${esc((d.log || []).join("\n")) || "(empty)"}</pre></div>`;
+    </div>`;
+  $("#run-artifacts", view.body).innerHTML = (d.artifacts || []).map((name) =>
+    `<a href="/api/deployments/${encodeURIComponent(view.id)}/artifact/${encodeURIComponent(name)}" target="_blank" rel="noopener">${esc(name)}</a>`).join(" · ") || "No exported debug artifacts.";
+  $("#run-log", view.body).textContent = (d.log || []).join("\n") || "(empty)";
+  const replayKey = JSON.stringify([d.videos, d.recording]);
+  if (view.replayKey === replayKey) return; // Upload/status polling must not interrupt playback.
+  view.replayKey = replayKey;
+  view.cleanupPlayback?.();
+  const slot = $("#run-recording", view.body), recording = d.recording || {};
+  const videos = recording.state === "pending" ? [] : d.videos || [];
+  const message = videos.length ? recording.state === "partial" ? "Only part of this recording is available. Local originals are retained." : "Saved locally. Play or scrub all camera views together."
+    : recording.state === "pending" ? "Recording / export is in progress. Videos will appear here automatically after the arms are released and export finishes."
+    : recording.state === "unavailable" ? "Recording was requested, but no playable video was exported. Check the details and log below; original files are retained."
+    : "This rollout was not recorded. Enable Save recording locally before your next run; video cannot be recovered retroactively.";
+  slot.innerHTML = `<div class="panel pad"><div>${esc(message)}</div>
+    ${(recording.errors || []).map((error) => `<div class="hint warn">${esc(error)}</div>`).join("")}
+    ${videos.length ? `<div class="cams rollout-replay">${videos.map((name) => {
+      const label = ({"top.mp4": "Top camera", "left_wrist.mp4": "Left wrist", "right_wrist.mp4": "Right wrist"})[name] || name;
+      const url = `/api/deployments/${encodeURIComponent(view.id)}/video/${encodeURIComponent(name)}`;
+      return `<div><div class="cam"><span class="label">${esc(label)}</span><video src="${url}" aria-label="${esc(label)} recording" preload="metadata" muted playsinline></video></div><a class="hint" href="${url}" download="${esc(name)}">Download video</a></div>`;
+    }).join("")}</div><div class="toolbar"><button id="run-play" class="primary">Play recording</button><span id="run-play-time" class="mono">0.0 s</span></div>
+      <input type="range" id="run-scrub" min="0" max="${recording.duration_s || 0}" step="0.01" value="0" aria-label="Recording playback position" />
+      <div id="run-play-error" class="hint warn" role="status"></div>
+      <div class="hint">Policy-phase video only; startup and return home are not recorded. Timing follows observation receipt, not camera exposure.</div>` : ""}</div>`;
+  view.cleanupPlayback = videos.length ? setupRunPlayback(slot, recording.duration_s) : null;
+}
+
+function setupRunPlayback(slot, knownDuration) {
+  const videos = [...slot.querySelectorAll("video")], lead = videos[0];
+  const button = $("#run-play", slot), scrub = $("#run-scrub", slot), clock = $("#run-play-time", slot);
+  let alive = true, generation = 0, timer = null;
+  const stop = () => {
+    generation++;
+    clearInterval(timer); timer = null;
+    videos.forEach((video) => video.pause());
+    button.textContent = "Play recording";
+  };
+  const update = () => {
+    const duration = knownDuration || lead.duration;
+    if (Number.isFinite(duration) && duration > 0) scrub.max = duration;
+    scrub.value = lead.currentTime;
+    clock.textContent = `${lead.currentTime.toFixed(1)} / ${Number.isFinite(duration) ? duration.toFixed(1) : "…"} s`;
+  };
+  const fail = () => { stop(); $("#run-play-error", slot).textContent = "Video playback failed. Try downloading the saved video; check the run log if export was incomplete."; };
+  videos.forEach((video) => { video.onerror = fail; video.onloadedmetadata = update; });
+  lead.onended = () => { stop(); update(); };
+  scrub.oninput = () => {
+    stop();
+    videos.forEach((video) => { video.currentTime = Number(scrub.value); });
+    update();
+  };
+  button.onclick = () => {
+    if (timer || !lead.paused) return stop();
+    const startAt = lead.ended ? 0 : Number(scrub.value), request = ++generation;
+    $("#run-play-error", slot).textContent = "";
+    button.textContent = "Pause";
+    videos.forEach((video) => {
+      video.currentTime = startAt;
+      video.play().catch((error) => { if (alive && generation === request && error.name !== "AbortError") fail(); });
+    });
+    timer = setInterval(() => {
+      update();
+      for (const video of videos.slice(1)) {
+        if (Math.abs(video.currentTime - lead.currentTime) > 0.15) video.currentTime = lead.currentTime;
+      }
+    }, 100);
+  };
+  update();
+  return () => {
+    alive = false; stop();
+    videos.forEach((video) => { video.onerror = video.onloadedmetadata = video.onended = null; video.removeAttribute("src"); video.load(); });
+  };
 }
 
 // ---- models ----
