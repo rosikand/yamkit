@@ -1,5 +1,6 @@
 """A duplicate UI launch must never reconcile the running dashboard's saved jobs."""
 
+import asyncio
 import errno
 import http.client
 import socket
@@ -69,6 +70,7 @@ def test_listening_socket_is_reserved_before_app_and_passed_to_server(monkeypatc
     def config(value, **kwargs):
         assert value == "fixture-app" and kwargs["host"] == host
         assert kwargs["port"] == captured[0].getsockname()[1]
+        assert kwargs["timeout_graceful_shutdown"] == 5
         return kwargs
 
     def run(*, sockets):
@@ -238,3 +240,77 @@ def test_dashboard_probe_has_total_deadline_not_an_unbounded_slow_read(monkeypat
     monkeypatch.setattr(server.time, "monotonic", lambda: now[0])
     assert not server._existing_dashboard("127.0.0.1", 8400)
     assert len(received) == 3
+
+
+def test_real_streaming_request_cannot_block_normal_lifespan_shutdown(monkeypatch):
+    """A browser holding MJPEG open gets cancelled; ordinary app cleanup still runs."""
+    running, events, errors, stream_state = [], [], [], {}
+    original_server = uvicorn.Server
+
+    async def fixture_app(scope, receive, send):
+        if scope["type"] == "lifespan":
+            while True:
+                message = await receive()
+                if message["type"] == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                elif message["type"] == "lifespan.shutdown":
+                    events.append("lifespan_cleanup")
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+        else:
+            stream_state.update(loop=asyncio.get_running_loop(), release=asyncio.Event())
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": [(b"content-type", b"multipart/x-mixed-replace; boundary=test")]})
+            await send({"type": "http.response.body", "body": b"x", "more_body": True})
+            try:
+                await stream_state["release"].wait()
+                await send({"type": "http.response.body", "body": b"", "more_body": False})
+            except asyncio.CancelledError:
+                events.append("stream_cancelled")
+                raise
+            finally:
+                events.append("stream_cleanup")
+
+    def make_server(config):
+        assert config.timeout_graceful_shutdown == 5
+        value = original_server(config)
+        running.append(value)
+        return value
+
+    def run():
+        try:
+            server.run(port=0)
+        except BaseException as exc:  # noqa: BLE001 — surface fixture worker errors without leaking traceback output.
+            errors.append(type(exc).__name__)
+
+    monkeypatch.setattr(server, "create_app", lambda *_: fixture_app)
+    monkeypatch.setattr(uvicorn, "Server", make_server)
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    connection = None
+    try:
+        deadline = time.monotonic() + 5
+        while not errors and not (running and running[0].started) and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert not errors and running and running[0].started
+        connection = http.client.HTTPConnection("127.0.0.1", running[0].config.port, timeout=2)
+        connection.request("GET", "/stream")
+        response = connection.getresponse()
+        assert response.status == 200 and response.read(1) == b"x"
+        # Keep the response/browser connection open during the graceful drain.
+        started = time.monotonic()
+        running[0].should_exit = True
+        worker.join(timeout=8)
+        elapsed = time.monotonic() - started
+        assert not worker.is_alive() and not errors
+        assert 4.5 <= elapsed < 8 and not running[0].force_exit
+        assert "stream_cancelled" in events and "stream_cleanup" in events and "lifespan_cleanup" in events
+    finally:
+        if connection:
+            connection.close()
+        if running:
+            running[0].should_exit = True
+        if worker.is_alive() and stream_state:
+            # A failing test releases only its fake stream, never force-exits a server.
+            stream_state["loop"].call_soon_threadsafe(stream_state["release"].set)
+            worker.join(timeout=5)

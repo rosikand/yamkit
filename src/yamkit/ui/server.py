@@ -1411,7 +1411,11 @@ def run(rig_path: Path | None = None, host: str = "127.0.0.1", port: int = 8400)
     with listener:
         # Passing this already-listening socket avoids a check-then-bind race, and
         # create_app can now safely reconcile its previous process's stale workers.
-        config = uvicorn.Config(create_app(rig_path), host=host, port=listener.getsockname()[1], log_level="info")
+        # Long-lived MJPEG responses must not prevent lifespan cleanup forever.
+        # Uvicorn cancels remaining HTTP tasks after this drain, then runs the
+        # unchanged session/camera shutdown hooks; this is not force-exit.
+        config = uvicorn.Config(create_app(rig_path), host=host, port=listener.getsockname()[1], log_level="info",
+                                timeout_graceful_shutdown=5)
         ui_server = uvicorn.Server(config)
         try:
             ui_server.run(sockets=[listener])

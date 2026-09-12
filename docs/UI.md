@@ -17,7 +17,9 @@ Closing a browser tab does not stop the UI server or its run. To manage the serv
 from your own terminal, start it there and use Ctrl-C **only after** the session,
 recording save and any HF upload are finished. Stopping the UI during saving or
 upload can interrupt that work; it is not a substitute for the local Stop button
-or physical power cutoff.
+or physical power cutoff. On shutdown, browser connections have five seconds to
+drain before they are cancelled and normal application cleanup runs, so a still-open
+preview tab cannot indefinitely hold the server in connection-draining shutdown.
 
 Screenshots: [`docs/ui-screenshots/`](ui-screenshots/).
 Current command effects and blocked stages: [staged acceptance](acceptance-test.md).
