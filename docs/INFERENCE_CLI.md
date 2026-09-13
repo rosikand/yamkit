@@ -1,7 +1,8 @@
 # Inference without a separate preparation command
 
-The simple workflow keeps **policy** and **compute backend** separate. It wraps the existing
-MolmoAct2 reference qualification and rollout APIs; it does not replace the controller.
+The simple workflow keeps **policy** and **compute backend** separate. MolmoAct2, the
+YAM π0.5 fine-tune, and genuine official OpenPI `pi05_base` have separate runtime and
+execution paths; selecting one never silently falls back to another.
 
 From the robot checkout:
 
@@ -12,8 +13,9 @@ yamkit inference --backend lambda --policy molmoact2 \
 ```
 
 `inference` connects to the configured existing GPU, reuses a matching live service and current
-host/task qualification when possible, or starts and qualifies that service. Its warmup and
-50-sample qualification use generated images and fake arms. It never opens a camera or arm,
+host/task qualification when possible, or starts and qualifies that service. For MolmoAct2,
+warmup and 50-sample qualification use generated images and fake arms; the two π0.5 paths
+use their configured saved observations. Preparation never opens a camera or arm,
 and its successful result is not motion approval. Add `--requalify` to collect fresh software
 evidence deliberately. Evidence stays under `.context/inference-preparation/<operation>/`;
 existing historical evidence is retained.
@@ -85,12 +87,15 @@ strict and noninteractive. Verify unknown host keys independently; this workflow
 them automatically or edits SSH settings. Existing legacy tunnels are reused only when their
 owned listener, explicit forwarding arguments and SSH destination match the configuration.
 
-The GPU checkout must already have the matching source, `.venv-inference`,
+For MolmoAct2 and `pi05_yam`, the GPU checkout must already have matching source, `.venv-inference`,
 `data/inference/env.sh`, cached/downloadable pinned checkpoint and its private token file;
 see [the Lambda setup guide](LAMBDA.md). Keep the same bearer token in the named private file
 on the robot host, transferred securely outside this command. Tokens are **file paths only**
 in configuration, never token values. The local and remote loopback port must match, because
 runtime identity binds that exact origin.
+Official OpenPI instead uses its isolated `data/openpi/venv`, pinned public assets and
+reviewed `data/openpi/yam/normalization.json`; it does not source the other models'
+`data/inference/env.sh`. See [official base setup and interface](OPENPI_BASE_YAM.md).
 
 Omit `remote` to manage only an existing forward/service. Omit both `remote` and `ssh` to use
 an already working tunnel. There is no host, account, key or credential hardcoded in the CLI.
@@ -108,6 +113,8 @@ identity. A different policy waits until that exact supervisor or child owns its
 HTTP listener. Unknown ownership is a blocker, never permission to kill an application.
 An owned supervisor that exits before readiness is reported promptly instead of waiting
 the full startup deadline. Existing workloads and untrusted metadata remain untouched.
+Official base startup has its own **18,432 MiB** reserve-plus-headroom admission. These
+startup reserves are not interchangeable model identities or measured memory guarantees.
 
 This never provisions or terminates a VM. Model expiry stops only the bounded model process;
 **VM billing continues**. Stop an owned service manually when appropriate using the existing
@@ -137,7 +144,7 @@ terminal rollout, close those previews (or use UI Start, which performs its own 
 The terminal rechecks this and the exact qualification/session time margin after confirmation;
 a long-delayed confirmation cannot start arms using near-expiry readiness.
 
-## Native π0.5
+## YAM π0.5 fine-tune
 
 The simple workflow maps `--policy pi05` to `pi05-yam`, the separate native checkpoint
 `Jiafei1224/molmoact2-yam-pi05@51ab2720d7e56d51410407f98ea64bbea97feb2e`.
@@ -182,10 +189,40 @@ yamkit inference --backend lambda --policy pi05_yam --task 'put the red cube int
 yamkit rollout --backend lambda --policy pi05_yam --task 'put the red cube into the black container' --duration 60
 ```
 
+## Genuine official OpenPI π0.5 base
+
+The exact terminal command is:
+
+```bash
+yamkit rollout \
+  --backend lambda \
+  --policy pi05_base \
+  --task "put the red cube into the black container" \
+  --duration 60
+```
+
+It automatically connects/starts the configured `lambda-openpi` service, warms the exact
+task, and collects or reuses matching saved-observation/fake-arm qualification. There is
+no separate prepare command. After successful software checks it asks for fresh on-site
+confirmation before opening hardware. A stale or failed check is not bypassed.
+
+This selects the genuine public GCS `pi05_base` weights and pinned official OpenPI JAX
+runtime, **not** the `pi05_yam` fine-tune or `lerobot/pi05_base`. The non-learned interface
+uses documented YAM statistics, measured-state joint deltas, explicit mechanical gripper
+endpoints, and speed-bounded transition substeps. Native inference remains unchanged;
+YAM time dilation is an explicit actuator adaptation, not exact ALOHA dynamics.
+Read [the complete interface, setup and evidence boundary](OPENPI_BASE_YAM.md).
+
+The service has its own loopback port (normally `8767`), private token file and isolated
+environment. It retains all 50×32 native values and executes a 25-row prefix at at most
+50 Hz, following the official ALOHA client convention. Remaining predicted rows are
+intentionally unused, not queue drops. The rig cameras and exported video remain 30 FPS;
+these are different clocks. Every model-input image triplet is retained when recording.
+
 ## Explicit software-only replay
 
 `--fake-hardware` is a deliberate CLI-only test mode for the configured Lambda MA2 and
-YAM π0.5 paths. It still contacts the real service and requires current policy-specific
+both π0.5 paths. It still contacts the real service and requires current policy-specific
 qualification, but installs guarded fake arms/cameras and rejects CAN or real camera
 construction. It cannot be combined with approval flags or `--dry-run`.
 
@@ -201,12 +238,17 @@ fake replay. No live observation is acquired to fill a missing file. Fake record
 labelled synthetic, carry `hardware_tested=false` and no motion approval, and appear under
 `outputs/ui/deployments/software-fake-…`. The images replay a saved scene; fake joint feedback
 is not dynamics, camera alignment, grasp success, or physical safety validation.
+Official base specifically replays intact saved measured-state/RGB pairs for its model
+requests, while independent perfect-tracking fake SDK state tests commanded transitions.
+That separation avoids pairing unrelated images and fake positions; it is not closed-loop
+scene simulation or evidence of physical task performance.
 
 The sparse UI Policy selector keeps MolmoAct2 and native YAM π0.5 distinct. Native preparation
 and Start call the same backend/qualification/runner APIs as the CLI. Advanced controls cannot
-turn the native policy into a MolmoAct2 controller. Official `pi05_base` stays blocked before
-hardware while its documented YAM normalization/action/timing contract is missing; see
-[the official OpenPI report](OPENPI_REFERENCE.md) for the separate, genuine-model GPU diagnostic.
+turn the native policy into a MolmoAct2 controller. Official `pi05_base` currently uses the
+dedicated **terminal** workflow; the UI rejects that selection with a pointer to its command.
+It does not launch the old normalized-space diagnostic as a robot policy or substitute the
+fine-tuned YAM checkpoint.
 
 The rollout command still asks for one explicit terminal confirmation. Native π0.5 saves
 trace/report artifacts under `outputs/ui/deployments/pi05-<operation>/` after release;

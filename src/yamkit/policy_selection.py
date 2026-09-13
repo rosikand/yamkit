@@ -13,11 +13,11 @@ ALIASES = {
 }
 
 OPENPI_YAM_BLOCKER = (
-    "Official OpenPI pi05_base is not physically qualified for YAM: the offline experimental "
-    "normalization/decoder produces out-of-range grippers and unqualified initial joint transitions "
-    "on saved real inputs. A safe timebase/commitment and complete Stop/fault workflow are not qualified. "
-    "No checkpoint substitution, output clipping or physical bypass is applied. "
-    "See docs/OPENPI_YAM_EXPERIMENT_2026-09-13.md for native parity, command-bound evidence and next steps. "
+    "Official OpenPI pi05_base is not enabled in this UI workflow. Use the dedicated terminal "
+    "workflow: yamkit rollout --backend lambda --policy pi05_base --task TASK --duration 60. "
+    "That path uses genuine frozen official weights with a documented experimental YAM adapter, "
+    "automatic software qualification and fresh on-site confirmation before motion. "
+    "See docs/OPENPI_BASE_YAM.md. This UI does not substitute pi05_yam or authorize motion. "
     "No hardware was opened."
 )
 

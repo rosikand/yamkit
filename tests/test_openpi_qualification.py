@@ -151,19 +151,26 @@ def test_stop_probe_counters_must_match_one_invalidated_request(host, statistics
 def test_saved_fake_never_confuses_archived_state_with_fake_tracking(host):
     samples = [observation(.1, 1), observation(.2, 2)]
     fake = qualification.SavedFake(samples, admission.target_validator(host))
-    first = fake.observe()
+    first = fake.observe_policy_input()
     target = dict(zip(YAM_NAMES, observation(.3)["state"].tolist(), strict=True))
     fake.send(target, lambda: None)
-    second = fake.observe()
+    tracked = fake.observe()
+    second = fake.observe_policy_input()
     assert np.array_equal(first["state"], samples[0]["state"])
-    assert np.array_equal(second["state"], observation(.3)["state"])
+    assert np.array_equal(tracked["state"], observation(.3)["state"])
+    assert np.array_equal(tracked["top"], samples[0]["top"])
+    assert np.array_equal(second["state"], samples[1]["state"])
     assert np.array_equal(second["top"], samples[1]["top"])
-    assert not np.array_equal(second["state"], samples[1]["state"])
+    assert second["source_observation_index"] == 1
+    assert np.array_equal(second["fake_actuator_state_at_request"], observation(.3)["state"])
+    assert np.array_equal(fake.observe()["state"], observation(.3)["state"])
     fake.release()
     with pytest.raises(RuntimeError):
         fake.observe()
     with pytest.raises(RuntimeError):
         fake.send(target, lambda: None)
+    with pytest.raises(RuntimeError):
+        fake.observe_policy_input()
 
 
 def test_response_anchor_correlation_and_raw_padding_retained(statistics):
@@ -249,6 +256,9 @@ def test_collect_full_workflow_retains_direct_and_integrated_raw_evidence(host, 
     assert evidence["qualified"] is True, evidence["reasons"]
     assert evidence["hardware_tested"] is False
     assert "perfect target tracking" in evidence["fake_scope"]
+    assert evidence["qualification_input_mode"] == "paired_saved_state_rgb_replay_v1"
+    assert evidence["closed_loop_world_simulation"] is False
+    assert evidence["fake_actuator_reset_on_policy_input"] is False
     assert evidence["integrated"]["completed_chunks"] == 50
     assert evidence["integrated"]["completed_rows"] == 1250
     assert evidence["stop_proof"]["total_fake_commands"] == 0
@@ -262,6 +272,18 @@ def test_collect_full_workflow_retains_direct_and_integrated_raw_evidence(host, 
             assert stored["raw_normalized_chunk"].shape == (50, 32)
             assert stored["proposed_yam_chunk"].shape == (50, 14)
             assert all(stored[name].shape == (480, 640, 3) for name in ("top", "left_wrist", "right_wrist"))
+            if path.name.startswith("integrated-"):
+                index = int(path.stem.split("-")[1])
+                source = samples[index % len(samples)]
+                assert stored["source_observation_index"] == index % len(samples)
+                for key in ("state", "top", "left_wrist", "right_wrist"):
+                    np.testing.assert_array_equal(stored[key], source[key])
+                if index == 1:
+                    assert not np.array_equal(stored["fake_actuator_state_at_request"], source["state"])
+    input_events = [event for event in json.loads((tmp_path / "qualification/integrated-events.json").read_text())
+                    if event["kind"] == "saved_policy_input"]
+    assert len(input_events) == 50
+    assert all(event["policy_images_generated_by_fake_actuators"] is False for event in input_events)
 
 
 @pytest.mark.parametrize("bad", [1000., float("nan"), float("inf")])

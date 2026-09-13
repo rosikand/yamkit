@@ -291,6 +291,18 @@ yamkit rollout --backend lambda --policy molmoact2 --task 'put the red cube into
 `inference` is software-only; `rollout` asks for fresh on-site confirmation before opening hardware.
 Both reuse the frozen MolmoAct2 reference path. See [the simple CLI and one-time backend configuration](docs/INFERENCE_CLI.md).
 
+Genuine official OpenPI `pi05_base` has a separate experimental YAM terminal workflow;
+it is not the `pi05_yam` fine-tune. Its command automatically prepares/qualifies software
+before asking for fresh on-site confirmation:
+
+```bash
+yamkit rollout --backend lambda --policy pi05_base \
+  --task "put the red cube into the black container" --duration 60
+```
+
+See [the frozen model, explicit actuator interface, fake-hardware mode and readiness boundary](docs/OPENPI_BASE_YAM.md).
+No software check establishes physical task success or authorizes an unattended run.
+
 Remote MolmoAct2 also supports `--controller-mode reference`: complete 30-row chunks run
 sequentially using the linked YAM runner's literal 14D linear interpolation and post-send rate
 waits. Before inference, both followers move to their configured home poses with both grippers
@@ -348,9 +360,9 @@ observation timestamps, with no capture drops or trace/export errors. Normal com
 the followers home slowly; Stop, faults and expiry retain prompt release. Warm physical inference
 requests measured 338 ms p95. The trial's GPU shutdown was verified. Expired, stale or
 mismatched sessions remain blocked; readiness or confirmation alone cannot enable motion. See the
-[managed trial and debugging workflow](docs/VLA_DEBUGGING.md). Checks and probes remain available. SmolVLA
-and pi05 base profiles support native checks and are blocked from physical rollout because they
-lack a reviewed YAM mapping. Guided remote RTC and local Molmo guidance are unsupported. See
+[managed trial and debugging workflow](docs/VLA_DEBUGGING.md). Checks and probes remain available. The legacy
+generic SmolVLA and pi05 diagnostic profiles remain blocked from physical rollout; they are separate
+from the dedicated official-base experimental CLI above. Guided remote RTC and local Molmo guidance are unsupported. See
 [remote performance and its measurement limits](docs/REMOTE_PERFORMANCE.md).
 
 To inspect a rollout on another computer, optionally upload its finalized debug bundle

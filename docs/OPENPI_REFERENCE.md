@@ -1,4 +1,9 @@
-# Official OpenPI π0.5 base: normalized-space diagnostics, YAM motion blocked
+# Official OpenPI π0.5 base: historical normalized-space diagnostics
+
+**Current implementation:** [official frozen base + experimental YAM interface](OPENPI_BASE_YAM.md)
+documents the separate terminal workflow and its live host-bound qualification. This
+document describes the retained diagnostic, which has no dispatcher and can never
+authorize motion. Its diagnostic-only `YAM_BLOCKERS` are not the current CLI readiness.
 
 **2026-09-13 adapter follow-up:** [experimental YAM investigation](OPENPI_YAM_EXPERIMENT_2026-09-13.md)
 now documents a non-dispatching, real-state candidate with newly computed YAM statistics,
@@ -7,9 +12,9 @@ diagnostic below remains available unchanged; it is no longer the only offline e
 Missing an upstream asset named YAM is not, by itself, the reason motion remains blocked.
 
 `pi05_base` means the genuine Physical Intelligence checkpoint—not `lerobot/pi05_base`
-and not the separately supported `Jiafei1224/molmoact2-yam-pi05` fine-tune. This path
-preserves official weights and the original JAX implementation. It cannot currently
-produce justified physical YAM commands. **Loading, finite outputs, native-array parity,
+and not the separately supported `Jiafei1224/molmoact2-yam-pi05` fine-tune. The diagnostic below
+preserves official weights and the original JAX implementation. It has no YAM dispatcher
+or physical qualification. **Loading, finite outputs, native-array parity,
 or fake replay must not be reported as YAM qualification or manipulation success.**
 
 The official README identifies the base checkpoint as a pretraining/fine-tuning model;

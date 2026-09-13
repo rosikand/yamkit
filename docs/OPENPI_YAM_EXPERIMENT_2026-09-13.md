@@ -1,6 +1,12 @@
 # Official frozen π0.5 base with an experimental YAM adapter
 
-Status: **PHYSICAL BLOCKED — raw target admission fails and temporal execution
+**Historical candidate report.** The subsequent [official-base YAM implementation](OPENPI_BASE_YAM.md)
+adds causally paired moving-right-arm data, separately frozen 50 Hz statistics, explicit
+mechanical gripper endpoints, ordinary-speed-bounded transitions and a dedicated CLI
+qualification/rollout path. This report retains its original candidate and failures; its
+blocker is not the current CLI readiness assessment. No historical result is motion approval.
+
+Status at this investigation: **PHYSICAL BLOCKED — raw target admission fails and temporal execution
 remains unqualified.** No physical operations were authorized or
 performed for this investigation. The working MolmoAct2 and `pi05_yam` paths
 are outside the adapter experiment and must remain unchanged.

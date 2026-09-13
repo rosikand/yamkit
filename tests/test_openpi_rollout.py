@@ -50,7 +50,7 @@ def lifecycle(monkeypatch, tmp_path):
 
         def start(self): calls.append("capture_start")
         def end(self): calls.append("capture_end")
-        def observation(self, value): pass
+        def observation(self, value, **kwargs): pass
         def response(self, value, **kwargs): pass
         def event(self, kind, **kwargs): pass
         def safely(self, callback, *args, **kwargs): callback(*args, **kwargs)
@@ -165,6 +165,30 @@ def test_healthy_fake_lifecycle_homes_then_releases_before_export(lifecycle):
     assert result["released"] is True
     assert result["home_completed"] is True
     assert result["exit_status"] == 0
+
+
+def test_fake_policy_replays_intact_state_images_but_transition_reads_sdk(lifecycle, monkeypatch):
+    actual = np.full(14, .4)
+    saved = np.full(14, .8)
+    lifecycle.frames[0].update(state=saved.copy(), **{
+        name: np.full((2, 2, 3), 123, dtype=np.uint8) for name in ("top", "left_wrist", "right_wrist")})
+    lifecycle.robot.get_observation = lambda: {**dict(zip(YAM_NAMES, actual.tolist(), strict=True)), **{
+        name: np.zeros((2, 2, 3), dtype=np.uint8) for name in ("top", "left_wrist", "right_wrist")}}
+    seen = []
+
+    class Engine:
+        def __init__(self, **kwargs): self.options = kwargs
+        def run(self, **kwargs):
+            seen.append(self.options["observe_policy_input"]())
+            seen.append(self.options["observe"]())
+        def metrics(self): return {}
+
+    monkeypatch.setattr(rollout, "OpenPiYamExecutor", Engine)
+    result = rollout.run_rollout(lifecycle.transport, **lifecycle.args)
+    assert result["status"] == "completed" and "Not a closed-loop" in result["fake_scope"]
+    np.testing.assert_array_equal(seen[0]["state"], saved)
+    np.testing.assert_array_equal(seen[1]["state"], actual)
+    assert np.all(seen[0]["top"] == 123) and np.all(seen[1]["top"] == 0)
 
 
 def test_stop_never_homes_and_retains_release_first(lifecycle):

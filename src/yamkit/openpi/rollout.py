@@ -94,6 +94,9 @@ def run_rollout(transport, *, task, duration_s, rig_path: Path, statistics, qual
               "service_identity": qualification["service_identity"], "hardware_tested": not fake_hardware,
               "fake_hardware": fake_hardware, "released": False, "status": "preparing",
               "home_attempted": False, "home_completed": False, "started_at": time.time()}
+    if fake_hardware:
+        report["fake_scope"] = ("Paired saved state/RGB at each model request; independent perfect-tracking fake SDK "
+                                "for initial/cross-chunk transitions. Not a closed-loop scene or dynamics simulation.")
     robot, engine, failure = None, None, None
     handlers, finished, devices = {}, threading.Event(), None
     stack = ExitStack()
@@ -123,10 +126,23 @@ def run_rollout(transport, *, task, duration_s, rig_path: Path, statistics, qual
         if stop.is_set():
             raise RuntimeError("OpenPI startup stopped before policy execution")
 
+        replay_index = 0
+
         def observe(*, policy_input=False):
+            nonlocal replay_index
             values = robot.get_observation()
             value = {"state": np.array([values[name] for name in YAM_NAMES]),
                      **{name: values[name] for name in SAVED_IMAGE_MAP}}
+            if fake_hardware and policy_input:
+                # A recorded image cannot respond to a predicted fake pose.
+                # Replay its own measured state intact; keep the independent
+                # fake SDK state for actual transition planning and receipts.
+                # This branch is unreachable during a physical rollout.
+                saved = fake_observations[replay_index % len(fake_observations)]
+                capture.safely(capture.event, "fake_saved_policy_input", saved_index=replay_index % len(fake_observations),
+                               actuator_state=value["state"].tolist(), replay_state=saved["state"].tolist())
+                value = {"state": saved["state"].copy(), **{name: saved[name] for name in SAVED_IMAGE_MAP}}
+                replay_index += 1
             capture.safely(capture.observation, value, policy_input=policy_input)
             return value
 

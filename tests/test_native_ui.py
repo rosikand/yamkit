@@ -46,9 +46,11 @@ def test_native_options_never_inherit_ma2_or_weaken_the_native_contract(change):
 
 
 @pytest.mark.parametrize("policy", ["pi05-base", "pi05_base"])
-def test_official_base_has_precise_no_motion_blocker(policy):
-    with pytest.raises(ValueError, match="normalization/decoder produces out-of-range grippers"):
+def test_official_base_has_precise_ui_only_no_motion_blocker(policy):
+    with pytest.raises(ValueError, match="not enabled in this UI workflow") as caught:
         options(policy=policy).validate()
+    assert "--policy pi05_base" in str(caught.value)
+    assert "does not substitute pi05_yam or authorize motion" in str(caught.value)
 
 
 def test_full_selection_key_binds_recording_destination_and_fresh_approvals():

@@ -57,20 +57,36 @@ def decoded_response(response, observation, statistics):
 
 
 class SavedFake:
-    """Perfect target receipt with saved RGB; not physical tracking or task evidence."""
+    """Coherent saved policy inputs plus an independent perfect-tracking actuator.
+
+    Archived camera frames are not a renderer for commanded fake joint poses.
+    Policy input therefore replays the original measured state AND its RGB
+    together. Ordinary row observations retain the actual fake command state;
+    acquiring another policy input never resets or teleports those actuators.
+    This is software replay qualification, not a closed-loop world simulation.
+    """
 
     def __init__(self, observations, validate):
         self.observations, self.validate = observations, validate
         self.state = observations[0]["state"].copy()
-        self.index, self.sent = 0, []
+        self.index, self.source_index, self.sent = 0, 0, []
         self.released = False
 
     def observe(self):
         if self.released:
             raise RuntimeError("Fake observation after release")
-        value = self.observations[self.index % len(self.observations)]
-        self.index += 1
+        value = self.observations[self.source_index]
         return {**value, "state": self.state.copy()}
+
+    def observe_policy_input(self):
+        if self.released:
+            raise RuntimeError("Fake policy input after release")
+        self.source_index = self.index % len(self.observations)
+        self.index += 1
+        value = self.observations[self.source_index]
+        return {**value, "state": value["state"].copy(),
+                "source_observation_index": self.source_index,
+                "fake_actuator_state_at_request": self.state.copy()}
 
     def send(self, target, check):
         check()
@@ -104,7 +120,9 @@ def collect(transport, *, statistics, observations, task, rig_path, directory, p
               "service_identity": service_binding(metadata), "expires_at": metadata["session_expires_at"],
               "task": task, "robot_host": binding, "completed_warm_samples": 0,
               "bounds_checked": True, "direct_chunks_validated": 0, "source_observation_count": len(observations),
-              "fake_scope": "Saved real direct inputs; integrated perfect target tracking with saved RGB, not robot dynamics"}
+              "fake_scope": "Coherent saved real state/RGB policy inputs; separate perfect target tracking fake actuator, not robot dynamics",
+              "qualification_input_mode": "paired_saved_state_rgb_replay_v1",
+              "fake_actuator_reset_on_policy_input": False, "closed_loop_world_simulation": False}
     samples = []
     try:
         for index in range(50):
@@ -134,6 +152,11 @@ def collect(transport, *, statistics, observations, task, rig_path, directory, p
         integrated_replies, events = [], []
 
         def predict(obs, timeout):
+            events.append({"kind": "saved_policy_input", "monotonic_s": time.monotonic(),
+                           "source_observation_index": obs["source_observation_index"],
+                           "policy_measured_state": obs["state"].tolist(),
+                           "fake_actuator_state": obs["fake_actuator_state_at_request"].tolist(),
+                           "policy_images_generated_by_fake_actuators": False})
             response = transport.predict_chunk(request(obs, task), timeout_s=timeout)
             retained = {"raw_normalized_chunk": response["raw_normalized_chunk"]}
             integrated_replies.append((obs, retained))
@@ -141,7 +164,8 @@ def collect(transport, *, statistics, observations, task, rig_path, directory, p
             retained["chunk"] = decoded["chunk"]
             return decoded
 
-        engine = OpenPiYamExecutor(predict=predict, observe=fake.observe, send=fake.send,
+        engine = OpenPiYamExecutor(predict=predict, observe=fake.observe, observe_policy_input=fake.observe_policy_input,
+                                  send=fake.send,
                                   validate_target=validate, stop=stop, session_check=transport.ensure_session_active,
                                   max_joint_speed=binding["max_joint_speed"], max_gripper_speed=binding["max_gripper_speed"],
                                   event=lambda kind, **data: events.append({"kind": kind, **data}))
@@ -153,6 +177,8 @@ def collect(transport, *, statistics, observations, task, rig_path, directory, p
             for index, (obs, decoded) in enumerate(integrated_replies):
                 with (directory / f"integrated-{index:03d}.npz").open("xb") as stream:
                     np.savez_compressed(stream, state=obs["state"], raw_normalized_chunk=decoded["raw_normalized_chunk"],
+                                        source_observation_index=obs["source_observation_index"],
+                                        fake_actuator_state_at_request=obs["fake_actuator_state_at_request"],
                                         **({"proposed_yam_chunk": decoded["chunk"]} if "chunk" in decoded else {}),
                                         **{name: obs[name] for name in SAVED_IMAGE_MAP})
             (directory / "integrated-events.json").write_text(json.dumps(events, allow_nan=False))
@@ -190,7 +216,8 @@ def collect(transport, *, statistics, observations, task, rig_path, directory, p
                 after.append(True)
             return stopped.send(target, check)
 
-        stopped_engine = OpenPiYamExecutor(predict=stopping_predict, observe=stopped.observe, send=stopping_send,
+        stopped_engine = OpenPiYamExecutor(predict=stopping_predict, observe=stopped.observe,
+                                          observe_policy_input=stopped.observe_policy_input, send=stopping_send,
                                           validate_target=validate, stop=stop,
                                           max_joint_speed=binding["max_joint_speed"], max_gripper_speed=binding["max_gripper_speed"])
         try:
