@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import math
+import signal
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +28,44 @@ from .fake_inference import molmo_fake_devices, saved_observations
 from .inference_workflow import require_prepared_current
 from .paths import ROOT
 from .rollout_artifacts import ARTIFACTS, _copy, _json, _safe_path, package_rollout, sanitize, upload_rollout
+
+
+@contextmanager
+def _fake_process_state():
+    """Restore caller-owned signals/logging after an embedded software replay.
+
+    The unchanged LeRobot runner installs process signal handlers and the trace
+    CLI configures root logging. Keep those exact behaviors during replay and
+    cleanup, but do not leave a consumed Stop handler or temporary stderr handler
+    in the caller after fake devices have been released. Never wraps real runs.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        raise WorkflowError("Fake-device guards require their own CLI process, never a UI worker thread")
+    signals = {getattr(signal, name): signal.getsignal(getattr(signal, name))
+               for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT") if hasattr(signal, name)}
+    root = logging.getLogger()
+    handlers, level, filters = list(root.handlers), root.level, list(root.filters)
+    handler_state = [(handler, handler.level, list(handler.filters), handler.formatter) for handler in handlers]
+    # These are the only named levels set by the normal CLI / LeRobot logging setup.
+    loggers = [(logging.getLogger(name), logging.getLogger(name).level)
+               for name in ("i2rt", "can", "urllib3", "httpx")]
+    try:
+        yield
+    finally:
+        for signum, previous in signals.items():
+            signal.signal(signum, previous)
+        temporary = [handler for handler in root.handlers if handler not in handlers]
+        root.handlers[:] = handlers
+        root.filters[:] = filters
+        root.setLevel(level)
+        for handler, previous_level, previous_filters, formatter in handler_state:
+            handler.setLevel(previous_level)
+            handler.filters[:] = previous_filters
+            handler.setFormatter(formatter)
+        for logger, previous_level in loggers:
+            logger.setLevel(previous_level)
+        for handler in temporary:
+            handler.close()
 
 
 def _tools():
@@ -112,6 +153,7 @@ def _configuration(selection):
     )
 
 
+@_fake_process_state()
 def run_fake_molmoact2(selection, *, artifact_dir, capture_trace=False, upload_repo_id=None,
                       backend_config=None):
     """Run exactly one bounded software replay, never a physical robot operation.
@@ -122,8 +164,6 @@ def run_fake_molmoact2(selection, *, artifact_dir, capture_trace=False, upload_r
     capture, the exact normal ``run_remote_rollout`` returns full metrics.
     Exceptions are recorded by type only; local originals survive every failure.
     """
-    if threading.current_thread() is not threading.main_thread():
-        raise WorkflowError("Fake-device guards require their own CLI process, never a UI worker thread")
     if (not isinstance(selection, InferenceOptions) or selection.policy != "molmoact2"
             or selection.backend != "external" or selection.controller_mode != "reference"
             or selection.call_mode != "http" or selection.execution_mode != "cuda_graph10"

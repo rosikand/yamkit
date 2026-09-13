@@ -106,7 +106,15 @@ def retained_selection(options):
     receipt = _read_json(directory / "receipt.json")
     metadata = receipt.get("metadata", {})
     external = external_service_binding(metadata)
-    binding = http_ingress_binding(metadata, endpoint_url=target.endpoint)
+    # prepare_pi05 validates the live advertised endpoint, then deliberately
+    # strips endpoint keys when persisting sanitized metadata. This local-only
+    # view uses the configured canonical loopback origin for that missing field;
+    # a present but different/empty origin is still invalid. The shared workflow
+    # checks live advertised origin/instance again before any physical startup.
+    cached_ingress = dict(metadata)
+    if "http_endpoint" not in cached_ingress:
+        cached_ingress["http_endpoint"] = target.endpoint
+    binding = http_ingress_binding(cached_ingress, endpoint_url=target.endpoint)
     if (receipt.get("status") != "ready" or receipt.get("profile") != "pi05-yam"
             or receipt.get("service") != target.service or external["service_id"] != target.service
             or external["provider"] != "lambda" or binding["http_ingress"] != "ssh"

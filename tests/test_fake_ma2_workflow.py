@@ -1,7 +1,9 @@
 """Explicit fake CLI replay with the actual frozen LeRobot/MA2 runner."""
 
 import json
-from contextlib import contextmanager
+import logging
+import signal
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +16,51 @@ from tests.test_http_runtime_binding import TASK
 from yamkit import fake_ma2_workflow as workflow
 from yamkit.backend_workflow import WorkflowError
 from yamkit.inference_workflow import reference_options
+
+
+def process_state():
+    root = logging.getLogger()
+    return {
+        "signals": {getattr(signal, name): signal.getsignal(getattr(signal, name))
+                    for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT") if hasattr(signal, name)},
+        "root": (root.level, list(root.handlers), list(root.filters)),
+        "handlers": [(handler, handler.level, list(handler.filters), handler.formatter) for handler in root.handlers],
+        "levels": {name: logging.getLogger(name).level for name in ("i2rt", "can", "urllib3", "httpx")},
+    }
+
+
+@pytest.mark.parametrize("failure", [None, RuntimeError, KeyboardInterrupt, SystemExit])
+def test_fake_process_context_restores_real_lerobot_signals_and_logging(failure, monkeypatch):
+    from lerobot.utils.process import ProcessSignalHandler
+    from lerobot.utils.utils import init_logging
+
+    from yamkit.cli import _setup_logging
+
+    root = logging.getLogger()
+    prior_handler = logging.NullHandler()
+    prior_filter = logging.Filter()
+    prior_formatter = logging.Formatter("%(message)s")
+    prior_handler.setLevel(logging.ERROR)
+    prior_handler.addFilter(prior_filter)
+    prior_handler.setFormatter(prior_formatter)
+    monkeypatch.setattr(root, "handlers", [*root.handlers, prior_handler])
+    before = process_state()
+    temporary = []
+    with pytest.raises(failure) if failure else nullcontext(), workflow._fake_process_state():
+        process = ProcessSignalHandler(use_threads=True)
+        installed = signal.getsignal(signal.SIGINT)
+        assert installed is not before["signals"][signal.SIGINT]
+        installed(signal.SIGINT, None)
+        assert process.shutdown_event.is_set() and process.counter == 1
+        _setup_logging(verbose=False)  # Adds filters to pre-existing handlers.
+        init_logging()  # Replaces root handlers and captures current stderr.
+        temporary.extend(root.handlers)
+        assert not prior_handler._closed
+        if failure:
+            raise failure()
+    assert process_state() == before
+    assert not prior_handler._closed  # Caller-owned handlers are never closed.
+    assert temporary and all(handler._closed for handler in temporary)
 
 
 @pytest.fixture
@@ -53,7 +100,9 @@ def test_fake_api_rejects_nonreference_selection_and_real_approval_flags(selecti
 
 
 def test_real_frozen_runner_uses_only_guarded_fake_sdk_and_saved_cameras(selection, transport, tmp_path):  # noqa: F811
+    before = process_state()
     result = workflow.run_fake_molmoact2(selection, artifact_dir=tmp_path / "run")
+    assert process_state() == before
     assert result["status"] == "completed", result
     assert result["hardware_tested"] is False and result["motion_approval_received"] is False
     assert result["resources_released"] is True
@@ -109,8 +158,10 @@ def test_actual_cli_recorder_exports_fake_playback_without_any_real_device(
     monkeypatch.setattr(workflow, "ROOT", tmp_path)
     monkeypatch.setattr(paths, "ROOT", tmp_path)
     monkeypatch.setattr(external_ops, "owned_service", lambda _name: {"ready": True})
+    before = process_state()
     result = workflow.run_fake_molmoact2(replace(selection, duration=1), artifact_dir=tmp_path / "playback",
                                         capture_trace=True)
+    assert process_state() == before
     assert result["exit_status"] == 0, result
     assert result["resources_released"] is True and result["hardware_tested"] is False
     assert result["motion_approval_received"] is False

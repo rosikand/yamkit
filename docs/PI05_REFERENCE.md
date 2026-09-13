@@ -1,15 +1,19 @@
 # YAM π0.5: independent native reference execution
 
-Status on 2026-09-13, after publisher authorization: the pinned tokenizer and
-9.35 GB YAM weights load successfully on the existing GPU. Real saved-observation
-qualification originally stopped on a native gripper prediction outside [0,1]:
-`left_gripper.pos=1.000895619392395`. Two attempts stopped during direct warm
-sampling; neither reached integrated fake execution. The overnight source review
-adds an explicit SDK endpoint adapter; **fresh qualification of contract version
-2 is required**, not inferred from those failed runs. No physical trial or
-manipulation success is claimed. See the
-[authorization follow-up](PI05_QUALIFICATION_2026-09-13.md) for retained evidence.
-Do not launch the physical entrypoint until qualification passes.
+Status on 2026-09-13: the pinned tokenizer and 9.35 GB YAM weights load on the
+existing GPU, and fresh contract-version-2 qualification now passes on Lenovo
+using saved observations and fake arms. The 50 direct calls and 50 complete
+integrated FIFO chunks include 1,500 executed rows, with zero unexpected drops,
+SDK modifications, coherence violations or faults. This is software evidence,
+not a physical trial, manipulation success or authorization to move the arms.
+
+The earlier two attempts stopped during direct warm sampling on a native gripper
+prediction outside [0,1] (`left_gripper.pos=1.000895619392395`) and never reached
+integrated execution. Their failed evidence remains in the
+[authorization follow-up](PI05_QUALIFICATION_2026-09-13.md); it is not reused as
+passing evidence. The new qualification exercises the explicit SDK endpoint
+adapter described below. Recorded fake-run local/private-HF/UI verification is
+still pending final evidence, so overall rollout readiness is not yet claimed.
 The working MolmoAct2 path remains separate and unchanged.
 See [the range review](PI05_YAM_RANGE_REVIEW.md) for primary sources, the raw
 anomaly guard, exact raw/executed accounting and force-limiter caveat.
@@ -123,6 +127,22 @@ passively. Qualification never captures a new camera frame. Runtime/session/task
 invalidate physical admission. The p95 RPC budget is 1.6 s (20% margin on the
 2 s request limit), explicitly separate from the one-second nominal action chunk.
 
+The current passing Lenovo record is
+`.context/pi05-qualification/17c40a159fe64227aba5942c3272ae68/qualification.json`
+under `/home/andre/rohan-new`, with `qualified=true` and `reasons=[]`. It binds
+runtime build
+`8bd160030ed010a9614063d8ed946982c0ce72e4297cb67a2eff76684229b921`
+and instance `2e6e30a8-6d8b-4c1a-835a-405e5bb6cccf`. Direct warm latency was
+p50 0.41705183550948277 s, p95 0.428424281970365 s and max
+0.48977454798296094 s. The 50 integrated chunks completed all 1,500 rows at
+29.925063124292105 Hz, with zero unexpected drops, SDK modifications, coherence
+violations or faults. Direct samples required three explicit gripper-value
+projections (maximum 0.001585245132446289); integrated samples required 31
+(maximum 0.0032303333282470703). These documented endpoint projections are
+accounted separately from unexpected command modifications; raw model rows are
+retained. This record remains bound to its runtime/session/task/rig/source and
+expiry, not permanent readiness.
+
 The independent physical adapter is implemented but only fake-tested. It checks
 current native qualification and explicit mapping/supervision flags before
 constructing a robot, including a fresh remaining-lease margin for bounded
@@ -131,8 +151,10 @@ validation and enabled startup home must pass before qualification. It reuses th
 two-arm bounds/measurement checks, startup home/open, direct target dispatch and
 release. Healthy completion homes preserving the final measured gripper opening;
 Stop/fault releases without home or retries. JSON trace/report saving happens
-after release. PI video capture/HF playback integration has not been qualified
-and must not be presented as ready merely because MA2 recording works.
+after release. Native local recordings, three-video playback, UI history and
+private-HF packaging/upload are implemented. Final end-to-end artifact evidence
+from the real-GPU, fake-hardware recorded run is pending; MA2 recording success
+alone does not establish PI recording readiness.
 Reports distinguish attempted rows from complete receipts: a failed bimanual
 SDK call records an unknown partial dispatch, because one arm may have received
 its target even if the other arm failed. Zero completed rows is not proof of
@@ -146,8 +168,9 @@ markers rather than fabricated finite actions. The CLI identifies the offending
 gripper and saved report path. Diagnostics do not change acceptance, rows or timing.
 
 Fake/native tests do not validate dynamics, calibration, camera placement or task
-success. Current real GPU latency samples are partial, not a passing qualification.
-Integrated real-model row accounting and Stop proof have not been reached. The
-workflow must show a failed or stale qualification instead of offering a ready PI
-run. New range-adapter qualification must report explicit projections separately
-from unexpected SDK modifications and preserve every raw model row.
+success. The current real-GPU qualification passes with complete integrated
+real-model row accounting and explicit raw-versus-projected action evidence;
+`hardware_tested=false` and physical task success remains unproven. Final recorded
+fake-run artifact verification is still pending. Failed or stale qualification
+must remain visible, and no software result replaces fresh on-site supervision,
+mount/stop verification and exact-command approval before any physical run.

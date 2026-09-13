@@ -396,3 +396,71 @@ def test_retained_local_identity_and_prepare_context_bindings(retained_files, ch
     _save(value.directory / "receipt.json", value.receipt)
     with pytest.raises(ValueError):
         native.retained_selection(value.options)
+
+
+@pytest.fixture
+def sanitized_runtime_receipt(retained_files):
+    """Actual service readiness builder and workflow sanitizer, not invented persisted metadata."""
+    from yamkit.external_ops import _save
+    from yamkit.inference.standalone_service import ServiceConfig, readiness_metadata
+    from yamkit.pi05.transport import validate_readiness
+    from yamkit.rollout_artifacts import sanitize
+
+    value = retained_files
+    original = value.receipt["metadata"]
+    config = ServiceConfig("native-test", "lambda", "Georgia", 8766, "unused-private-file",
+                           value.options.task)
+    live = readiness_metadata(SimpleNamespace(ready=lambda: original), config,
+                              expires_at=original["http_session_expires_at"], host_id="a" * 64,
+                              provenance={"packages": {"tokenizers": "0.22.2"}},
+                              build_id=original["inference_build_id"])
+    live["execution_mode"] = "eager"  # The native service's make_application.ready wrapper.
+    validate_readiness(live)
+    value.receipt = sanitize({**value.receipt, "metadata": live})
+    validate_readiness(value.receipt["metadata"])
+    assert "http_endpoint" in live and "http_endpoint" not in value.receipt["metadata"]
+    _save(value.directory / "receipt.json", value.receipt)
+    return value
+
+
+def test_ui_retained_proof_accepts_the_actual_sanitized_runtime_receipt(sanitized_runtime_receipt, monkeypatch):
+    from yamkit.inference.http_transport import HttpTransport
+
+    value = sanitized_runtime_receipt
+    monkeypatch.setattr(HttpTransport, "_invoke", lambda *_a, **_k: pytest.fail("UI local preflight contacted the GPU"))
+    original = (value.directory / "receipt.json").read_bytes()
+    selection, ready = native.retained_selection(value.options)
+    assert ready["ready"] and not ready["hardware_tested"]
+    assert selection.qualification_path == value.report
+    assert (value.directory / "receipt.json").read_bytes() == original
+    assert "http_endpoint" not in value.receipt["metadata"]  # No mutation or credential/address export.
+    assert "127.0.0.1" not in json.dumps(ready)
+
+
+def test_live_native_workflow_still_requires_the_advertised_origin(sanitized_runtime_receipt, monkeypatch):
+    from yamkit.inference import http_transport
+
+    class NoNetworkTransport:
+        def __init__(self, *_args, **_kwargs): pass
+        def _invoke(self, *_args): return sanitized_runtime_receipt.receipt["metadata"]
+        def close(self): pass
+
+    monkeypatch.setattr(http_transport, "HttpTransport", NoNetworkTransport)
+    target = SimpleNamespace(service="native-test", endpoint="http://127.0.0.1:8766")
+    with pytest.raises(ValueError, match="explicit endpoint"):
+        pi05_workflow._readiness(target, "unused-offline-fixture")
+
+
+@pytest.mark.parametrize("field,replacement", [
+    ("http_endpoint", "http://127.0.0.1:8767"), ("http_endpoint", None), ("http_endpoint", ""),
+    ("http_session_expires_at", None), ("http_session_expires_at", 0),
+    ("http_session_expires_at", 10**20), ("http_ingress", "asgi"),
+])
+def test_sanitized_cached_view_still_rejects_expiry_and_advertised_origin_defects(sanitized_runtime_receipt, field, replacement):
+    from yamkit.external_ops import _save
+
+    value = sanitized_runtime_receipt
+    value.receipt["metadata"][field] = replacement
+    _save(value.directory / "receipt.json", value.receipt)
+    with pytest.raises(ValueError):
+        native.retained_selection(value.options)
