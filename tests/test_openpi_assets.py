@@ -98,7 +98,8 @@ def test_existing_partial_is_preserved_never_overwritten(tmp_path, pinned):
     item, _, _, _ = pinned
     path = assets.cache_path(tmp_path, item)
     path.parent.mkdir(parents=True)
-    partial = path.with_name(path.name + ".yamkit-partial")
+    partial = assets.partial_path(tmp_path, item)
+    partial.parent.mkdir(parents=True)
     partial.write_bytes(b"prior partial")
     with pytest.raises(FileExistsError):
         assets.download_assets(tmp_path)
@@ -115,16 +116,17 @@ def test_modified_cached_object_is_not_silently_repaired(tmp_path, pinned):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("suffix", ["", ".yamkit-partial", ".yamkit-receipt.json"])
-def test_object_and_sidecar_symlink_escape_rejected(tmp_path, pinned, suffix):
+@pytest.mark.parametrize("kind", ["object", "partial", "receipt"])
+def test_object_and_sidecar_symlink_escape_rejected(tmp_path, pinned, kind):
     item, _, calls, _ = pinned
     repo = tmp_path / "repo"
     repo.mkdir()
-    path = assets.cache_path(repo, item)
+    path = {"object": assets.cache_path, "partial": assets.partial_path,
+            "receipt": assets.object_receipt_path}[kind](repo, item)
     path.parent.mkdir(parents=True)
     outside = tmp_path / "outside"
     outside.write_bytes(b"protected")
-    path.with_name(path.name + suffix).symlink_to(outside)
+    path.symlink_to(outside)
     with pytest.raises(ValueError, match="inside this checkout"):
         assets.download_assets(repo)
     assert outside.read_bytes() == b"protected"
@@ -159,3 +161,31 @@ def test_setup_uses_separate_pinned_environment_and_no_model_launch():
     assert contract.UPSTREAM_REVISION in script
     assert "sudo" not in script
     assert "yamkit rollout" not in script
+
+
+def test_receipts_and_partials_never_enter_orbax_scanned_native_directories(tmp_path, pinned):
+    item, raw, _, _ = pinned
+    item["name"] = "checkpoints/pi05_base/params/array_metadatas/process_0"
+    assets.download_assets(tmp_path)
+    native = assets.checkpoint_path(tmp_path)
+    # This is the exact PathResolver glob in Orbax 0.11.13, not a yamkit-only filter.
+    scanned = list((native / "params").glob("array_metadatas/process_*"))
+    assert scanned == [native / "params/array_metadatas/process_0"]
+    assert scanned[0].read_bytes() == raw
+    assert {path.relative_to(native).as_posix() for path in native.rglob("*") if path.is_file()} == {
+        "params/array_metadatas/process_0"}
+    assert assets.object_receipt_path(tmp_path, item).is_file()
+    assert not assets.object_receipt_path(tmp_path, item).is_relative_to(native)
+    assert not assets.partial_path(tmp_path, item).is_relative_to(native)
+    assets.verify_assets(tmp_path)
+
+
+def test_legacy_orbax_receipt_sidecar_rejected_before_native_restore(tmp_path, pinned):
+    item, _, _, _ = pinned
+    item["name"] = "checkpoints/pi05_base/params/array_metadatas/process_0"
+    assets.download_assets(tmp_path)
+    legacy = assets.cache_path(tmp_path, item).with_name("process_0.yamkit-receipt.json")
+    legacy.write_text('{"generation":"1234"}')
+    with pytest.raises(ValueError, match="foreign files"):
+        assets.verify_assets(tmp_path)
+    assert legacy.read_text() == '{"generation":"1234"}'

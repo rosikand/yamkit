@@ -34,6 +34,31 @@ def checkpoint_path(root: Path) -> Path:
     return local_path(root, Path("data/openpi/cache/openpi-assets/checkpoints/pi05_base"))
 
 
+def object_receipt_path(root: Path, item: dict) -> Path:
+    key = item["bucket"] + "/" + item["name"]
+    name = hashlib.sha256(key.encode()).hexdigest() + ".json"
+    return local_path(root, Path("data/openpi/object-receipts") / name)
+
+
+def partial_path(root: Path, item: dict) -> Path:
+    key = item["bucket"] + "/" + item["name"]
+    name = hashlib.sha256(key.encode()).hexdigest() + ".partial"
+    return local_path(root, Path("data/openpi/partials") / name)
+
+
+def verify_native_inventory(root: Path) -> None:
+    """Orbax scans process_* files: no receipt, partial, or foreign file may enter its tree."""
+    checkpoint = checkpoint_path(root)
+    prefix = "checkpoints/pi05_base/"
+    expected = {item["name"][len(prefix):] for item in manifest()["objects"]
+                if item["bucket"] == "openpi-assets" and item["name"].startswith(prefix)}
+    actual = {path.relative_to(checkpoint).as_posix()
+              for path in checkpoint.rglob("*") if path.is_file() or path.is_symlink()}
+    if actual != expected:
+        raise ValueError("Official checkpoint tree contains missing or foreign files; move acquisition "
+                         "receipts/partials outside the native tree before model loading")
+
+
 def _hash_file(path: Path) -> tuple[str, str, int]:
     sha, md5, size = hashlib.sha256(), hashlib.md5(usedforsecurity=False), 0
     with path.open("rb") as stream:
@@ -51,6 +76,7 @@ def verify_assets(root: Path) -> dict:
     receipt = json.loads(receipt_path.read_text())
     if receipt.get("manifest_sha256") != identity()["manifest_sha256"]:
         raise ValueError("OpenPI asset receipt does not match the pinned manifest")
+    verify_native_inventory(root)
     entries = receipt.get("objects", {})
     for item in manifest()["objects"]:
         key = item["bucket"] + "/" + item["name"]
@@ -80,7 +106,7 @@ def download_assets(root: Path) -> dict:
     receipt = {**identity(), "objects": {}, "all_objects_verified": False}
     for item in manifest()["objects"]:
         path = cache_path(root, item)
-        object_receipt = local_path(root, path.with_name(path.name + ".yamkit-receipt.json"))
+        object_receipt = object_receipt_path(root, item)
         key = item["bucket"] + "/" + item["name"]
         if path.exists():
             if not object_receipt.is_file():
@@ -92,8 +118,10 @@ def download_assets(root: Path) -> dict:
                 raise ValueError("Existing official asset differs from its pinned generation or checksum")
             receipt["objects"][key] = saved
             continue
-        partial = local_path(root, path.with_name(path.name + ".yamkit-partial"))
+        partial = partial_path(root, item)
         path.parent.mkdir(parents=True, exist_ok=True)
+        object_receipt.parent.mkdir(parents=True, exist_ok=True)
+        partial.parent.mkdir(parents=True, exist_ok=True)
         url = ("https://storage.googleapis.com/download/storage/v1/b/" + item["bucket"]
                + "/o/" + urllib.parse.quote(item["name"], safe="")
                + "?alt=media&generation=" + item["generation"])
@@ -118,6 +146,7 @@ def download_assets(root: Path) -> dict:
         receipt["objects"][key] = saved
         print(json.dumps({"object": key, "bytes": size, "verified_generation": item["generation"]}), flush=True)
     receipt["all_objects_verified"] = True
+    verify_native_inventory(root)
     with receipt_path.open("x") as stream:
         json.dump(receipt, stream, indent=2)
     return receipt

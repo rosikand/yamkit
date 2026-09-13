@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import time
 import zipfile
 from datetime import UTC, datetime
@@ -18,6 +19,37 @@ from .runtime import OfficialPi05Diagnostic, normalized_observation, validate_no
 
 MAX_SAVED_OBSERVATIONS = 50
 MAX_SAVED_FILE_BYTES = 16 * 1024 * 1024
+
+
+class _BoundedAsyncFailureFilter(logging.Filter):
+    """Pending Orbax tasks can log entire tensor trees during failed restore cleanup."""
+
+    def __init__(self):
+        super().__init__()
+        self.emitted = 0
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if self.emitted >= 3:
+            return False
+        self.emitted += 1
+        kind = record.exc_info[0].__name__ if record.exc_info and record.exc_info[0] else "Exception"
+        if kind not in {"KeyError", "ValueError", "RuntimeError", "CancelledError", "OSError"}:
+            kind = "Exception"
+        record.msg = "Official loader asynchronous cleanup diagnostic (details suppressed): " + kind
+        record.args = ()
+        record.exc_info = record.exc_text = record.stack_info = None
+        return True
+
+
+def configure_loader_logging() -> None:
+    # Install only in this standalone diagnostic process and retain through shutdown,
+    # when pending task finalizers may run after the top-level load exception handler.
+    for name in ("asyncio", "concurrent.futures"):
+        logger = logging.getLogger(name)
+        for existing in list(logger.filters):
+            if isinstance(existing, _BoundedAsyncFailureFilter):
+                logger.removeFilter(existing)
+        logger.addFilter(_BoundedAsyncFailureFilter())
 
 
 def load_saved_images(path: Path) -> dict:
@@ -129,6 +161,7 @@ def main() -> None:
         images = [load_saved_images(path) for path in paths]
         normalized_observation(images[0], args.task)
         phase = "official_runtime_load"
+        configure_loader_logging()
         runtime = OfficialPi05Diagnostic.load(root)
     except (Exception, KeyboardInterrupt) as error:  # noqa: BLE001 — dependency failures must not echo secrets
         output.mkdir(parents=True, exist_ok=False)

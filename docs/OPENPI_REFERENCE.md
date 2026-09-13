@@ -32,6 +32,12 @@ the returned generation, byte length, and published MD5 where supplied, then rec
 SHA-256 for every object—including composite objects without an MD5. It rehashes the
 complete cache before loading. A changed/unreceipted file or failed partial is preserved
 and rejected, never silently overwritten. Public GCS assets require no HF token.
+Per-object receipts live in `data/openpi/object-receipts/<sha256(bucket/name)>.json`,
+and partials in `data/openpi/partials/`, **outside the native checkpoint tree**.
+Orbax 0.11.13 scans `array_metadatas/process_*`; colocated receipt sidecars would be
+misread as checkpoint metadata. Native-tree inventory is checked before restore.
+An initial software load exposed that wrapper bug; fixing receipt placement changes
+neither official checkpoint bytes nor dependencies.
 The full manifest and per-object SHA-256 acquisition receipt, rather than the mutable
 bucket prefix alone, identify an exact checkpoint. Runtime imports must resolve to the
 clean, pinned isolated checkout.

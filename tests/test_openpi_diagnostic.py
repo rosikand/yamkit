@@ -3,6 +3,7 @@
 import ast
 import hashlib
 import json
+import logging
 import sys
 import zipfile
 from pathlib import Path
@@ -249,3 +250,17 @@ def test_main_too_many_inputs_fails_before_reading_or_model_load(tmp_path, monke
     report = json.loads((tmp_path / "evidence/diagnostic.json").read_text())
     assert report["failure_phase"] == "saved_input_validation"
     assert not report["physical_ready"]
+
+
+def test_asyncio_restore_failure_log_is_bounded_and_has_no_tensor_or_secret_payload():
+    limiter = diagnostic._BoundedAsyncFailureFilter()
+    records = [logging.LogRecord("asyncio", logging.ERROR, "", 0, "tensor=%s secret-shaped-value", ("giant-tree",),
+                                 (KeyError, KeyError("array_metadatas secret-shaped-value"), None))
+               for _ in range(10)]
+    accepted = [record for record in records if limiter.filter(record)]
+    assert len(accepted) == 3
+    for record in accepted:
+        assert record.getMessage().endswith("KeyError")
+        assert "secret-shaped-value" not in record.getMessage()
+        assert "giant-tree" not in record.getMessage()
+        assert record.exc_info is None and record.exc_text is None and record.stack_info is None
