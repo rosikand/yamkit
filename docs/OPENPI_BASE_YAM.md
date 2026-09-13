@@ -222,3 +222,47 @@ The earlier [candidate investigation](OPENPI_YAM_EXPERIMENT_2026-09-13.md) and t
 normalized-space [diagnostic report](OPENPI_REFERENCE.md) are historical evidence, retained
 unchanged in scope. Their diagnostic-only `YAM_BLOCKERS` do not describe this separate
 CLI's current host-bound qualification result and never authorize dispatch.
+
+## Completed software-validation snapshot — 2026-09-13
+
+These are completed software results with explicitly fake hardware. They qualify the
+CLI software workflow, not physical manipulation or task success.
+
+- **Native parity:** 50 saved observations with identical native RNG state, plus three
+  explicit-noise test cases, matched all 1,600 raw output values exactly (maximum absolute
+  difference zero). The production API does not accept the test-only noise override;
+  official weights and native inference remained unchanged.
+- **Complete captured CLI run:** `software-fake-5fd808a39a324736bfbabffca0c30f05` completed
+  60 seconds through Lenovo → Lambda with explicit fake hardware, then saved and uploaded
+  after release. Archived events independently confirm 53 complete prefixes, 1,325 rows
+  and 1,964 exact SDK receipts, with zero faults, incomplete committed rows or capture drops.
+  All 53 policy-input state/RGB joins match their saved sources. Three VFR videos preserve
+  974 original frames each over 60.001708 seconds, with every packet timestamp/duration
+  matching the recorded timeline.
+- **Private archive:** all 2,936 files match immutable HF revision
+  `515437e6c2ffa6b1a311a48d9e2497e177a9953a` in `rohanlux/yamkit-rollouts`: 2,926 LFS
+  SHA-256 comparisons and ten Git-blob SHA-1 comparisons, including exact sizes/inventory.
+  Local originals remain intact.
+- **Complete cold CLI:** with the owned OpenPI process absent and the existing SSH
+  forward retained, the single rollout command started a new native model instance,
+  warmed the task, collected fresh qualification and completed 60 seconds of fake
+  execution. Total cold command wall time was 187.24 seconds; it completed 53 prefixes,
+  1,325 committed rows and 1,956 transition receipts with zero faults or drops. A real
+  TCP TIME_WAIT regression covers immediate restarts without taking over live listeners.
+- **Warm reuse:** a subsequent five-second fake rollout reused the same model instance
+  and current qualification, completed all 75 committed rows and released normally.
+  No second model startup or qualification was needed.
+- **Regression and failure coverage:** the completed regression run passed 1,087 tests
+  and Ruff. Separate real-HTTP Stop/fault probes with fake hardware confirmed release
+  without return-home or automatic retry. MA2 and `pi05_yam` build identities stayed unchanged.
+
+Sanitized local evidence is under `.context/openpi-ready/`: `native-parity-result.json`,
+`final-record-upload-60s-result.json`, `artifact-verification-20260913T224145Z.json`,
+`final-cold-60s-v2-result.json`, `final-warm-5s-result.json`,
+`final-live-stop-fault-result.json` and `regression-results.json`.
+
+No physical hardware was activated in these checks. Paired saved-input replay and an
+independent perfect-tracking fake actuator exercise the experimental interface; they do
+not simulate scene changes or real robot dynamics. These results do not guarantee
+physical tracking, collision safety or task completion. Fresh on-site confirmation and
+a supervised physical trial remain required.
