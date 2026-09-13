@@ -393,11 +393,12 @@ function armPanelHTML(armName, stt, role) {
   const isLeader = role === "leader";
   const range = Math.PI; // display range ±π rad
   const rows = (stt?.q || []).map((v, i) => {
-    const frac = Math.max(-1, Math.min(1, v / range));
+    const known = Number.isFinite(v);
+    const frac = known ? Math.max(-1, Math.min(1, v / range)) : 0;
     const left = frac < 0 ? 50 + frac * 50 : 50, width = Math.abs(frac) * 50;
     return `<div class="joint"><span class="name">joint_${i + 1}</span>
-      <span class="track"><span class="mid"></span><span class="fill" style="left:${left}%;width:${Math.max(width, 0.7)}%"></span></span>
-      <span class="val">${v.toFixed(3)}</span></div>`;
+      <span class="track"><span class="mid"></span><span class="fill" style="left:${left}%;width:${known ? Math.max(width, 0.7) : 0}%"></span></span>
+      <span class="val">${known ? v.toFixed(3) : "–"}</span></div>`;
   }).join("");
   const grip = stt?.gripper;
   const gripRow = `<div class="joint"><span class="name">${isLeader ? "trigger" : "gripper"}</span>
@@ -1527,7 +1528,7 @@ function updateRunDetail(view, d) {
       <div>kind</div><div>${esc(d.kind)}</div>
       <div>model</div><div class="mono">${esc(d.policy ?? "–")}</div>
       <div>latency (first call)</div><div>${d.first_call_ms != null ? d.first_call_ms.toFixed(0) + " ms" : "–"}</div>
-      <div>latency (next calls)</div><div>${d.step_call_ms ? d.step_call_ms.map((x) => x.toFixed(0)).join(" / ") + " ms" : "–"}</div>
+      <div>latency (next calls)</div><div>${d.step_call_ms ? d.step_call_ms.map((x) => Number.isFinite(x) ? x.toFixed(0) : "–").join(" / ") + " ms" : "–"}</div>
       <div>exit code</div><div class="mono">${d.returncode ?? "–"}</div>
     </div>`;
   $("#run-artifacts", view.body).innerHTML = (d.artifacts || []).map((name) =>

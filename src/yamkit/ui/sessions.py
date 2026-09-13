@@ -194,36 +194,33 @@ def parse_line(line: str, parsed: dict[str, Any]) -> None:
             parsed["operator_stopping"] = True
         return
     if line.startswith("[yamkit-result] ") and len(line) <= 65536:
-        result = json.loads(line[len("[yamkit-result] "):])
+        # Diagnostics are display data, not control input. A native fault may emit
+        # NaN/Infinity; represent missing numbers as null so status and Stop still
+        # produce valid JSON. parse_float also catches finite-looking overflow.
+        result = json.loads(line[len("[yamkit-result] "):],
+                            parse_constant=lambda _: None, parse_float=_maybe_float)
         if isinstance(result, dict):
             parsed["result"] = result
         return
     m = _READ_RE.match(line)
     if m:
         name, qs, grip, btn = m.groups()
-        try:
-            q = [float(x) for x in qs.split()]
-        except ValueError:
-            return
+        q = [_maybe_float(x) for x in qs.split()]
         parsed.setdefault("arms", {})[name] = {
             "q": q,
-            "gripper": None if grip == "-" else float(grip),
+            "gripper": _maybe_float(grip),
             "buttons": btn,
             "t": time.time(),
         }
         return
     m = _TELEOP_HZ_RE.search(line)
     if m:
-        parsed["rate_hz"] = float(m.group(1))
+        parsed["rate_hz"] = _maybe_float(m.group(1))
         for name, state, err, grip in _TELEOP_PAIR_RE.findall(line):
-            try:
-                err_f = float(err)
-            except ValueError:
-                err_f = None
             parsed.setdefault("pairs", {})[name] = {
                 "engaged": state == "ENGAGED",
-                "error_rad": err_f,
-                "gripper": None if grip == "-" else _maybe_float(grip),
+                "error_rad": _maybe_float(err),
+                "gripper": _maybe_float(grip),
             }
         return
     m = _PREPARING_RE.search(line)
@@ -260,18 +257,19 @@ def parse_line(line: str, parsed: dict[str, Any]) -> None:
         return
     m = _FIRST_CALL_RE.search(line)
     if m:
-        parsed["first_call_ms"] = float(m.group(1))
+        parsed["first_call_ms"] = _maybe_float(m.group(1))
         return
     m = _NEXT_CALLS_RE.search(line)
     if m:
         vals = re.findall(r"([\d.]+)\s*ms", m.group(1))
         if vals:
-            parsed["step_call_ms"] = [float(v) for v in vals]
+            parsed["step_call_ms"] = [_maybe_float(v) for v in vals]
 
 
 def _maybe_float(s: str) -> float | None:
     try:
-        return float(s)
+        value = float(s)
+        return value if math.isfinite(value) else None
     except ValueError:
         return None
 
@@ -453,6 +451,8 @@ class SessionManager:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",  # Native subprocess diagnostics must not kill the ownership reader.
                     env=env,
                     start_new_session=True,  # own group → signals reach LeRobot children too
                 )
