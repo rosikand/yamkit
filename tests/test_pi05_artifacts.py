@@ -205,6 +205,7 @@ def test_ui_native_bundle_joins_preserved_original_trace_frames(bounded_tools, m
         (ui_run / name).write_bytes((source / name).read_bytes())
     meta = json.loads((ui_run / "meta.json").read_text())
     meta["id"] = ui_run.name
+    meta.pop("active")  # DeploymentLog's finalized UI schema has no active field.
     (ui_run / "meta.json").write_text(json.dumps(meta))
     bundle = artifacts.package_native_rollout(ui_run, trace_dir=source)
     manifest = validate_bundle(bundle)

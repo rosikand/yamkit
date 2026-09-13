@@ -35,13 +35,13 @@ from ..can import bringup_commands, list_can_interfaces
 from ..config import RigConfig
 from ..paths import DATASETS_DIR, DEFAULT_RIG, OUTPUT_DIR, ROOT
 from ..preview import MJPEG_MEDIA_TYPE, STALE_S
-from . import catalog
+from . import catalog, native_inference
 from .camstream import CameraHub, CameraStreamingResponse
 from .preview_proxy import PreviewStreamingResponse, PreviewUnavailable, fetch_status, open_stream
 from .sessions import DeploymentLog, SessionManager
 
 FRONTEND_DIR = ROOT / "ui"
-TRACE_FILES = frozenset({"summary.json", "trace.json", "metrics.json", "frame_timestamps.json", "video_timeline.json", "export-error.json",
+TRACE_FILES = frozenset({"summary.json", "trace.json", "metrics.json", "report.json", "frame_timestamps.json", "video_timeline.json", "export-error.json",
                          "top.mp4", "left_wrist.mp4", "right_wrist.mp4",
                          "report.html", "joints-left.png", "joints-right.png"})
 
@@ -158,6 +158,11 @@ def _rollout_metadata(options, rig: RigConfig) -> dict:
     except ValueError:
         model = {"requested_policy": options.policy, "revision": None}
     software = {"lerobot_version": LEROBOT_VERSION, "inference_build_id": inference_build_id()}
+    if native_inference.is_native(options.policy):
+        from ..pi05.contract import ACTION_TRANSFORM, PROFILE, build_id
+
+        model = dataclasses.asdict(PROFILE)
+        software.update(pi05_build_id=build_id(), action_transform=ACTION_TRANSFORM)
     try:
         software["git_commit"] = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, stderr=subprocess.DEVNULL, timeout=3, text=True).strip()
@@ -555,7 +560,13 @@ def create_app(
             write_upload_status(run_dir, {"status": "packaging", **pending})
             if progress:
                 progress = write_run_progress(run_dir, progress, "packaging")
-            bundle = package_rollout(run_dir, trace_dir=trace_dir)
+            run_meta = json.loads((run_dir / "meta.json").read_text())
+            if native_inference.is_native(run_meta.get("policy")):
+                from ..pi05_artifacts import package_native_rollout
+
+                bundle = package_native_rollout(run_dir, trace_dir=trace_dir)
+            else:
+                bundle = package_rollout(run_dir, trace_dir=trace_dir)
             write_upload_status(run_dir, {"status": "uploading", **pending})
             if progress:
                 progress = write_run_progress(run_dir, progress, "uploading")
@@ -894,12 +905,15 @@ def create_app(
     def inference_options(body: InferenceBody, *, motion: bool = False):
         from ..deployment import InferenceOptions
 
-        values = {field.name: getattr(body, field.name) for field in dataclasses.fields(InferenceOptions)
+        option_type = native_inference.NativeUIOptions if native_inference.is_native(body.policy) else InferenceOptions
+        values = {field.name: getattr(body, field.name) for field in dataclasses.fields(option_type)
                   if hasattr(body, field.name)}
+        if option_type is native_inference.NativeUIOptions:
+            values["capture_trace"] = body.capture_trace or body.upload_repo_id is not None
         values["arms"] = tuple(body.arms or ())
         values["rig_path"] = str(rig_path)
         try:
-            return InferenceOptions(**values).validate(motion=motion)
+            return option_type(**values).validate(motion=motion)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
 
@@ -960,6 +974,9 @@ def create_app(
             if body.upload_repo_id.count("/") != 1:
                 raise ValueError("Upload destination must be a namespace/repository private dataset ID")
             body.capture_trace = True  # All camera frames and trace data must exist for the upload.
+        if native_inference.is_native(body.policy):
+            inference_options(body)  # Independent native contract; never MA2 capture/controller settings.
+            return
         if body.capture_trace and (
                 body.backend not in ("modal", "external") or body.policy not in ("molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot")
                 or body.duration not in (5, 10, 20, 30, 45, 60, 90)
@@ -991,6 +1008,12 @@ def create_app(
                 capture_memory = _capture_memory_preflight(int(body.duration))
                 if not capture_memory["admission_passes"]:
                     raise ValueError("Insufficient available memory to save this recording; free memory or turn recording off")
+            if native_inference.is_native(body.policy):
+                native_inference.preparation_context(options)
+                can_prepare = True
+                _selection, current = native_inference.retained_selection(options)
+                return {**current, "capture_memory": capture_memory, "can_prepare": False,
+                        "prepare_before_start": True}
             try:
                 current = modal_attachment(options, require_rig())
                 configured = _configured_preparation_context(
@@ -1029,6 +1052,22 @@ def create_app(
                 validate_trace(body)
                 if body.capture_trace and not _capture_memory_preflight(int(body.duration))["admission_passes"]:
                     raise ValueError("Insufficient available memory to save this recording; free memory or turn recording off")
+                if native_inference.is_native(body.policy):
+                    context = native_inference.preparation_context(options)
+                    directory = ROOT / ".context/inference-preparation" / uuid.uuid4().hex
+                    from ..rollout_artifacts import _safe_path
+
+                    _safe_path(directory)
+                    directory.mkdir(parents=True, exist_ok=False)
+                    request_path = directory / "request.json"
+                    request_path.write_text(json.dumps({"options": dataclasses.asdict(options), "expected": context}, indent=2) + "\n")
+                    state = inference_start(
+                        "inference-prepare", [], options,
+                        argv_override=[sys.executable, str(ROOT / "scripts/prepare_native_inference.py"), str(request_path)],
+                        extra_meta={"preparation_dir": str(directory), "hardware_tested": False})
+                    return {"ready": False, "reused": False, "preparing": True,
+                            "operation_id": state["meta"]["operation_id"], "selection_key": options.operation_key,
+                            "session": state}
                 try:
                     current = modal_attachment(options, require_rig())
                 except (ValueError, KeyError, TypeError, OSError):
@@ -1095,10 +1134,11 @@ def create_app(
     def inference_profiles() -> dict:
         from ..inference.profiles import list_profiles
         from ..modal_ops import credential_status, owned_service
+        from ..pi05.contract import PROFILE
 
         rig = load_rig()
         selection = _inference_selection_defaults(rig)
-        return {"profiles": list_profiles(), "credentials": credential_status(),
+        return {"profiles": list_profiles(), "native_profiles": [PROFILE.metadata()], "credentials": credential_status(),
                 "owned_service": owned_service(), "default_backend": selection["defaults"]["backend"],
                 "rollout_repo": rig.hub.rollout_repo if rig else None, **selection}
 
@@ -1116,6 +1156,30 @@ def create_app(
             raise HTTPException(422, str(exc)) from None
         except (OSError, KeyError, TypeError) as exc:
             raise HTTPException(422, "Recording memory admission could not be checked") from exc
+        if native_inference.is_native(body.policy):
+            with inference_launch_lock, _inference_workflow_guard():
+                if sessions.active:
+                    raise HTTPException(409, "Wait for the current UI session to finish")
+                try:
+                    native_inference.retained_selection(options)
+                    context = native_inference.preparation_context(options)
+                    from ..rollout_artifacts import _safe_path
+
+                    directory = ROOT / ".context/native-inference" / uuid.uuid4().hex
+                    _safe_path(directory)
+                    directory.mkdir(parents=True, exist_ok=False)
+                    trace_dir = ROOT / ".context/rollout-traces" / uuid.uuid4().hex
+                    request_path = directory / "request.json"
+                    request_path.write_text(json.dumps({"options": dataclasses.asdict(options), "expected": context,
+                                                        "trace_dir": str(trace_dir)}, indent=2) + "\n")
+                    return inference_start(
+                        "rollout", [], options,
+                        argv_override=[sys.executable, str(ROOT / "scripts/run_native_inference.py"), str(request_path)],
+                        extra_meta={"capture_trace": body.capture_trace, "debug_trace_dir": str(trace_dir),
+                                    "upload_repo_id": body.upload_repo_id})
+                except (ValueError, KeyError, TypeError, OSError) as exc:
+                    reason = str(exc) if isinstance(exc, ValueError) else "Native local qualification is unavailable; prepare this task"
+                    raise HTTPException(422, reason) from None
         if body.backend in ("modal", "external"):
             try:
                 modal_attachment(options, rig)
@@ -1153,6 +1217,8 @@ def create_app(
 
     @app.post("/api/session/policy-check")
     def session_policy_check(body: PolicyCheckBody) -> dict[str, Any]:
+        if native_inference.is_native(body.policy):
+            raise HTTPException(422, "Use native Inference Start to prepare saved observations without hardware; legacy policy-check is not its controller")
         options = inference_options(body)
         args = ["policy-check", "--rig", str(rig_path), *options.cli_args(include_controller=False)]
         for arm in body.arms or []:
@@ -1175,6 +1241,8 @@ def create_app(
 
     @app.post("/api/session/policy-probe")
     def session_policy_probe(body: ProbeBody) -> dict:
+        if native_inference.is_native(body.policy):
+            raise HTTPException(422, "Native UI preparation uses configured saved observations; legacy probes cannot open hardware for this policy")
         options = inference_options(body)
         if body.live == bool(body.saved):
             raise HTTPException(422, "choose a saved snapshot or live active read")

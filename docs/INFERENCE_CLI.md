@@ -96,6 +96,16 @@ the workflow never kills or takes over that listener. GPU startup uses a reposit
 cross-process lock and a bounded detached supervisor, so repeated commands reuse the loaded
 model. Its log is `data/inference/managed/<service>/service.log` on the GPU.
 
+Cold MA2 and YAM π0.5 startup require **26,624 MiB of free GPU memory**: a conservative
+24 GiB engineering reserve plus 2 GiB headroom, not a measured peak or a guarantee against
+another workload allocating memory later. Warm authenticated reuse adds no memory query
+or restart. A separate per-GPU bootstrap lock prevents concurrent owned model loads;
+pending startup is checked using its recorded UID, PID/start time and inherited service-lock
+identity. A different policy waits until that exact supervisor or child owns its warmed
+HTTP listener. Unknown ownership is a blocker, never permission to kill an application.
+An owned supervisor that exits before readiness is reported promptly instead of waiting
+the full startup deadline. Existing workloads and untrusted metadata remain untouched.
+
 This never provisions or terminates a VM. Model expiry stops only the bounded model process;
 **VM billing continues**. Stop an owned service manually when appropriate using the existing
 administrative workflow. A service approaching expiry is not silently interrupted to extend

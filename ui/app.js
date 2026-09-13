@@ -985,6 +985,7 @@ pages.inference = {
       <div class="sect panel pad inference-card">
         <div id="inf-selection-summary" class="inference-summary">Loading attached policy…</div>
         <div class="inference-main-fields">
+          <label class="field">Policy<select id="inf-choice"><option value="molmoact2">MolmoAct2 · YAM</option><option value="pi05-yam">π0.5 · YAM native</option><option value="pi05-base">Official π0.5 base · experimental, no YAM motion</option><option value="custom">Advanced / custom</option></select></label>
           <label class="field">Task<input type="text" id="inf-task" value="" placeholder="Describe what the arms should do" /></label>
           <label class="field">Duration (seconds)<input type="number" id="inf-duration" value="60" min="1" max="3600" /></label>
         </div>
@@ -1010,8 +1011,8 @@ pages.inference = {
         <details class="advanced inference-advanced" id="inf-advanced"><summary>Advanced settings</summary>
         <div class="form-grid">
           <label class="field">preset<select id="inf-preset"><option value="smolvla">SmolVLA base · forward check</option><option value="molmoact2">MolmoAct2 · bimanual YAM</option><option value="pi05">pi05 base · forward check</option><option value="custom">Custom compatible local checkpoint</option></select></label>
-          <label class="field">backend<select id="inf-backend"><option value="local">Local (default)</option><option value="modal">Modal · retained MolmoAct2 session</option><option value="external">Lambda / own GPU host · SSH</option></select></label>
-          <label class="field">remote controller<select id="inf-controller"><option value="reference">Reference full chunks</option><option value="async">Experimental async chunks</option></select></label>
+          <label class="field">backend<select id="inf-backend"><option value="local">Local (default)</option><option value="modal">Modal · retained MolmoAct2 session</option><option value="external">Lambda / own GPU host · SSH</option><option value="lambda">Lambda · native π0.5</option></select></label>
+          <label class="field">remote controller<select id="inf-controller"><option value="reference">Reference full chunks</option><option value="async">Experimental async chunks</option><option value="pi05_reference">Native π0.5 FIFO · fixed</option></select></label>
           <label class="field">checkpoint<input type="text" id="inf-policy" value="smolvla" list="policy-list" /></label>
           <label class="field">followers<select id="inf-arms"><option value="">Both arms</option><option value="left">Left only (compatible local model)</option><option value="right">Right only (compatible local model)</option></select></label>
           <label class="field">local device<select id="inf-device"><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="mps">MPS</option></select></label>
@@ -1036,7 +1037,7 @@ pages.inference = {
         <div class="toolbar"><button id="btn-probe-saved">Probe saved observation</button><button id="btn-probe-live">Probe live active read</button></div>
         <div class="hint warn">Live probe is GRAVITY-COMPENSATION ACTIVE READ: motors are active and this is not guaranteed motion-free. All gripper calibrations must be valid first. A successful probe never approves motion or replays its chunk.</div>
       </div></details></div>
-      <div class="sect"><div class="sect-head">Operation</div><div class="panel pad"><div id="inf-status" role="status" aria-live="polite">No operation for this selection.</div><div id="inf-preparation-progress" class="inference-preparation" hidden><progress aria-label="Software task preparation"></progress><div class="hint">Generated images and simulated arms only. No camera opens or motor commands. You will be asked before motion.</div></div><div id="inf-progress">${rolloutProgressHTML()}</div></div><details class="advanced"><summary>Operation log</summary><pre id="inf-result" class="log tall"></pre></details></div>
+      <div class="sect"><div class="sect-head">Operation</div><div class="panel pad"><div id="inf-status" role="status" aria-live="polite">No operation for this selection.</div><div id="inf-preparation-progress" class="inference-preparation" hidden><progress aria-label="Software task preparation"></progress><div class="hint">Saved or generated images and simulated arms only. No camera opens or motor commands. You will be asked before motion.</div></div><div id="inf-progress">${rolloutProgressHTML()}</div></div><details class="advanced"><summary>Operation log</summary><pre id="inf-result" class="log tall"></pre></details></div>
       <div class="sect"><div class="sect-head">Cameras</div>
         <button id="btn-inf-cameras">Show camera previews</button>
         <div class="hint">Showing previews opens the cameras and sends no motor commands.</div>
@@ -1045,8 +1046,9 @@ pages.inference = {
     this._profiles = [];
     api("/inference/profiles").then((data) => {
       if (this._form !== form || !$("#inf-policy")) return;
-      this._profiles = data.profiles || [];
+      this._profiles = [...(data.profiles || []), ...(data.native_profiles || [])];
       this._ownedService = data.owned_service;
+      this._ma2Defaults = data.defaults && ["molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot"].includes(data.defaults.policy) ? {...data.defaults} : null;
       if (data.defaults) this.applyDefaults(data.defaults);
       if (data.rollout_repo) $("#inf-upload-repo").value = data.rollout_repo;
       this._defaultsLoaded = true;
@@ -1062,6 +1064,17 @@ pages.inference = {
       if (dl) dl.innerHTML = list.map((m) => `<option value="${esc(m.where === "cloud" ? m.repo_id : "outputs/" + m.path)}">${esc(m.policy_type ?? "")}</option>`).join("");
     }).catch(() => {});
     $("#inf-preset").onchange = () => { $("#inf-policy").value = $("#inf-preset").value === "custom" ? "" : $("#inf-preset").value; this.formChanged("inf-policy"); };
+    $("#inf-choice").onchange = () => {
+      const choice = $("#inf-choice").value;
+      if (choice === "custom") { $("#inf-advanced").open = true; return; }
+      const task = $("#inf-task").value, duration = Number($("#inf-duration").value);
+      if (choice === "molmoact2") this.applyDefaults({...this._ma2Defaults, policy: choice, task, duration,
+        backend: this._ma2Defaults?.backend || "external", controller_mode: "reference"});
+      else this.applyDefaults({policy: choice, task, duration: Math.min(duration || 60, 90), backend: "lambda",
+        controller_mode: "pi05_reference", modal_app: null, external_service: null,
+        arms: ["left_follower", "right_follower"]});
+      this.formChanged("inf-policy");
+    };
     ["inf-backend", "inf-controller", "inf-policy", "inf-task", "inf-arms", "inf-duration", "inf-device", "inf-gpu", "inf-rtc", "inf-crop", "inf-saved", "inf-modal-app", "inf-external-service", "inf-mapping", "inf-trace", "inf-upload", "inf-upload-repo"].forEach((id) => {
       document.getElementById(id).addEventListener("input", () => this.formChanged(id));
     });
@@ -1120,6 +1133,9 @@ pages.inference = {
       if (key in defaults) $("#inf-" + id).value = defaults[key] ?? "";
     }
     $("#inf-preset").value = ["smolvla", "molmoact2", "pi05"].includes(defaults.policy) ? defaults.policy : "custom";
+    $("#inf-choice").value = ["pi05-yam", "pi05_yam"].includes(defaults.policy) ? "pi05-yam"
+      : ["pi05-base", "pi05_base"].includes(defaults.policy) ? "pi05-base"
+      : ["molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot"].includes(defaults.policy) ? "molmoact2" : "custom";
     $("#inf-arms").value = defaults.arms?.length === 1 ? defaults.arms[0].replace("_follower", "") : "";
     // Defaults are never approval and never opt in to recording or upload.
     for (const id of ["mapping", "trace", "upload", "rtc", "crop"]) $("#inf-" + id).checked = false;
@@ -1144,15 +1160,16 @@ pages.inference = {
   },
   selection() {
     const modal = $("#inf-backend").value === "modal";
-    const external = $("#inf-backend").value === "external", remote = modal || external;
+    const native = ["pi05-yam", "pi05_yam", "pi05-base", "pi05_base"].includes($("#inf-policy").value.trim());
+    const external = $("#inf-backend").value === "external", remote = modal || external || native;
     return { policy: $("#inf-policy").value.trim(), task: $("#inf-task").value.trim(),
       backend: $("#inf-backend").value, device: $("#inf-device").value, gpu: $("#inf-gpu").value,
       duration: Number($("#inf-duration").value), fps: 30, rtc: $("#inf-rtc").checked,
-      center_crop: $("#inf-crop").checked, async_chunks: !remote || $("#inf-controller").value !== "reference",
-      controller_mode: remote ? $("#inf-controller").value : "async",
+      center_crop: $("#inf-crop").checked, async_chunks: native ? false : !remote || $("#inf-controller").value !== "reference",
+      controller_mode: native ? "pi05_reference" : remote ? $("#inf-controller").value : "async",
       modal_app: modal ? $("#inf-modal-app").value.trim() || null : null,
       external_service: external ? $("#inf-external-service").value.trim() || null : null,
-      call_mode: remote ? "http" : "remote", execution_mode: remote ? "cuda_graph10" : "eager",
+      call_mode: remote ? "http" : "remote", execution_mode: native ? "eager" : remote ? "cuda_graph10" : "eager",
       image_encoding: "rgb8", jpeg_quality: 85, prediction_queue_threshold: null,
       mapping_accepted: remote && $("#inf-mapping").checked,
       capture_trace: $("#inf-trace").checked || $("#inf-upload").checked,
@@ -1187,7 +1204,7 @@ pages.inference = {
     this.syncForm();
     if ($("#btn-ro").disabled || document.visibilityState !== "visible" || document.hasFocus?.() === false) return;
     const selected = this.selection(), key = JSON.stringify(selected);
-    if (["modal", "external"].includes(selected.backend)) {
+    if (["modal", "external", "lambda"].includes(selected.backend)) {
       const intent = this._startIntent = {form: this._form, key};
       await this.checkAttachment(); // Fresh local state, not another GPU qualification.
       if (this._startIntent !== intent || this._form !== intent.form || document.visibilityState !== "visible" || document.hasFocus?.() === false
@@ -1197,9 +1214,9 @@ pages.inference = {
       if ($("#btn-ro").disabled) return;
     }
     const qualification = this._qualification?.key === key ? this._qualification : null;
-    if (selected.backend === "external" && qualification?.prepare_before_start === true)
+    if (["external", "lambda"].includes(selected.backend) && qualification?.prepare_before_start === true)
       return this.prepareForRollout(selected, button); // Live software check; current proof is reused when valid.
-    if (["modal", "external"].includes(selected.backend) && !qualification?.ready) {
+    if (["modal", "external", "lambda"].includes(selected.backend) && !qualification?.ready) {
       if (qualification?.can_prepare !== true) return;
       return this.prepareForRollout(selected, button);
     }
@@ -1304,24 +1321,25 @@ pages.inference = {
         this._qualification = null;
       }
     }
+    const native = ["pi05-yam", "pi05_yam", "pi05-base", "pi05_base"].includes($("#inf-policy").value.trim());
     const external = $("#inf-backend").value === "external";
-    const modal = ["modal", "external"].includes($("#inf-backend").value);
+    const modal = ["modal", "external", "lambda"].includes($("#inf-backend").value);
     const busy = session.active || this._launching || this._startingPreparation || !!this._prepareIntent || !this._defaultsLoaded;
-    for (const id of ["preset", "policy", "task", "backend", "arms", "duration", "mapping", "saved"])
+    for (const id of ["choice", "preset", "policy", "task", "backend", "arms", "duration", "mapping", "saved"])
       $("#inf-" + id).disabled = busy;
     $("#inf-device").disabled = modal || busy;
-    $("#inf-controller").disabled = !modal || busy;
-    $("#inf-gpu").disabled = !modal || external || busy;
-    $("#inf-modal-app").disabled = !modal || external || busy;
+    $("#inf-controller").disabled = native || !modal || busy;
+    $("#inf-gpu").disabled = native || !modal || external || busy;
+    $("#inf-modal-app").disabled = native || !modal || external || busy;
     $("#inf-external-service").disabled = !external || busy;
     $("#inf-attach-controls").hidden = !modal;
     $("#btn-attach-owned").disabled = busy;
     $("#btn-attach-owned").hidden = !this._ownedService;
     $("#inf-rtc").disabled = modal || busy;
     if (modal) $("#inf-rtc").checked = false;
-    $("#inf-crop").disabled = !modal || busy;
-    if (!modal) $("#inf-crop").checked = false;
-    const captureSupported = modal && ["molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot"].includes($("#inf-policy").value.trim())
+    $("#inf-crop").disabled = native || !modal || busy;
+    if (!modal || native) $("#inf-crop").checked = false;
+    const captureSupported = modal && ["molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot", "pi05-yam", "pi05_yam"].includes($("#inf-policy").value.trim())
       && !!$("#inf-task").value.trim() && !$("#inf-arms").value && !$("#inf-crop").checked
       && [5, 10, 20, 30, 45, 60, 90].includes(Number($("#inf-duration").value));
     if ($("#inf-upload").checked) $("#inf-trace").checked = true;
@@ -1333,8 +1351,11 @@ pages.inference = {
       ? $("#inf-trace").checked
         ? "Saves all three camera videos and joint traces after motor release. Click the completed run below to watch; local originals are kept."
         : "Recording is off. Enable local saving before Start to watch this rollout later."
-      : "Recording requires a qualified MolmoAct2 remote session, both followers, full images, and 5, 10, 20, 30, 45, 60 or 90 seconds. Change these settings or turn recording off.";
+      : "Recording requires a qualified YAM remote policy, both followers, full images, and 5, 10, 20, 30, 45, 60 or 90 seconds. Change these settings or turn recording off.";
     const selected = this.selection();
+    $("#inf-choice").value = ["pi05-yam", "pi05_yam"].includes(selected.policy) ? "pi05-yam"
+      : ["pi05-base", "pi05_base"].includes(selected.policy) ? "pi05-base"
+      : ["molmoact2", "lerobot/MolmoAct2-BimanualYAM-LeRobot"].includes(selected.policy) ? "molmoact2" : "custom";
     const profile = this._profiles.find((p) => p.id === selected.policy || p.repo_id === selected.policy);
     const qualification = this._qualification?.key === JSON.stringify(selected) ? this._qualification : null;
     if (selected.capture_trace && qualification?.capture_memory) {
@@ -1347,9 +1368,10 @@ pages.inference = {
     $("#inf-selection-summary").textContent = this._defaultsLoaded
       ? `${profile?.id === "molmoact2" ? "MolmoAct2" : selected.policy || "Choose a policy"} · ${external ? selected.external_service || "Choose an external service" : selected.backend} · ${modal ? selected.controller_mode + " controller · " : ""}${selected.arms?.length === 1 ? "One arm" : "Both arms"} · 30 Hz`
       : "Loading attached policy…";
-    const invalidSelection = !selected.task || !selected.policy || !Number.isFinite(selected.duration) || selected.duration < 1 || selected.duration > 3600;
+    const invalidSelection = !selected.task || !selected.policy || !Number.isFinite(selected.duration) || selected.duration < 1 || selected.duration > (native ? 90 : 3600);
+    $("#inf-duration").max = native ? "90" : "3600";
     $("#inf-qualification-status").textContent = this._defaultsError || (!this._defaultsLoaded ? "Loading current settings…"
-      : invalidSelection ? "Enter a task, policy and duration between 1 and 3600 seconds."
+      : invalidSelection ? `Enter a task, policy and duration between 1 and ${native ? 90 : 3600} seconds.`
       : !modal ? "Local policy selected. Verify checkpoint and rig compatibility before Start."
       : this._startingPreparation || session.active && session.mode === "inference-prepare" ? "Preparing the task with simulated inputs. The arms will not move until you confirm."
       : this._checking ? "Loading current task status…"
@@ -1369,8 +1391,8 @@ pages.inference = {
     $("#btn-cloud-stop").hidden = modal;
     $("#btn-prepare").disabled = true;
     $("#btn-cloud-stop").disabled = true;
-    $("#btn-probe-saved").disabled ||= external;
-    $("#btn-probe-live").disabled ||= external;
+    $("#btn-probe-saved").disabled ||= external || native;
+    $("#btn-probe-live").disabled ||= external || native;
     $("#btn-inf-preflight").disabled = busy || this._checking || !modal || invalidSelection;
     $("#btn-inf-preflight").hidden = !modal;
     $("#btn-ro").textContent = this._launching ? "Starting…" : this._startingPreparation || !!this._prepareIntent ? "Preparing task…" : `Start ${selected.duration || ""}s rollout`;

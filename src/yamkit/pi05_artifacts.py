@@ -334,8 +334,10 @@ def package_native_rollout(run_dir, *, trace_dir=None):
     trace_dir = repository_path(trace_dir) if trace_dir is not None else run_dir
     summary, meta = _json(run_dir / "summary.json"), _json(run_dir / "meta.json")
     if (summary.get("controller_mode") != CONTRACT_ID or summary.get("resources_released") is not True
-            or summary.get("status") != "TRACE_SAVED" or meta.get("active") is not False
-            or meta.get("ended_at") is None or meta.get("returncode") is None):
+            or summary.get("status") != "TRACE_SAVED" or meta.get("active", False) is not False
+            or meta.get("kind") != "rollout" or meta.get("status") not in ("success", "failed", "stopped")
+            or type(meta.get("ended_at")) not in (int, float) or not math.isfinite(meta["ended_at"])
+            or type(meta.get("returncode")) is not int):
         raise ValueError("Only released and finalized native π0.5 recordings can be packaged")
     bundle = repository_path(run_dir / "bundle")
     if bundle.exists():

@@ -21,6 +21,10 @@ from urllib.request import urlopen
 from .paths import ROOT
 
 CONFIG_RELATIVE = "data/inference/backends.json"
+# Conservative startup admission, NOT a measured peak or an OOM guarantee. Existing
+# authenticated services are reused without a GPU check or changes to model execution.
+GPU_STARTUP_RESERVE_MIB = {"molmoact2": 24 * 1024, "pi05-yam": 24 * 1024}
+GPU_HEADROOM_MIB = 2 * 1024
 
 
 class WorkflowError(ValueError):
@@ -252,18 +256,111 @@ def _probe_service(target, token):
         transport.close()
 
 
-# This bootstrap uses only stdlib filesystem/process/socket operations on the existing GPU.
-# The inherited flock stays held by the detached supervisor, including model loading.
-# It cannot stop an existing process, overwrite source, copy tokens, or claim an occupied port.
-_REMOTE_BOOTSTRAP = '''import fcntl,json,os,socket,stat,subprocess,sys
+# These helpers run only inside the configured GPU checkout. Process inspection is
+# restricted to a recorded UID/PID/start identity and its direct children; no command
+# lines, environment values, token contents or unrelated application logs are read.
+_REMOTE_LIFECYCLE_HELPERS = '''import fcntl,json,os,re,socket,stat,subprocess,sys
 from pathlib import Path
-c=json.loads(sys.argv[1]); root=Path.cwd().resolve(); directory=root/'data/inference/managed'/c['service']
+def private_fd(path, flags):
+ fd=os.open(path,flags|os.O_NOFOLLOW|os.O_NONBLOCK,0o600)
+ details=os.fstat(fd)
+ if not stat.S_ISREG(details.st_mode) or details.st_uid!=os.geteuid() or details.st_mode&0o077:
+  os.close(fd); raise ValueError('Unsafe managed lifecycle file')
+ return fd
+def private_json(path):
+ if not path.exists() and not path.is_symlink(): return None
+ with os.fdopen(private_fd(path,os.O_RDONLY),'r') as stream:
+  if os.fstat(stream.fileno()).st_size>4096: raise ValueError('Oversized lifecycle metadata')
+  value=json.load(stream)
+ if not isinstance(value,dict): raise ValueError('Invalid lifecycle metadata')
+ return value
+def save_json(path,value):
+ if path.exists() or path.is_symlink():
+  with os.fdopen(private_fd(path,os.O_RDONLY),'r'): pass
+ scratch=path.with_name(path.name+'.new-'+str(os.getpid()))
+ with os.fdopen(private_fd(scratch,os.O_CREAT|os.O_EXCL|os.O_WRONLY),'w') as stream:
+  json.dump(value,stream,sort_keys=True)
+ os.replace(scratch,path)
+def process_stamp(pid):
+ if type(pid) is not int or pid<=0: return None
+ process=Path('/proc')/str(pid)
+ try:
+  if process.stat().st_uid!=os.geteuid(): return None
+  fields=(process/'stat').read_text().rsplit(')',1)[1].split()
+  return {'pid':pid,'start':fields[19],'state':fields[0],'parent':int(fields[1]),
+          'cwd':'' if fields[0]=='Z' else str((process/'cwd').resolve(strict=True))}
+ except (OSError,ValueError,IndexError): return None
+def valid_record(record):
+ if not isinstance(record,dict): return False
+ return (type(record.get('version')) is int and record['version']==1 and record.get('uid')==os.geteuid()
+  and isinstance(record.get('service'),str) and re.fullmatch(r'[a-z0-9][a-z0-9-]{0,79}',record['service'])
+  and record.get('policy') in ('molmoact2','pi05-yam')
+  and type(record.get('gpu')) is int and 0<=record['gpu']<=15
+  and type(record.get('port')) is int and 1<=record['port']<=65535
+  and type(record.get('pid')) is int and record['pid']>0
+  and isinstance(record.get('start'),str) and record['start'].isdigit()
+  and all(type(record.get(key)) is int and record[key]>=0 for key in ('lock_fd','lock_inode','lock_device')))
+def record_state(record):
+ if not valid_record(record): return 'unverified'
+ stamp=process_stamp(record['pid'])
+ if stamp is None:
+  return 'exited' if not (Path('/proc')/str(record['pid'])).exists() else 'unverified'
+ if stamp['start']!=record['start'] or stamp['state']=='Z': return 'exited'
+ if stamp['cwd']!=str(root): return 'unverified'
+ lock_path=root/'data/inference/managed'/record['service']/'service.lock'
+ try:
+  if lock_path.resolve()!=lock_path: return 'unverified'
+  expected=lock_path.stat(); inherited=(Path('/proc')/str(record['pid'])/'fd'/str(record['lock_fd'])).stat()
+  if (expected.st_uid!=os.geteuid() or not stat.S_ISREG(expected.st_mode) or expected.st_mode&0o077
+   or (expected.st_dev,expected.st_ino)!=(record['lock_device'],record['lock_inode'])
+   or (inherited.st_dev,inherited.st_ino)!=(expected.st_dev,expected.st_ino)): return 'unverified'
+  other=private_fd(lock_path,os.O_RDONLY)
+  try:
+   try: fcntl.flock(other,fcntl.LOCK_EX|fcntl.LOCK_NB)
+   except BlockingIOError: return 'alive'
+   return 'unverified'
+  finally: os.close(other)
+ except OSError: return 'unverified'
+def owns_listener(record):
+ # Both reviewed supervisors bind HTTP only after their child finishes model load
+ # and warmup. A random process on the same port cannot release startup admission.
+ if record_state(record)!='alive': return False
+ try:
+  address='0100007F:'+format(record['port'],'04X')
+  rows=[line.split() for line in Path('/proc/net/tcp').read_text().splitlines()[1:]]
+  inodes={int(row[9]) for row in rows if row[1]==address and row[3]=='0A' and int(row[7])==os.geteuid()}
+  if not inodes: return False
+  pid=record['pid']; process=Path('/proc')/str(pid)
+  children=[int(value) for value in (process/'task'/str(pid)/'children').read_text().split()]
+  for candidate in [pid,*children]:
+   stamp=process_stamp(candidate)
+   if stamp is None or stamp['cwd']!=str(root) or (candidate!=pid and stamp['parent']!=pid): continue
+   for item in (Path('/proc')/str(candidate)/'fd').iterdir():
+    try:
+     details=item.stat()
+     if stat.S_ISSOCK(details.st_mode) and details.st_ino in inodes: return True
+    except OSError: continue
+ except (OSError,ValueError,IndexError): return False
+ return False
+def memory_free_mib(gpu):
+ try:
+  result=subprocess.run(['nvidia-smi','--id='+str(gpu),'--query-gpu=memory.free',
+   '--format=csv,noheader,nounits'],capture_output=True,text=True,timeout=5,check=False)
+  text=result.stdout.strip()
+  if result.returncode or not re.fullmatch(r'[0-9]{1,9}',text): return None
+  return int(text)
+ except (OSError,subprocess.TimeoutExpired): return None
+'''
+
+# The inherited service flock stays held by the detached supervisor. The separate
+# per-GPU flock serializes reservation checks only, not running model lifetimes.
+# It cannot stop an existing process, overwrite source, copy tokens, or claim a port.
+_REMOTE_BOOTSTRAP = _REMOTE_LIFECYCLE_HELPERS + '''
+c=json.loads(sys.argv[1]); root=Path.cwd().resolve(); managed=root/'data/inference/managed'; directory=managed/c['service']
 for parent in [root/'data',root/'data/inference',root/'data/inference/managed',directory]:
  parent.mkdir(mode=0o700,exist_ok=True)
  if parent.is_symlink() or not parent.is_dir(): raise ValueError('Unsafe managed-service directory')
-fd=os.open(directory/'service.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
-details=os.fstat(fd)
-if not stat.S_ISREG(details.st_mode) or details.st_uid!=os.geteuid() or details.st_mode&0o077: raise ValueError('Unsafe service lock')
+fd=private_fd(directory/'service.lock',os.O_CREAT|os.O_RDWR); details=os.fstat(fd)
 try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
 except BlockingIOError:
  print(json.dumps({'status':'starting_or_running'})); sys.exit(0)
@@ -274,7 +371,25 @@ except OSError:
 finally: sock.close()
 token=root/c['token_file']
 if token.resolve()!=token or not token.is_file(): raise ValueError('Existing repo-local token required')
-logfd=os.open(directory/'service.log',os.O_WRONLY|os.O_CREAT|os.O_APPEND|os.O_NOFOLLOW,0o600)
+gpufd=private_fd(managed/('.gpu-'+str(c['gpu'])+'.lock'),os.O_CREAT|os.O_RDWR)
+try: fcntl.flock(gpufd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+except BlockingIOError:
+ print(json.dumps({'status':'gpu_startup_busy'})); sys.exit(0)
+pending_path=managed/('.gpu-'+str(c['gpu'])+'-startup.json'); pending=private_json(pending_path)
+if pending is not None:
+ if pending.get('gpu')!=c['gpu']:
+  print(json.dumps({'status':'gpu_reservation_unverified'})); sys.exit(0)
+ state=record_state(pending)
+ if state=='unverified':
+  print(json.dumps({'status':'gpu_reservation_unverified'})); sys.exit(0)
+ if state=='alive' and not owns_listener(pending):
+  print(json.dumps({'status':'gpu_startup_busy','service':pending['service']})); sys.exit(0)
+free=memory_free_mib(c['gpu']); required=c['minimum_free_mib']
+if free is None:
+ print(json.dumps({'status':'gpu_memory_unavailable'})); sys.exit(0)
+if free<required:
+ print(json.dumps({'status':'gpu_memory_insufficient','free_mib':free,'required_mib':required})); sys.exit(0)
+logfd=private_fd(directory/'service.log',os.O_WRONLY|os.O_CREAT|os.O_APPEND)
 env=dict(os.environ); env['CUDA_VISIBLE_DEVICES']=str(c['gpu'])
 module='yamkit.pi05.service' if c['policy']=='pi05-yam' else 'yamkit.inference.standalone_service'
 command=[str(root/'.venv-inference/bin/python'),'-m',module,
@@ -283,7 +398,27 @@ command=[str(root/'.venv-inference/bin/python'),'-m',module,
 if c['policy']=='molmoact2': command+=['--provider','lambda']
 child=subprocess.Popen(command,cwd=root,env=env,stdin=subprocess.DEVNULL,stdout=logfd,stderr=logfd,
  start_new_session=True,pass_fds=(fd,))
-print(json.dumps({'status':'started','pid':child.pid}))
+stamp=process_stamp(child.pid)
+if stamp is None or stamp['state']=='Z':
+ print(json.dumps({'status':'startup_exited'})); sys.exit(0)
+record={'version':1,'uid':os.geteuid(),'service':c['service'],'policy':c['policy'],'gpu':c['gpu'],
+ 'port':c['port'],'pid':child.pid,'start':stamp['start'],'lock_fd':fd,
+ 'lock_inode':details.st_ino,'lock_device':details.st_dev}
+save_json(directory/'startup.json',record); save_json(pending_path,record)
+print(json.dumps({'status':'started','pid':child.pid,'start':stamp['start'],
+ 'free_mib':free,'required_mib':required}))
+'''
+
+_REMOTE_STARTUP_STATUS = _REMOTE_LIFECYCLE_HELPERS + '''
+c=json.loads(sys.argv[1]); root=Path.cwd().resolve(); directory=root/'data/inference/managed'/c['service']
+if directory.resolve()!=directory or not directory.is_dir():
+ print(json.dumps({'status':'unverified'})); sys.exit(0)
+record=private_json(directory/'startup.json')
+if record is None:
+ print(json.dumps({'status':'unknown'})); sys.exit(0)
+if record.get('service')!=c['service'] or record.get('policy')!=c['policy'] or record.get('port')!=c['port']:
+ print(json.dumps({'status':'unverified'})); sys.exit(0)
+print(json.dumps({'status':record_state(record)}))
 '''
 
 
@@ -291,6 +426,7 @@ def _start_remote(target, task):
     if target.policy not in ("molmoact2", "pi05-yam"):
         raise WorkflowError("Automatic startup for this policy requires its separate native runtime; no MolmoAct2 substitution is allowed")
     values = {**target.remote, "service": target.service, "port": target.port, "task": task, "policy": target.policy}
+    values["minimum_free_mib"] = GPU_STARTUP_RESERVE_MIB[target.policy] + GPU_HEADROOM_MIB
     repo = values.pop("repo")
     command = ("cd " + shlex.quote(repo) + " && . data/inference/env.sh && "
                + shlex.join([".venv-inference/bin/python", "-c", _REMOTE_BOOTSTRAP,
@@ -298,11 +434,55 @@ def _start_remote(target, task):
     raw = _ssh(target, [target.ssh["host"], command])
     try:
         result = json.loads(raw)
+        status = result.get("status")
+        if status == "gpu_startup_busy":
+            service = result.get("service")
+            named = f" ({service})" if isinstance(service, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", service) else ""
+            raise WorkflowError("Another owned policy is still starting on this GPU" + named
+                                + "; wait for its startup to finish. No process was stopped")
+        if status == "gpu_reservation_unverified":
+            raise WorkflowError("GPU startup ownership metadata could not be verified; inspect repo-local managed "
+                                "startup records. No process or untrusted record was changed")
+        if status == "gpu_memory_unavailable":
+            raise WorkflowError("Cannot read bounded GPU free memory using nvidia-smi; inspect the configured GPU. "
+                                "No model was started and no process was stopped")
+        if status == "gpu_memory_insufficient":
+            free = result.get("free_mib")
+            available = f" ({free} MiB free)" if type(free) is int and 0 <= free <= 1_000_000_000 else ""
+            raise WorkflowError(f"GPU startup requires {values['minimum_free_mib']} MiB free, including conservative "
+                                "model reserve and headroom" + available + ". Leave other workloads intact; "
+                                "retry software preparation when enough memory is available")
+        if status == "startup_exited":
+            raise WorkflowError("The owned model supervisor exited during startup; inspect its repo-local managed "
+                                "service.log. No automatic restart was attempted")
         if result.get("status") not in ("started", "starting_or_running", "listener_present"):
             raise ValueError
         return result["status"]
+    except WorkflowError:
+        raise
     except (ValueError, AttributeError):
         raise WorkflowError("GPU startup returned an unexpected response; inspect its repo-local managed service log") from None
+
+
+def _check_remote_startup(target) -> None:
+    """One bounded read of exact owned startup identity, never arbitrary remote logs."""
+    values = {"service": target.service, "policy": target.policy, "port": target.port}
+    command = ("cd " + shlex.quote(target.remote["repo"]) + " && "
+               + shlex.join([".venv-inference/bin/python", "-c", _REMOTE_STARTUP_STATUS,
+                              json.dumps(values, allow_nan=False)]))
+    raw = _ssh(target, [target.ssh["host"], command], timeout=15)
+    try:
+        result = json.loads(raw)
+        status = result.get("status")
+    except (ValueError, AttributeError):
+        status = "unverified"
+    if status == "exited":
+        raise WorkflowError("The owned model supervisor exited before readiness; inspect "
+                            "data/inference/managed/<service>/service.log on the GPU. "
+                            "No automatic restart was attempted")
+    if status not in ("alive", "unknown"):
+        raise WorkflowError("Owned GPU startup PID/start/lock identity could not be verified; inspect repo-local "
+                            "managed startup records. No process was changed")
 
 
 def ensure_backend(target: BackendTarget, task: str, *, progress=lambda _value: None, startup_timeout=900,
@@ -385,15 +565,17 @@ def connect_configured_runtime(target, task, probe, *, progress=lambda _value: N
         raise WorkflowError("The configured loopback port has an unrecognized listener; no service or tunnel was changed. "
                             "Resolve the port/destination explicitly in the backend configuration")
     idle()
+    remote_start_status = None
     if target.remote:
         progress("Starting or reusing the existing GPU service (no VM provisioning)")
-        _start_remote(target, task)
+        remote_start_status = _start_remote(target, task)
     if not _listening(target.port):
         progress("Connecting the configured SSH forward")
         _ssh(target, ["-f", "-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15",
                       "-o", "ServerAliveCountMax=3", "-L",
                       f"127.0.0.1:{target.port}:127.0.0.1:{target.port}", target.ssh["host"]])
     deadline = time.monotonic() + (startup_timeout if target.remote else 5)
+    next_startup_check = time.monotonic()
     while True:
         idle()
         try:
@@ -407,4 +589,7 @@ def connect_configured_runtime(target, task, probe, *, progress=lambda _value: N
         if time.monotonic() >= deadline:
             raise WorkflowError(f"Model readiness failed ({last_error}); an existing listener was left untouched. "
                                 "Inspect data/inference/managed/<service>/service.log on the GPU and verify matching source/token")
+        if remote_start_status in ("started", "starting_or_running") and time.monotonic() >= next_startup_check:
+            _check_remote_startup(target)
+            next_startup_check = time.monotonic() + 5
         time.sleep(2)
