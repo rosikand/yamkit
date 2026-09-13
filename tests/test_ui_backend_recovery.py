@@ -37,7 +37,7 @@ prompt_ui = _prompt_ui
 
 
 @pytest.fixture
-def recovery_ui(prompt_ui, monkeypatch):
+def configured_ui(prompt_ui, monkeypatch):
     ui = prompt_ui
     monkeypatch.setattr(backend, "ROOT", ui.root)
     monkeypatch.setattr(workflow, "ROOT", ui.root)
@@ -46,10 +46,106 @@ def recovery_ui(prompt_ui, monkeypatch):
     path.write_text(json.dumps({"version": 1, "backends": {"lambda": {"policies": {"molmoact2": {
         "service": NAME, "endpoint": "http://127.0.0.1:8765", "token_file": "token"}}}}}))
     path.chmod(0o600)
+    return ui
+
+
+@pytest.fixture
+def recovery_ui(configured_ui):
+    ui = configured_ui
     receipt = external_ops.owned_service(NAME)
     receipt["http_session_expires_at"] = receipt["metadata"]["http_session_expires_at"] = time.time() - 1
     external_ops._save(external_ops._directory(NAME) / "receipt.json", receipt)
     return ui
+
+
+def test_cached_ready_configured_preflight_requires_live_check_only_on_start(configured_ui, monkeypatch):
+    monkeypatch.setattr(workflow, "ensure_backend", lambda *_a, **_kw: pytest.fail("passive preflight contacted GPU"))
+    result = configured_ui.client.post("/api/inference/preflight", json=body(configured_ui.old_task)).json()
+    assert result["ready"] and result["prepare_before_start"]
+    assert not configured_ui.manager.active and not configured_ui.seen
+
+
+def test_cached_ready_configured_prepare_still_creates_software_child(configured_ui):
+    fake_child(configured_ui, "print('[yamkit-prepare] connecting',flush=True)")
+    response = configured_ui.client.post("/api/inference/prepare", json=body(configured_ui.old_task))
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["preparing"] and not result["ready"] and not result["reused"]
+    assert result["session"]["mode"] == "inference-prepare" and not result["session"]["cameras_owned"]
+    assert configured_ui.manager.wait(timeout=5) == 0
+    assert not configured_ui.seen
+
+
+def test_matching_live_instance_reuses_current_qualification_without_fifty_calls(configured_ui, monkeypatch):
+    from yamkit.inference import qualification
+
+    ui = configured_ui
+    options = InferenceOptions(**body(ui.old_task), rig_path=str(ui.rig.path))
+    directory = ui.root / ".context/inference-preparation" / ("b" * 32)
+    directory.mkdir(parents=True)
+    request = directory / "request.json"
+    request.write_text(json.dumps({"options": dataclasses.asdict(options), "capture_trace": False,
+                                   "expected": server._preparation_selection_context(options, ui.rig)}))
+    calls = []
+    record = {"hardware_tested": False, "created_unix_s": time.time(), "assessment": {"qualified": True}}
+    monkeypatch.setattr(workflow, "recover_reference_backend", lambda *_a, **_kw: calls.append("live_check"))
+    monkeypatch.setattr(qualification, "validate_qualification", lambda *_a, **_kw: record)
+    monkeypatch.setattr(modal_qualification, "collect_qualification", lambda *_a, **_kw: pytest.fail("current proof must be reused"))
+    assert helper.execute(request) == 0
+    assert calls == ["live_check"]
+    result = json.loads((directory / "result.json").read_text())
+    assert result["ready"] and result["reused"] and not result["hardware_tested"]
+    assert json.loads((directory / "qualification.json").read_text()) == record
+    assert not ui.seen
+
+
+@pytest.mark.parametrize("failure", ["unavailable", "cancelled"])
+def test_cached_ready_does_not_bypass_failed_live_recovery(configured_ui, monkeypatch, failure):
+    ui = configured_ui
+    options = InferenceOptions(**body(ui.old_task), rig_path=str(ui.rig.path))
+    directory = ui.root / ".context/inference-preparation" / ("c" * 32)
+    directory.mkdir(parents=True)
+    request = directory / "request.json"
+    request.write_text(json.dumps({"options": dataclasses.asdict(options), "capture_trace": False,
+                                   "expected": server._preparation_selection_context(options, ui.rig)}))
+    calls = []
+
+    def recover(*_a, **_kw):
+        calls.append("live_check")
+        if failure == "cancelled":
+            raise KeyboardInterrupt
+        raise backend.WorkflowError("Configured service unavailable")
+
+    monkeypatch.setattr(workflow, "recover_reference_backend", recover)
+    monkeypatch.setattr(modal_qualification, "collect_qualification", lambda *_a, **_kw: pytest.fail("failed recovery must stop"))
+    assert helper.execute(request) == (130 if failure == "cancelled" else 1)
+    result = json.loads((directory / "result.json").read_text())
+    assert not result["ready"] and not result["hardware_tested"]
+    assert calls == ["live_check"] and not ui.seen
+
+
+def test_attached_request_still_forces_qualification_with_configured_backend(configured_ui, monkeypatch):
+    """CLI --requalify already checked the backend and explicitly requests fresh evidence."""
+    from tests.test_ui_prompt_preparation import helper_request
+
+    request, _ = helper_request(configured_ui)
+    calls = []
+    monkeypatch.setattr(workflow, "recover_reference_backend", lambda *_a, **_kw: pytest.fail("CLI already checked live service"))
+
+    def collect(*_a, **_kw):
+        from tests.test_http_runtime_binding import runtime_metadata
+
+        calls.append("qualified")
+        receipt = external_ops.owned_service(NAME)
+        metadata = receipt["metadata"]
+        metadata["graph_warmup"] = runtime_metadata(task=NEW_TASK, image_hw=(480, 640))["graph_warmup"]
+        external_ops.update_ready(NAME, metadata, expected_instance_id=metadata["instance_id"])
+        return {"hardware_tested": False, "assessment": {"qualified": True}}
+
+    monkeypatch.setattr(modal_qualification, "collect_qualification", collect)
+    assert helper.execute(request) == 0
+    result = json.loads((request.parent / "result.json").read_text())
+    assert result["ready"] and not result["reused"] and calls == ["qualified"]
 
 
 def test_expired_configured_ui_preflight_is_local_recoverable_not_ready(recovery_ui, monkeypatch):

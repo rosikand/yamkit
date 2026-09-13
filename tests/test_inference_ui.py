@@ -1057,7 +1057,7 @@ def test_browser_reopened_page_shows_actual_running_task_duration_not_defaults(i
 def preparation_browser(attached_browser):
     ctx = attached_browser
     ctx.eval("""
-      var qualificationReady=false, prepareFailure=null, prepareReused=false;
+      var qualificationReady=false, prepareFailure=null, prepareReused=false, prepareBeforeStart=false;
       var confirmMessages=[],preparationSession=null,deferPrepare=false,resolvePrepare=null;
       $('#inf-backend').value='external'; $('#inf-external-service').value='lambda-georgia';
       $('#inf-controller').value='reference'; $('#inf-duration').value='20';
@@ -1067,6 +1067,7 @@ def preparation_browser(attached_browser):
       post=function(path,body){
         posts.push({path,body});
         if(path==='/inference/preflight')return Promise.resolve({ready:qualificationReady,can_prepare:!qualificationReady,
+          prepare_before_start:prepareBeforeStart,
           reason:qualificationReady?'ready':'Task preparation needed',selection_key:'checked-original-form',
           checked_at:browserNow/1000,expires_at:qualificationReady?browserNow/1000+3600:null});
         if(path==='/inference/prepare'){
@@ -1151,6 +1152,20 @@ def test_browser_ready_cache_changed_in_another_tab_prepares_before_confirmation
     assert ctx.eval("confirmMessages.length") == 0
 
 
+def test_browser_configured_ready_start_checks_service_before_fresh_confirmation(preparation_browser):
+    ctx = preparation_browser
+    ctx.eval("qualificationReady=true; prepareBeforeStart=true; confirmResult=true;")
+    _check_attached_browser(ctx)
+    assert not _posted(ctx, "/inference/prepare")  # Page/status checks stay entirely local.
+    _start_preparation(ctx)
+    assert len(_posted(ctx, "/inference/prepare")) == 1
+    assert not _posted(ctx, "/session/rollout") and ctx.eval("confirmMessages.length") == 0
+    ctx.eval("finishPrep();")
+    _drain_js(ctx)
+    assert len(_posted(ctx, "/inference/prepare")) == 1  # No recursion after the live check.
+    assert len(_posted(ctx, "/session/rollout")) == 1 and ctx.eval("confirmMessages.length") == 1
+
+
 def test_browser_idempotent_prepare_reuse_still_needs_fresh_confirmation(preparation_browser):
     ctx = preparation_browser
     ctx.eval("prepareReused=true; confirmResult=false;")
@@ -1203,8 +1218,12 @@ def test_browser_failed_cancelled_or_mismatched_preparation_never_launches(prepa
     assert ctx.eval("confirmMessages.length") == 0
 
 
-def test_browser_preparation_endpoint_failure_does_not_retry_or_move(preparation_browser):
+@pytest.mark.parametrize("cached_ready", [False, True])
+def test_browser_preparation_endpoint_failure_does_not_retry_or_move(preparation_browser, cached_ready):
     ctx = preparation_browser
+    if cached_ready:
+        ctx.eval("qualificationReady=true; prepareBeforeStart=true;")
+        _check_attached_browser(ctx)
     ctx.eval("prepareFailure='service unavailable'; confirmResult=true;")
     _start_preparation(ctx)
     assert len(_posted(ctx, "/inference/prepare")) == 1

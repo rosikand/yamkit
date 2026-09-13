@@ -114,17 +114,19 @@ def _prompt_preparation_context(options, rig: RigConfig) -> dict:
             "selection_key": options.operation_key}
 
 
-def _preparation_selection_context(options, rig: RigConfig) -> dict:
-    """Either an attached prompt or explicit local lifecycle config, without network work."""
-    try:
-        return _prompt_preparation_context(options, rig)
-    except (ValueError, KeyError, TypeError, OSError) as original:
-        from ..inference_workflow import recovery_context
+def _configured_preparation_context(options, rig: RigConfig) -> dict | None:
+    """Whether explicit Start can check/recover this configured service; local reads only."""
+    from ..inference_workflow import recovery_context
 
-        try:
-            return recovery_context(options, rig)
-        except (ValueError, KeyError, TypeError, OSError):
-            raise original from None
+    try:
+        return recovery_context(options, rig)
+    except (ValueError, KeyError, TypeError, OSError):
+        return None
+
+
+def _preparation_selection_context(options, rig: RigConfig) -> dict:
+    """Prefer configured live checks even when an attached qualification is still cached."""
+    return _configured_preparation_context(options, rig) or _prompt_preparation_context(options, rig)
 
 
 def _rollout_metadata(options, rig: RigConfig) -> dict:
@@ -968,8 +970,11 @@ def create_app(
                 if not capture_memory["admission_passes"]:
                     raise ValueError("Insufficient available memory to save this recording; free memory or turn recording off")
             try:
-                return {**modal_attachment(options, require_rig()), "capture_memory": capture_memory,
-                        "can_prepare": False}
+                current = modal_attachment(options, require_rig())
+                configured = _configured_preparation_context(
+                    dataclasses.replace(options, mapping_accepted=False, supervised_confirmed=False), require_rig())
+                return {**current, "capture_memory": capture_memory, "can_prepare": False,
+                        "prepare_before_start": configured is not None}
             except (ValueError, KeyError, TypeError, OSError):
                 try:
                     _preparation_selection_context(dataclasses.replace(options, mapping_accepted=False, supervised_confirmed=False), require_rig())
@@ -1006,9 +1011,10 @@ def create_app(
                     current = modal_attachment(options, require_rig())
                 except (ValueError, KeyError, TypeError, OSError):
                     current = None
-                if current:
+                context = _configured_preparation_context(options, require_rig())
+                if current and context is None:
                     return {**current, "reused": True, "preparing": False}
-                context = _preparation_selection_context(options, require_rig())
+                context = context or _prompt_preparation_context(options, require_rig())
                 directory = ROOT / ".context" / "inference-preparation" / uuid.uuid4().hex
                 from ..rollout_artifacts import _safe_path
 

@@ -1197,6 +1197,8 @@ pages.inference = {
       if ($("#btn-ro").disabled) return;
     }
     const qualification = this._qualification?.key === key ? this._qualification : null;
+    if (selected.backend === "external" && qualification?.prepare_before_start === true)
+      return this.prepareForRollout(selected, button); // Live software check; current proof is reused when valid.
     if (["modal", "external"].includes(selected.backend) && !qualification?.ready) {
       if (qualification?.can_prepare !== true) return;
       return this.prepareForRollout(selected, button);
@@ -1351,7 +1353,9 @@ pages.inference = {
       : !modal ? "Local policy selected. Verify checkpoint and rig compatibility before Start."
       : this._startingPreparation || session.active && session.mode === "inference-prepare" ? "Preparing the task with simulated inputs. The arms will not move until you confirm."
       : this._checking ? "Loading current task status…"
-      : qualified ? "Ready for this task. Start asks for your supervised confirmation before moving the arms."
+      : qualified ? qualification.prepare_before_start
+        ? "Ready for this task. Start checks the model service, then asks before moving the arms."
+        : "Ready for this task. Start asks for your supervised confirmation before moving the arms."
       : preparable ? "Start will prepare this task first, then ask before moving the arms. No terminal steps needed."
       : qualification?.ready ? "Session expires too soon. The attached model service must be refreshed before Start."
       : qualification?.reason || "Loading the attached model’s local status…");

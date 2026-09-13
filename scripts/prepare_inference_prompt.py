@@ -87,7 +87,11 @@ def _execute(request_path: Path) -> int:
         if options.rig_path is None or not _safe_path(Path(options.rig_path)).is_relative_to(root):
             raise ValueError("Prompt preparation requires this repository's rig configuration")
         rig = RigConfig.load(options.rig_path)
-        context = _preparation_selection_context(options, rig)
+        # Configured UI Start always checks the live service. Attached-only requests
+        # are also used by explicit CLI --requalify and must retain its forced work.
+        check_configured = isinstance(request["expected"], dict) and request["expected"].get("recovery") is True
+        context = (_preparation_selection_context(options, rig) if check_configured
+                   else _prompt_preparation_context(options, rig))
         if context != request["expected"]:
             raise ValueError("Prompt selection or attached service changed before preparation")
         if request["capture_trace"] and not _capture_memory_preflight(int(options.duration))["admission_passes"]:
@@ -119,13 +123,24 @@ def _execute(request_path: Path) -> int:
                                        "external_service_name": options.external_service, "controller_mode": "reference"})
         previous = json.loads(_read(previous_path)) if previous_path.exists() else {"present": False}
         save("previous-qualification.json", previous)
-        phase("warming_and_qualifying")
-        with contextlib.redirect_stdout(SanitizedOutput(sys.stdout, private_values)), contextlib.redirect_stderr(SanitizedOutput(sys.stderr, private_values)):
-            record = collect_qualification(
-                "molmoact2", requests=50, rig_path=Path(options.rig_path), backend="external",
-                external_service=options.external_service, image_encoding="rgb8", jpeg_quality=85,
-                call_mode="http", center_crop=False, prediction_queue_threshold=None,
-                execution_mode="cuda_graph10", controller_mode="reference", task=options.task)
+        record = None
+        if check_configured:
+            try:
+                candidate = validate_qualification(settings_from_rig(options))
+                expires = min(context["expires_at"], candidate["created_unix_s"] + MAX_AGE_S)
+                if time.time() + options.duration + 60 < expires:
+                    record = candidate
+            except (ValueError, KeyError, TypeError, OSError):
+                pass  # A new live instance/task needs its own generated-input proof.
+        reused = record is not None
+        if not reused:
+            phase("warming_and_qualifying")
+            with contextlib.redirect_stdout(SanitizedOutput(sys.stdout, private_values)), contextlib.redirect_stderr(SanitizedOutput(sys.stderr, private_values)):
+                record = collect_qualification(
+                    "molmoact2", requests=50, rig_path=Path(options.rig_path), backend="external",
+                    external_service=options.external_service, image_encoding="rgb8", jpeg_quality=85,
+                    call_mode="http", center_crop=False, prediction_queue_threshold=None,
+                    execution_mode="cuda_graph10", controller_mode="reference", task=options.task)
         save("qualification.json", record)
         if record.get("hardware_tested") is not False or record.get("assessment", {}).get("qualified") is not True:
             reasons = record.get("assessment", {}).get("reasons", [])
@@ -138,7 +153,8 @@ def _execute(request_path: Path) -> int:
         expires = min(current["expires_at"], qualified["created_unix_s"] + MAX_AGE_S)
         if time.time() + options.duration + 60 >= expires:
             raise ValueError("The model session expires too soon for this rollout")
-        result.update(ready=True, expires_at=expires, reason="Prompt ready; supervised Start is still required")
+        result.update(ready=True, reused=reused, expires_at=expires,
+                      reason="Current live service and task ready; supervised Start is still required")
         phase("ready")
         code = 0
     except KeyboardInterrupt:
