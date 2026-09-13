@@ -122,3 +122,40 @@ def test_native_physical_delegate_requires_confirmation_before_any_connection(na
     monkeypatch.setattr(workflow, "load_target", lambda *_a, **_kw: pytest.fail("no connection without GO"))
     with pytest.raises(WorkflowError, match="supervised"):
         workflow.run_prepared_pi05(None, confirm_supervised=False, accept_mapping=False)
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, OSError])
+def test_native_fault_error_is_actionable_without_private_chain_or_release_claim(native, monkeypatch, failure):
+    from yamkit.pi05 import rollout
+
+    selection, _ = workflow.prepare_pi05(backend="lambda", task="cube", rig=native.rig)
+    def failed(*_a, **_kw):
+        raise failure("private endpoint or SDK diagnostic")
+    monkeypatch.setattr(rollout, "run_rollout", failed)
+    with pytest.raises(WorkflowError, match="No automatic physical retry") as caught:
+        workflow.run_prepared_pi05(selection, confirm_supervised=True, accept_mapping=True)
+    assert "private endpoint" not in str(caught.value)
+    assert "released" not in str(caught.value)
+    assert "outputs/inference/pi05-" in str(caught.value)
+    assert native.transports[-1].closed
+
+
+def test_delayed_native_confirmation_checks_fresh_lease_before_physical_delegate(native, monkeypatch):
+    from yamkit.pi05 import rollout
+
+    selection, _ = workflow.prepare_pi05(backend="lambda", task="cube", rig=native.rig)
+    monkeypatch.setattr(workflow, "_readiness", lambda *_: {
+        "instance_id": "same-instance", "http_session_expires_at": time.time() + 20})
+    monkeypatch.setattr(rollout, "run_rollout", lambda *_a, **_kw: pytest.fail("expired confirmation wait must not open hardware"))
+    with pytest.raises(WorkflowError, match="expires too soon after confirmation"):
+        workflow.run_prepared_pi05(selection, confirm_supervised=True, accept_mapping=True)
+
+
+def test_native_qualification_disappearing_during_confirmation_is_actionable(native, monkeypatch):
+    from yamkit.pi05 import rollout
+
+    selection, _ = workflow.prepare_pi05(backend="lambda", task="cube", rig=native.rig)
+    selection.qualification_path.unlink()
+    monkeypatch.setattr(rollout, "run_rollout", lambda *_a, **_kw: pytest.fail("no hardware without retained proof"))
+    with pytest.raises(WorkflowError, match="evidence changed after confirmation"):
+        workflow.run_prepared_pi05(selection, confirm_supervised=True, accept_mapping=True)

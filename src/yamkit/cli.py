@@ -867,13 +867,16 @@ def rollout(
         # command. The existing external runner still performs all motion checks.
         try:
             with workflow_lock():
-                assert_ui_idle()
+                assert_ui_idle(require_cameras_idle=True)
                 if prepared.policy == "pi05-yam":
                     from .pi05_workflow import run_prepared_pi05
 
                     result = run_prepared_pi05(prepared, confirm_supervised=confirm_supervised, accept_mapping=accept_mapping)
                     _print_inference_result(result)
                     return
+                from .inference_workflow import require_prepared_current
+
+                require_prepared_current(prepared)
                 return rollout(ctx, policy=prepared.policy, task=task, rig=rig, arms=arms,
                                duration=duration, fps=fps, device=device, backend="external", gpu=gpu,
                                external_service=prepared.external_service, controller_mode="reference",

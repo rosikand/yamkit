@@ -100,6 +100,24 @@ def test_terminal_only_ui_absence_allowed_but_timeout_not_allowed(monkeypatch):
         backend.assert_ui_idle()
 
 
+def test_direct_preview_blocks_cli_but_owned_active_preparation_can_continue(monkeypatch):
+    directory = "/repo/.context/inference-preparation/example"
+    state = {"active": False, "cameras_owned": False, "direct_cameras_open": ["top"],
+             "mode": "inference-prepare", "pid": os.getpid(), "meta": {"preparation_dir": directory}}
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def read(self, _): return json.dumps(state).encode()
+    monkeypatch.setattr(backend, "urlopen", lambda *_a, **_kw: Response())
+    backend.assert_ui_idle()  # Software-only inference does not need to close existing previews.
+    with pytest.raises(WorkflowError, match="close Live/camera previews or use UI Start"):
+        backend.assert_ui_idle(require_cameras_idle=True)
+    with pytest.raises(WorkflowError, match="direct camera previews"):
+        backend.assert_ui_idle(own_preparation_dir=directory, require_cameras_idle=True)  # stale PID cannot claim this exception
+    state["active"] = True
+    backend.assert_ui_idle(own_preparation_dir=directory, require_cameras_idle=True)
+
+
 def test_ready_backend_keeps_receipt_and_does_not_start_or_attach(configured, monkeypatch):
     from yamkit import external_ops
 
@@ -262,3 +280,50 @@ def test_remote_bootstrap_has_no_takeover_and_task_is_quoted(configured, monkeyp
     assert seen[0][0] == "gpu-alias" and "StrictHostKeyChecking=no" not in str(seen)
     assert "os.kill" not in backend._REMOTE_BOOTSTRAP and "terminate" not in backend._REMOTE_BOOTSTRAP
     assert "pass_fds=(fd,)" in backend._REMOTE_BOOTSTRAP
+
+
+def test_delayed_terminal_confirmation_rechecks_lease_before_any_hardware(configured, monkeypatch):
+    monkeypatch.setattr(workflow, "prepare_inference", lambda **kw: (
+        workflow.reference_options(policy="molmoact2", task=kw["task"], service="test"), {"ready": True}))
+    monkeypatch.setattr(backend, "assert_ui_idle", lambda **_: None)
+    def expired(_options):
+        raise WorkflowError("The attached model session expires too soon")
+    monkeypatch.setattr(workflow, "require_prepared_current", expired)
+    monkeypatch.setattr(cli, "_rig_arms", lambda *_: pytest.fail("expired approval wait cannot open hardware"))
+    result = CliRunner().invoke(cli.app, ["rollout", "--backend", "lambda", "--policy", "molmoact2",
+                                         "--task", "test"], input="y\n")
+    assert result.exit_code == 2 and "expires too soon" in result.output
+
+
+@pytest.mark.parametrize("service_expiry,qualification_remaining,passes", [(2000, 1000, True), (1070, 1000, False), (2000, 70, False)])
+def test_after_confirmation_margin_uses_both_service_and_qualification_expiry(
+        monkeypatch, service_expiry, qualification_remaining, passes):
+    from yamkit.config import RigConfig
+    from yamkit.inference import qualification
+    from yamkit.ui import server
+
+    options = workflow.reference_options(policy="molmoact2", task="test", service="test", duration=60)
+    monkeypatch.setattr(RigConfig, "load", lambda *_: object())
+    monkeypatch.setattr(workflow.time, "time", lambda: 1000)
+    monkeypatch.setattr(server, "_prompt_preparation_context", lambda *_: {"expires_at": service_expiry})
+    monkeypatch.setattr(qualification, "settings_from_rig", lambda *_: {})
+    monkeypatch.setattr(qualification, "validate_qualification", lambda *_: {
+        "created_unix_s": 1000 - qualification.MAX_AGE_S + qualification_remaining})
+    if passes:
+        workflow.require_prepared_current(options)
+    else:
+        with pytest.raises(WorkflowError, match="expires too soon after confirmation"):
+            workflow.require_prepared_current(options)
+
+
+@pytest.mark.parametrize("failure", [OSError, KeyError, TypeError])
+def test_after_confirmation_changed_metadata_is_actionable_without_private_details(monkeypatch, failure):
+    from yamkit.config import RigConfig
+
+    options = workflow.reference_options(policy="molmoact2", task="test", service="test")
+    def changed(*_):
+        raise failure("private local metadata details")
+    monkeypatch.setattr(RigConfig, "load", changed)
+    with pytest.raises(WorkflowError, match="changed after confirmation") as caught:
+        workflow.require_prepared_current(options)
+    assert "private local" not in str(caught.value)

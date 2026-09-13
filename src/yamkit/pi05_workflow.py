@@ -150,12 +150,23 @@ def run_prepared_pi05(selection, *, confirm_supervised, accept_mapping):
         raise WorkflowError("Native π0.5 backend selection changed after preparation")
     token = _read_private(target.token_file, 257).strip()
     metadata = _readiness(target, token)
-    qualification = json.loads(selection.qualification_path.read_text())
+    if time.time() + selection.duration + 60 >= metadata["http_session_expires_at"]:
+        raise WorkflowError("Native π0.5 model session expires too soon after confirmation; prepare again before a new supervised command")
+    try:
+        qualification = json.loads(selection.qualification_path.read_text())
+    except (OSError, ValueError, TypeError):
+        raise WorkflowError("Native π0.5 qualification evidence changed after confirmation; prepare again before a new supervised command") from None
     transport = _transport(target, token, metadata)
+    artifact_dir = ROOT / "outputs/inference" / ("pi05-" + uuid.uuid4().hex)
     try:
         return run_rollout(transport, task=selection.task, duration_s=selection.duration,
                            rig_path=Path(selection.rig_path), qualification=qualification,
                            confirm_supervised=True, accept_mapping=True,
-                           artifact_dir=ROOT / "outputs/inference" / ("pi05-" + uuid.uuid4().hex))
+                           artifact_dir=artifact_dir)
+    except (RuntimeError, OSError):
+        # Native runner failures can chain private transport/SDK diagnostics.
+        # Keep the terminal error actionable without guessing release success.
+        raise WorkflowError("Native π0.5 rollout or artifact finalization failed; inspect " + str(artifact_dir)
+                            + " for retained evidence. No automatic physical retry was started") from None
     finally:
         transport.close()

@@ -139,7 +139,7 @@ def load_target(backend: str, policy: str, *, config: Path | None = None) -> Bac
                          tuple(_local_path(value) for value in saved))
 
 
-def assert_ui_idle(*, endpoint="http://127.0.0.1:8400", own_preparation_dir=None):
+def assert_ui_idle(*, endpoint="http://127.0.0.1:8400", own_preparation_dir=None, require_cameras_idle=False):
     """Do not disturb a user-owned UI job, including saving or prompt preparation."""
     try:
         with urlopen(endpoint + "/api/session", timeout=2) as response:
@@ -149,11 +149,13 @@ def assert_ui_idle(*, endpoint="http://127.0.0.1:8400", own_preparation_dir=None
         state = json.loads(raw)
         if not isinstance(state, dict) or type(state.get("active")) is not bool:
             raise WorkflowError("Port 8400 did not provide yamkit session status; inspect that listener")
-        own = (own_preparation_dir is not None and state.get("pid") == os.getpid()
+        own = (own_preparation_dir is not None and state["active"] and state.get("pid") == os.getpid()
                and state.get("mode") == "inference-prepare" and not state.get("cameras_owned")
                and state.get("meta", {}).get("preparation_dir") == str(own_preparation_dir))
         if not own and (state["active"] or state.get("cameras_owned")):
             raise WorkflowError("A UI session owns the robot or is still preparing/saving; wait for it to finish")
+        if require_cameras_idle and not own and state.get("direct_cameras_open"):
+            raise WorkflowError("The UI has direct camera previews open; close Live/camera previews or use UI Start for its camera handoff")
     except URLError as exc:
         if isinstance(exc.reason, ConnectionRefusedError):
             return  # A terminal-only installation need not run the UI.

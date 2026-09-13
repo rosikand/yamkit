@@ -66,6 +66,23 @@ def reference_options(*, policy, task, service, rig=DEFAULT_RIG, duration=60, ar
                             duration=duration, arms=tuple(arms), rig_path=str(Path(rig).resolve())).validate()
 
 
+def require_prepared_current(options: InferenceOptions) -> None:
+    """Recheck local exact proof and lease margin after the operator's terminal wait."""
+    from .config import RigConfig
+    from .inference.qualification import MAX_AGE_S, settings_from_rig, validate_qualification
+    from .ui.server import _prompt_preparation_context
+
+    try:
+        options = replace(options, mapping_accepted=False, supervised_confirmed=False)
+        context = _prompt_preparation_context(options, RigConfig.load(options.rig_path))
+        record = validate_qualification(settings_from_rig(options))
+        expires = min(context["expires_at"], record["created_unix_s"] + MAX_AGE_S)
+    except (OSError, KeyError, TypeError):
+        raise WorkflowError("Prepared inference files or qualification changed after confirmation; prepare again before a new supervised command") from None
+    if time.time() + options.duration + 60 >= expires:
+        raise WorkflowError("Qualification expires too soon after confirmation; prepare again before a new supervised command")
+
+
 def prepare_reference(options: InferenceOptions, *, progress=lambda _value: None, force=False) -> dict:
     """Reuse current proof or execute exactly the same hardware-free helper as UI Start."""
     from .config import RigConfig

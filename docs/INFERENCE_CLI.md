@@ -119,6 +119,10 @@ A repository-local cross-process lock excludes simultaneous CLI/UI model prepara
 Start. A user-active UI operation, including saving, blocks CLI preparation. The simple CLI
 holds the same lock for its entire physical rollout, so another UI prompt cannot rewarm its
 model mid-run. Nothing stops user applications or reduces capture memory admission thresholds.
+Existing UI camera previews may stay open during software-only `inference`. Before a physical
+terminal rollout, close those previews (or use UI Start, which performs its own camera handoff).
+The terminal rechecks this and the exact qualification/session time margin after confirmation;
+a long-delayed confirmation cannot start arms using near-expiry readiness.
 
 ## Native π0.5
 
