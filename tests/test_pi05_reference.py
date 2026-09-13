@@ -159,11 +159,12 @@ def make_executor(*, predictor=None, sender=None, validate=None, stop=None):
 def test_native_full_fifo_rows_are_unchanged_without_molmo_interpolation():
     engine, _, events, sent, observed = make_executor()
     result = engine.run(duration_s=10, max_chunks=3)
-    assert observed == [0, 30, 60]
+    assert observed == list(range(90))
     expected = np.tile(rows(), (3, 1))
     np.testing.assert_array_equal(np.array([[t[n] for n in YAM_NAMES] for t in sent]), expected)
     assert result["predicted_rows"] == result["completed_rows"] == 90
     assert result["completed_chunks"] == 3
+    assert [chunk["policy_observation_index"] for chunk in result["chunks"]] == [0, 30, 60]
     assert result["interpolation_points"] == result["dropped_rows"] == result["modified_commands"] == 0
     assert result["coherence_violations"] == result["reordered_rows"] == result["faults"] == 0
     assert result["execution_rate_hz"] == pytest.approx(30)
@@ -239,3 +240,12 @@ def test_used_engine_cannot_retry():
     engine.run(duration_s=5, max_chunks=1)
     with pytest.raises(Pi05ExecutionFault, match="cannot resume"):
         engine.run(duration_s=5, max_chunks=1)
+
+
+def test_shortened_rpc_deadline_is_still_a_fault_not_healthy_duration_completion():
+    engine, _, _, sent, _ = make_executor()
+    with pytest.raises(Pi05ExecutionFault, match="request deadline"):
+        engine.run(duration_s=0.05, max_chunks=1)  # Fake predictor incorrectly returns after 0.1 s.
+    assert sent == []
+    assert engine.metrics()["faults"] == 1
+    assert engine.metrics()["completed_rows"] == 0

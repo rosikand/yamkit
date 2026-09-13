@@ -37,6 +37,25 @@ def load_saved_observation(path: Path) -> dict:
     return result
 
 
+def observation_schema(observations: list[dict]) -> dict:
+    """Bind actual recorded payloads, never infer their shape from the rig file."""
+    schemas = []
+    for observation in observations:
+        if set(observation) != {"state", *PROFILE.image_keys}:
+            raise ValueError("Saved π0.5 observation has missing or extra RGB/state fields")
+        state = np.asarray(observation["state"])
+        if state.shape != (14,) or state.dtype.kind not in "fiu" or not np.isfinite(state).all():
+            raise ValueError("Saved π0.5 state must contain exactly fourteen finite values")
+        images = {}
+        for name in PROFILE.image_keys:
+            encoded = encode_image(observation[name])
+            images[name] = [encoded["height"], encoded["width"], 3]
+        schemas.append({"state_names": list(YAM_NAMES), "images": images, "image_encoding": "rgb8", "crop": "none"})
+    if not schemas or any(schema != schemas[0] for schema in schemas):
+        raise ValueError("All saved π0.5 observations must have the same exact RGB schema")
+    return schemas[0]
+
+
 def make_request(observation: dict, *, task: str, session_id: str, sequence_id: int,
                  timeout_s: float, mode: str = "robot") -> dict:
     names = PROFILE.native_image_keys if mode == "native_fixture" else PROFILE.image_keys
@@ -89,6 +108,15 @@ def collect_qualification(transport, *, observations: list[dict], task: str, req
         raise ValueError("Qualification needs 1–50 requests and saved real observations")
     if not isinstance(task, str) or not task.strip() or len(task) > 2048:
         raise ValueError("An explicit task is required")
+    schema = observation_schema(observations)
+    robot_host = None
+    if rig_path is not None:
+        from .admission import passive_target_validator, rig_binding
+
+        robot_host = rig_binding(rig_path)
+        if schema != robot_host["observation_schema"]:
+            raise ValueError("Saved π0.5 RGB shapes differ from the rig; qualify the actual full camera payload")
+        validate_target = passive_target_validator(rig_path)
     metadata = transport.ready(15.0)
     validate_readiness(metadata)
     session_id, sequence = str(uuid.uuid4()), 0
@@ -98,14 +126,11 @@ def collect_qualification(transport, *, observations: list[dict], task: str, req
               "instance_id": metadata["instance_id"], "task": task, "created_at": time.time(),
               "expires_at": metadata.get("http_session_expires_at"), "hardware_tested": False,
               "observation_source": "caller-supplied saved real recording; no new capture",
+              "observation_schema": schema,
               "requested_warm_samples": requests, "bounds_checked": validate_target is not None,
               "qualified": False, "reasons": errors, "runtime": metadata}
-    if rig_path is not None:
-        from .admission import passive_target_validator, rig_binding
-
-        report["robot_host"] = rig_binding(rig_path)
-        validate_target = passive_target_validator(rig_path)
-        report["bounds_checked"] = True
+    if robot_host is not None:
+        report["robot_host"] = robot_host
     validator = validate_target or (lambda _: None)
 
     def predict(observation, timeout):
@@ -137,7 +162,8 @@ def collect_qualification(transport, *, observations: list[dict], task: str, req
         report["integrated"] = result
         if result["completed_chunks"] != requests or result["completed_rows"] != requests * 30:
             errors.append("Integrated fake execution did not complete all requested native chunks")
-        if any(result[key] for key in ("dropped_rows", "modified_commands", "coherence_violations", "faults")):
+        if any(result[key] for key in ("dropped_rows", "modified_commands", "coherence_violations", "faults",
+                                      "unknown_partial_dispatches")):
             errors.append("Native fake execution lost or modified rows, or faulted")
         # Exercise the SAME executor with Stop while its real RPC is in flight.
         stop = Event()

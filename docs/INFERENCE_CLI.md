@@ -125,8 +125,9 @@ model mid-run. Nothing stops user applications or reduces capture memory admissi
 The simple workflow maps `--policy pi05` to `pi05-yam`, the separate native checkpoint
 `Jiafei1224/molmoact2-yam-pi05@51ab2720d7e56d51410407f98ea64bbea97feb2e`.
 The legacy low-level `pi05` profile remains the unadapted base checkpoint; it is never selected
-as a fallback by this workflow. Native π0.5 executes all 30 absolute 14-D rows FIFO at 30 Hz,
-then reobserves/replans, without MolmoAct2 interpolation, prefix drops or RTC. Saved native
+as a fallback by this workflow. Native π0.5 observes every control tick and executes all 30
+absolute 14-D rows FIFO before replanning, without MolmoAct2 interpolation, prefix drops or RTC.
+Its 30 Hz tick budget starts before observation/inference; an overrun adds no post-send wait. Saved native
 normalization and 224×224 padded image preprocessing stay with the π0.5 runtime.
 
 Add a separate `pi05-yam` entry under `backends.lambda.policies`, using a different service/port:

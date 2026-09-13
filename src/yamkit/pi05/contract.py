@@ -45,6 +45,8 @@ CONTRACT = {
     "queue": "native synchronous FIFO: all 30 rows once, in order, then reobserve/replan",
     "interpolation": False, "prefix_drop": False, "command_shaping": False,
     "state_source": "measured observation at chunk boundary",
+    "observation_cadence": "every control tick; only empty-FIFO observations reach model",
+    "tick_cadence": "loop-start before observation/RPC/send; sleep max(1/30 - elapsed, 0)",
     "physical_validation": "not performed",
 }
 

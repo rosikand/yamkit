@@ -3,13 +3,14 @@
 import json
 import time
 from threading import Event
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from yamkit.inference.mapping import YAM_NAMES
-from yamkit.pi05 import qualification, rollout
-from yamkit.pi05.admission import validate_qualification
+from yamkit.pi05 import admission, qualification, rollout
+from yamkit.pi05.admission import rig_observation_schema, validate_qualification
 from yamkit.pi05.contract import CONTRACT, PROFILE, build_id
 from yamkit.pi05.executor import Pi05ReferenceExecutor
 from yamkit.pi05.qualification import load_saved_observation, make_request, save_qualification
@@ -38,6 +39,68 @@ def test_exact_pi05_readiness_not_old_generic_base():
                        ("execution_mode", "cuda_graph10"), ("controller_contract", {"id": "reference"})):
         with pytest.raises(ValueError, match="pinned native"):
             validate_readiness({**valid, key: value})
+
+
+@pytest.mark.parametrize("bad", [None, [], {"execution_identity": None, "controller_contract": {}},
+                                  {"execution_identity": {}, "controller_contract": None}])
+def test_malformed_readiness_is_uniform_validation_failure(bad):
+    with pytest.raises(ValueError, match="readiness"):
+        validate_readiness(bad)
+
+
+def rig():
+    arms = {side + "_follower": SimpleNamespace(role="follower", side=side, arm_type="yam",
+                                               gripper="linear_4310", gripper_limits=[0, 1])
+            for side in ("left", "right")}
+    return SimpleNamespace(cameras={name: {"width": 640, "height": 480, "fps": 30}
+                                    for name in PROFILE.image_keys}, arm=arms.__getitem__,
+                           validate=list, control=SimpleNamespace(home_speed=0.25))
+
+
+@pytest.mark.parametrize("field,value", [("side", "right"), ("arm_type", "yam_pro"),
+                                         ("gripper", "linear_3507"), ("gripper_limits", None)])
+def test_native_rig_mapping_rejects_wrong_robot_side_and_gripper(field, value):
+    fixture = rig()
+    setattr(fixture.arm("left_follower"), field, value)
+    with pytest.raises(ValueError, match="mapping"):
+        rig_observation_schema(fixture)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "fps", "width", "height"])
+def test_native_rig_camera_contract_is_explicit(mutation):
+    fixture = rig()
+    if mutation == "missing":
+        fixture.cameras.pop("left_wrist")
+    elif mutation == "extra":
+        fixture.cameras["unused"] = dict(fixture.cameras["top"])
+    else:
+        fixture.cameras["top"][mutation] = None
+    with pytest.raises(ValueError, match="camera"):
+        rig_observation_schema(fixture)
+
+
+def test_invalid_rig_cannot_qualify_when_plugin_would_reject_startup():
+    fixture = rig()
+    fixture.validate = lambda: ["duplicate CAN adapters"]
+    with pytest.raises(ValueError, match="valid rig"):
+        rig_observation_schema(fixture)
+
+
+def test_disabled_startup_home_cannot_qualify():
+    fixture = rig()
+    fixture.control.home_speed = 0
+    with pytest.raises(ValueError, match="home motion"):
+        rig_observation_schema(fixture)
+
+
+def test_tiny_saved_images_cannot_qualify_full_rig_payload(monkeypatch):
+    calls = []
+    monkeypatch.setattr(admission, "rig_binding", lambda _: {"observation_schema": rig_observation_schema(rig())})
+    transport = SimpleNamespace(ready=lambda *_: calls.append("ready"))
+    with pytest.raises(ValueError, match="actual full camera payload"):
+        qualification.collect_qualification(transport, observations=[observation()], task="move cube",
+                                            requests=50, rig_path="unused-test-rig")
+    assert calls == []
 
 
 @pytest.mark.parametrize("field,value", [("strict_weights_restored", False), ("native_rtc_enabled", True),
@@ -123,6 +186,13 @@ def test_old_or_unbound_readiness_cannot_admit_robot(tmp_path):
         validate_qualification({"qualified": True}, metadata(), task="move cube", rig_path=path)
 
 
+@pytest.mark.parametrize("report", [[], None, {"integrated": None}, {"stop_proof": []},
+                                     {"robot_host": None}, {"direct_warm_round_trip_s": []}])
+def test_malformed_cached_qualification_is_actionable_without_touching_rig(report, tmp_path):
+    with pytest.raises(ValueError, match="current passing"):
+        validate_qualification(report, metadata(), task="move cube", rig_path=tmp_path / "does-not-exist")
+
+
 class FakeRobot:
     def __init__(self):
         self.events = []
@@ -164,6 +234,21 @@ def test_physical_entrypoint_rejects_stale_qualification_before_robot_constructo
                             qualification={}, accept_mapping=True, confirm_supervised=True,
                             artifact_dir=tmp_path / "run", robot_factory=lambda *_: called.append(True))
     assert called == []
+
+
+def test_delayed_confirmation_near_session_expiry_cannot_construct_robot(monkeypatch, tmp_path):
+    monkeypatch.setattr(rollout, "validate_qualification", lambda *_a, **_kw: None)
+    transport, called = Transport(), []
+    transport.metadata["http_session_expires_at"] = time.time() + 60.5
+    with pytest.raises(RuntimeError, match="failed"):
+        rollout.run_rollout(transport, task="move cube", duration_s=5, rig_path=tmp_path / "rig",
+                            qualification={}, accept_mapping=True, confirm_supervised=True,
+                            artifact_dir=tmp_path / "run", robot_factory=lambda *_: called.append(True))
+    assert called == []
+    assert transport.closed is True
+    report = json.loads((tmp_path / "run/report.json").read_text())
+    assert report["released"] is True
+    assert report["home_attempted"] is False
 
 
 def run_fake(monkeypatch, tmp_path, *, stop_after_send=False, fail=False):
@@ -212,7 +297,10 @@ def test_fault_releases_without_retry_or_home(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="failed"):
         run()
     assert robot.events == ["connect", "send", "release"]
-    assert json.loads((destination / "report.json").read_text())["released"] is True
+    report = json.loads((destination / "report.json").read_text())
+    assert report["released"] is True
+    assert report["execution"]["completed_rows"] == 0
+    assert report["execution"]["attempted_rows"] == report["execution"]["unknown_partial_dispatches"] == 1
 
 
 def test_qualification_save_preserves_historical_files(tmp_path):

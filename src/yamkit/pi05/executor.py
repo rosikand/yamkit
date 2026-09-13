@@ -1,8 +1,9 @@
 """Synchronous native PI05 FIFO execution with explicit I/O seams.
 
 This module imports no hardware. Callers own resource acquisition and release.
-No interpolation, rate catch-up, prefix drops, overlap merges or target shaping
-are performed. Stop can discard an unexecuted tail, which is reported explicitly.
+No interpolation, global rate catch-up, prefix drops, overlap merges or target
+shaping are performed. A tick starts before observation/inference, as in the
+pinned LeRobot runner. Stop can discard a tail, which is reported explicitly.
 """
 
 from __future__ import annotations
@@ -44,8 +45,9 @@ class Pi05ReferenceExecutor:
 
     ``predict`` returns postprocessed robot-unit rows; ``send`` returns the actual
     target mapping. ``validate_target`` is a passive whole-chunk bounds check.
-    Measured state/cameras are sampled at each native policy chunk boundary.
-    The physical adapter also validates measured state immediately before sends.
+    Measured state/cameras are sampled every tick, as in native LeRobot. Only
+    the observation at an empty FIFO reaches the model. The physical adapter
+    also validates measured state immediately before sends.
     """
 
     def __init__(self, *, predict: Callable, observe: Callable, send: Callable,
@@ -61,6 +63,8 @@ class Pi05ReferenceExecutor:
         self.rpc_timeout_s = rpc_timeout_s
         self.used = self.finished = False
         self.predicted_rows = self.completed_rows = self.completed_chunks = self.modified_commands = 0
+        self.attempted_rows = self.unknown_partial_dispatches = 0
+        self.observations = 0
         self.coherence_violations = self.dropped_rows = self.inference_calls = self.faults = 0
         self.rpc_latencies, self.observation_ages, self.dispatch_times, self.chunks = [], [], [], []
         self.started = self.ended = None
@@ -97,8 +101,10 @@ class Pi05ReferenceExecutor:
         self.deadline = self.started + duration_s
         try:
             while self.check() and (max_chunks is None or self.completed_chunks < max_chunks):
+                chunk_tick_started = self.clock()
                 observed_at = self.clock()
                 observation = self.observe()
+                self.observations += 1
                 if not self.check():
                     break
                 remaining = self.deadline - self.clock()
@@ -106,13 +112,14 @@ class Pi05ReferenceExecutor:
                     break
                 requested_at = self.clock()
                 self.inference_calls += 1
-                result = self.predict(observation, min(self.rpc_timeout_s, remaining))
+                requested_timeout = min(self.rpc_timeout_s, remaining)
+                result = self.predict(observation, requested_timeout)
                 returned_at = self.clock()
                 elapsed = returned_at - requested_at
                 self.rpc_latencies.append(elapsed)
                 rows = finite_rows(result)
                 self.predicted_rows += len(rows)
-                if elapsed >= self.rpc_timeout_s:
+                if elapsed >= requested_timeout:
                     raise Pi05ExecutionFault("π0.5 inference exceeded its request deadline")
                 if not self.check():
                     break  # In particular, never dispatch a late response after Stop.
@@ -121,14 +128,34 @@ class Pi05ReferenceExecutor:
                     self.validate_target(target)
                 chunk_index = len(self.chunks)
                 record = {"index": chunk_index, "predicted_rows": 30, "completed_rows": 0,
-                          "observation_time": observed_at, "rpc_latency_s": elapsed}
+                          "observation_time": observed_at, "rpc_latency_s": elapsed,
+                          "policy_observation_index": self.observations - 1}
                 self.chunks.append(record)
                 self.event("chunk_admitted", **record, rows=rows.tolist())
                 for index, target in enumerate(targets):
                     if not self.check():
                         break
-                    tick_started = self.clock()
-                    sent = self.send(dict(target), self.dispatch_check)
+                    if index == 0:
+                        tick_started = chunk_tick_started
+                    else:
+                        tick_started = self.clock()
+                        # Native select_action keeps its FIFO across these
+                        # observations; they monitor the rig but do not replan.
+                        self.observe()
+                        self.observations += 1
+                        if not self.check():
+                            break
+                    dispatch_at = self.clock()
+                    self.attempted_rows += 1
+                    self.event("dispatch_attempt", chunk_index=chunk_index, row_index=index,
+                               monotonic_s=dispatch_at, tick_started_monotonic_s=tick_started, requested=target)
+                    try:
+                        sent = self.send(dict(target), self.dispatch_check)
+                    except BaseException:
+                        # A two-arm SDK call may send one side before the other
+                        # fails. No full receipt is NOT proof of zero commands.
+                        self.unknown_partial_dispatches += 1
+                        raise
                     self.completed_rows += 1
                     record["completed_rows"] += 1
                     if not isinstance(sent, Mapping) or set(sent) != set(target) or any(
@@ -137,12 +164,15 @@ class Pi05ReferenceExecutor:
                         self.modified_commands += 1
                         self.coherence_violations += 1
                         raise Pi05ExecutionFault("π0.5 SDK target differs from the native row; stopping")
-                    self.dispatch_times.append(tick_started)
-                    self.observation_ages.append(tick_started - observed_at)
+                    self.dispatch_times.append(dispatch_at)
+                    self.observation_ages.append(dispatch_at - observed_at)
                     self.event("dispatch", chunk_index=chunk_index, row_index=index,
-                               monotonic_s=tick_started, requested=target, sent=dict(sent))
-                    # Native 30 Hz FIFO rows: one point, then remaining per-tick
-                    # period. An overrun never creates a burst of catch-up rows.
+                               monotonic_s=dispatch_at, tick_started_monotonic_s=tick_started,
+                               requested=target, sent=dict(sent))
+                    # Match BaseStrategy: observation, inference and dispatch
+                    # all consume this tick's budget. An inference overrun has
+                    # NO added wait; next tick begins with a fresh observation.
+                    # There is no accumulated global-deadline catch-up loop.
                     if not self._wait_until(tick_started + 1 / PROFILE.fps):
                         break
                 if record["completed_rows"] == 30:
@@ -162,12 +192,14 @@ class Pi05ReferenceExecutor:
     def metrics(self) -> dict:
         intervals = np.diff(self.dispatch_times)
         return {"controller_mode": CONTRACT_ID, "predicted_rows": self.predicted_rows,
+                "attempted_rows": self.attempted_rows, "unknown_partial_dispatches": self.unknown_partial_dispatches,
                 "completed_rows": self.completed_rows, "dropped_rows": self.dropped_rows,
                 "uncompleted_rows": self.predicted_rows - self.completed_rows,
                 "prefix_dropped_rows": 0, "reordered_rows": 0,
                 "modified_commands": self.modified_commands, "coherence_violations": self.coherence_violations,
                 "completed_chunks": self.completed_chunks, "admitted_chunks": len(self.chunks),
                 "inference_calls": self.inference_calls, "faults": self.faults,
+                "observations": self.observations,
                 "stop_requested": self.stop_requested, "interpolation_points": 0,
                 "execution_rate_hz": (float(1 / np.median(intervals)) if len(intervals) and np.median(intervals) > 0
                                       else None),

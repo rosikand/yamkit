@@ -17,7 +17,37 @@ from .contract import CONTRACT_ID, PROFILE, build_id
 
 
 def rig_binding(rig_path: Path) -> dict:
-    return {"host_id": stable_host_id(), "rig_sha256": hashlib.sha256(rig_path.read_bytes()).hexdigest()}
+    from yamkit.config import RigConfig
+
+    rig = RigConfig.load(rig_path)
+    schema = rig_observation_schema(rig)
+    return {"host_id": stable_host_id(), "rig_sha256": hashlib.sha256(rig_path.read_bytes()).hexdigest(),
+            "observation_schema": schema}
+
+
+def rig_observation_schema(rig) -> dict:
+    """Exact reviewed arm mapping and configured RGB payload shapes, no devices."""
+    if rig.validate():
+        raise ValueError("π0.5 requires a valid rig configuration before software qualification")
+    if rig.control.home_speed <= 0:
+        raise ValueError("π0.5 startup requires configured home motion to be enabled")
+    if set(rig.cameras) != set(PROFILE.image_keys):
+        raise ValueError("π0.5 reference requires exactly top, left_wrist and right_wrist rig cameras")
+    images = {}
+    for name in PROFILE.image_keys:
+        config = rig.cameras[name]
+        height, width = config.get("height"), config.get("width")
+        if (type(height) is not int or type(width) is not int or not 1 <= height <= 720
+                or not 1 <= width <= 1280 or config.get("fps") != 30):
+            raise ValueError("π0.5 reference cameras need explicit bounded RGB dimensions at 30 Hz")
+        images[name] = [height, width, 3]
+    for side in ("left", "right"):
+        arm = rig.arm(side + "_follower")
+        if (arm.role != "follower" or arm.side not in (None, side)
+                or arm.arm_type != "yam" or arm.gripper != "linear_4310"
+                or arm.gripper_limits is None):
+            raise ValueError("π0.5 mapping requires correctly sided YAM followers with calibrated LINEAR_4310 grippers")
+    return {"state_names": list(YAM_NAMES), "images": images, "image_encoding": "rgb8", "crop": "none"}
 
 
 def passive_target_validator(rig_path: Path):
@@ -25,6 +55,7 @@ def passive_target_validator(rig_path: Path):
     from yamkit.config import RigConfig
 
     rig = RigConfig.load(rig_path)
+    rig_observation_schema(rig)
     bounds = []
     for name in ("left_follower", "right_follower"):
         arm = rig.arm(name)
@@ -52,6 +83,9 @@ def validate_qualification(report: dict, metadata: dict, *, task: str, rig_path:
     from .transport import validate_readiness
 
     validate_readiness(metadata)
+    if (not isinstance(report, dict) or any(not isinstance(report.get(key, {}), dict)
+                                           for key in ("integrated", "stop_proof", "direct_warm_round_trip_s", "robot_host"))):
+        raise ValueError("π0.5 needs current passing native qualification for this host, rig, task and model session")
     now, result, stop = time.time(), report.get("integrated", {}), report.get("stop_proof", {})
     expires = report.get("expires_at")
     p95 = report.get("direct_warm_round_trip_s", {}).get("p95")
@@ -60,10 +94,13 @@ def validate_qualification(report: dict, metadata: dict, *, task: str, rig_path:
             or report.get("controller_mode") != CONTRACT_ID or report.get("pi05_build_id") != build_id()
             or report.get("instance_id") != metadata.get("instance_id") or report.get("task") != task
             or report.get("robot_host") != rig_binding(rig_path)
+            or report.get("observation_schema") != report.get("robot_host", {}).get("observation_schema")
             or report.get("hardware_tested") is not False or report.get("bounds_checked") is not True
             or report.get("completed_warm_samples") != 50 or result.get("completed_chunks") != 50
             or result.get("predicted_rows") != 1500 or result.get("completed_rows") != 1500
-            or any(result.get(key) != 0 for key in ("dropped_rows", "modified_commands", "coherence_violations", "faults"))
+            or result.get("attempted_rows") != 1500
+            or any(result.get(key) != 0 for key in ("dropped_rows", "modified_commands", "coherence_violations", "faults",
+                                                   "unknown_partial_dispatches"))
             or stop.get("stop_requested_during_inflight_rpc") is not True or stop.get("commands_after_stop") != 0
             or stop.get("all_fake_robots_released") is not True
             or type(p95) not in (float, int) or not math.isfinite(p95) or not 0 <= p95 <= 1.6

@@ -57,10 +57,19 @@ References are LeRobot 0.6.1, commit
 
 Native `select_action` consumes its FIFO before calling `predict_action_chunk`
 again. The independent remote executor preserves those rows and queue semantics.
-It samples measured state at the chunk boundary, not Molmo's last-command state.
+It observes measured state/cameras every tick; only the empty-FIFO observation
+reaches the model, not Molmo's last-command state.
 It does not infer the next chunk early or drop a prefix to conceal latency.
-Its interruptible per-row 30 Hz waits never catch up with command bursts after
-an overrun. Network and safety adaptations are explicit: ≤2 s RPC, bounded
+The pinned [LeRobot BaseStrategy loop](https://github.com/huggingface/lerobot/blob/7e241bd630a3719a56157a497ce5d08f244784f1/src/lerobot/rollout/strategies/base.py)
+starts each tick **before** observation, inference and sending, then sleeps only
+the remainder of 1/30 second. The adapter follows this ordering exactly. A slow
+inference tick has no added post-send wait: the next queued row follows the next
+observation and may be less than 1/30 second after the first row. There is no
+accumulated global-deadline catch-up loop. Fake-clock tests invoke the actual
+native runner and PI05 FIFO methods, comparing every observation/send timestamp
+and row for ordinary ticks, inference overruns, camera overruns and send overruns.
+This proves control-cadence parity for identical supplied operation costs, not
+equal real GPU/network latency. Network and safety adaptations are explicit: ≤2 s RPC, bounded
 session, Stop invalidation, configured bounds and release. Normal duration/Stop
 can leave an unexecuted tail; every such row is reported, not counted completed.
 
@@ -90,18 +99,27 @@ fake arms only. Each NPZ contains measured `state[14]` and original HWC uint8
 proof. It retains every direct native chunk for replay, all row counts, faults,
 modified-command/coherence counts, execution rate, RPC p50/p95/max and observation
 age. Qualification uses the actual robot host's rig and saved source hashes;
-it never captures a new camera frame. Runtime/session/task/rig/source changes
+every saved RGB payload must match the configured per-camera dimensions before
+any qualification RPC. Tiny fixtures cannot qualify full-resolution transport.
+The exact camera set/rate and reviewed YAM/LINEAR_4310 mapping are checked
+passively. Qualification never captures a new camera frame. Runtime/session/task/rig/source changes
 invalidate physical admission. The p95 RPC budget is 1.6 s (20% margin on the
 2 s request limit), explicitly separate from the one-second nominal action chunk.
 
 The independent physical adapter is implemented but only fake-tested. It checks
 current native qualification and explicit mapping/supervision flags before
-constructing a robot. It reuses the existing YAM plugin's cooperative ownership,
+constructing a robot, including a fresh remaining-lease margin for bounded
+startup/return home after any delayed terminal confirmation. Existing rig
+validation and enabled startup home must pass before qualification. It reuses the existing YAM plugin's cooperative ownership,
 two-arm bounds/measurement checks, startup home/open, direct target dispatch and
 release. Healthy completion homes preserving the final measured gripper opening;
 Stop/fault releases without home or retries. JSON trace/report saving happens
 after release. PI video capture/HF playback integration has not been qualified
 and must not be presented as ready merely because MA2 recording works.
+Reports distinguish attempted rows from complete receipts: a failed bimanual
+SDK call records an unknown partial dispatch, because one arm may have received
+its target even if the other arm failed. Zero completed rows is not proof of
+zero hardware commands.
 
 Fake/native tests do not validate real-model output, dynamics, calibration,
 camera placement or task success. GPU latency and real-model row accounting are

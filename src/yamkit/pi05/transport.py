@@ -10,6 +10,9 @@ from .contract import CONTRACT_ID, PROFILE, build_id
 
 def validate_readiness(metadata: dict) -> None:
     """Never confuse the old generic pi05 base fixture with the YAM checkpoint."""
+    if (not isinstance(metadata, dict) or not isinstance(metadata.get("execution_identity"), dict)
+            or not isinstance(metadata.get("controller_contract"), dict)):
+        raise ValueError("π0.5 readiness must contain a native execution identity and controller contract")  # noqa: TRY004 — uniform wire rejection
     identity = metadata.get("execution_identity", {})
     if (metadata.get("profile") != PROFILE.id or metadata.get("model_revision") != PROFILE.revision
             or metadata.get("model") != PROFILE.repo_id or metadata.get("execution_mode") != "eager"

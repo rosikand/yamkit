@@ -133,6 +133,8 @@ def run_rollout(transport, *, task: str, duration_s: float, rig_path: Path, qual
         watcher.start()
         if stop.is_set():
             raise RuntimeError("π0.5 startup was stopped")
+        if metadata["http_session_expires_at"] - time.time() < duration_s + 60.0:
+            raise RuntimeError("π0.5 model session lacks time for the rollout and bounded startup/home; prepare again")
         robot = (robot_factory or _make_robot)(rig_path, stop)
         robot.connect()
         if stop.is_set():
