@@ -733,6 +733,51 @@ def _run_lerobot(script: str, args: list[str]) -> int:
             console.print("[yellow]stopping — waiting for the arms to park and the dataset to be finalised[/]")
 
 
+@app.command()
+def inference(
+    policy: Annotated[str, typer.Option(help="reviewed policy, independent of the compute backend")] = "molmoact2",
+    task: Annotated[str, typer.Option(help="exact language instruction")] = "put the red cube into the black container",
+    backend: Annotated[str, typer.Option(help="configured existing-GPU backend")] = "lambda",
+    rig: RigOpt = DEFAULT_RIG,
+    duration: Annotated[float, typer.Option(help="planned rollout seconds; no motion is started here")] = 60,
+    arms: Annotated[list[str] | None, typer.Option("--arms")] = None,
+    backend_config: Annotated[Path | None, typer.Option(help="repo-local backend JSON (default data/inference/backends.json)")] = None,
+    requalify: Annotated[bool, typer.Option(help="collect fresh software qualification even if current proof is reusable")] = False,
+) -> None:
+    """Connect/reuse the model and prepare this task with fake hardware. Never starts motion."""
+    from .inference_workflow import prepare_inference
+
+    try:
+        _, result = prepare_inference(backend=backend, policy=policy, task=task, rig=rig,
+                                      duration=duration, arms=arms or (), config=backend_config,
+                                      force=requalify, progress=lambda value: console.print(value, markup=False))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    except OSError:
+        raise typer.BadParameter("Check the rig and private backend configuration files; no motion was started") from None
+    console.print("Inference ready. No hardware was opened; rollout still requires on-site confirmation.", markup=False)
+    _print_inference_result(result)
+
+
+@app.command("backend-status")
+def backend_status(backend: str = "lambda", policy: str = "molmoact2", backend_config: Path | None = None) -> None:
+    """Inspect configured backend and saved identity; does not start or contact a service."""
+    from .backend_workflow import load_target
+    from .external_ops import owned_service
+
+    try:
+        target = load_target(backend, policy, config=backend_config)
+        receipt = owned_service(target.service) or {}
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    metadata = receipt.get("metadata", {})
+    _print_inference_result({"backend": backend, "policy": target.policy, "service": target.service,
+                             "status": receipt.get("status", "not_attached"), "live_checked": False,
+                             "instance_id": metadata.get("instance_id"),
+                             "expires_at": receipt.get("http_session_expires_at"),
+                             "ssh_configured": bool(target.ssh), "startup_configured": bool(target.remote)})
+
+
 @app.command(context_settings=PASSTHROUGH)
 def rollout(
     ctx: typer.Context,
@@ -761,9 +806,66 @@ def rollout(
     prediction_queue_threshold: int | None = None,
     confirm_supervised: Annotated[bool, typer.Option("--confirm-supervised")] = False,
     accept_mapping: Annotated[bool, typer.Option("--accept-mapping")] = False,
+    backend_config: Annotated[Path | None, typer.Option(help="repo-local backend JSON for the simple Lambda workflow")] = None,
 ) -> None:
     """Run a policy/VLA on the follower arm(s) (`lerobot-rollout`)."""
     from .deployment import InferenceOptions
+
+    if backend == "lambda":
+        from .inference_workflow import prepare_inference
+
+        expected = {"controller_mode": "reference", "call_mode": "http", "execution_mode": "cuda_graph10"}
+        actual = {"controller_mode": controller_mode, "call_mode": call_mode, "execution_mode": execution_mode}
+        for name, value in expected.items():
+            if getattr(ctx.get_parameter_source(name), "name", None) == "COMMANDLINE" and actual[name] != value:
+                raise typer.BadParameter(f"The simple Lambda MolmoAct2 workflow requires --{name.replace('_', '-')} {value}")
+        if (ctx.args or rtc or center_crop or fps != 30 or image_encoding != "rgb8" or jpeg_quality != 85
+                or prediction_queue_threshold is not None or strategy != "base" or display or modal_app or external_service):
+            raise typer.BadParameter("The simple Lambda workflow preserves the reviewed reference defaults; "
+                                     "use the explicit external admin workflow for other validated settings")
+        try:
+            prepared, result = prepare_inference(
+                backend=backend, policy=policy, task=task, rig=rig, duration=duration,
+                arms=arms or (), config=backend_config, progress=lambda value: console.print(value, markup=False))
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from None
+        except OSError:
+            raise typer.BadParameter("Check the rig and private backend configuration files; no motion was started") from None
+        if dry_run:
+            _print_inference_result({**result, "dry_run": True, "duration": duration,
+                                     "motion_approval_received": False})
+            console.print("Dry run: model prepared, but no hardware was opened and no rollout was launched.")
+            return
+        if not (confirm_supervised and accept_mapping):
+            command = ["yamkit", "rollout", "--backend", "lambda", "--policy", policy,
+                       "--task", task, "--duration", str(duration), "--rig", str(rig)]
+            for arm in arms or ():
+                command += ["--arms", arm]
+            if backend_config:
+                command += ["--backend-config", str(backend_config)]
+            console.print("Pending one supervised command: " + shlex.join(command), markup=False)
+            console.print("This energizes, homes and opens both followers, executes the policy, then homes preserving "
+                          "the final gripper opening and releases. Stop/fault releases without home. "
+                          "Verify camera/arm mapping, empty grippers, secure mounts, clear workspace, "
+                          "and local Stop/power cutoff. Stay at the arms.", markup=False)
+            if not typer.confirm("I am on site, these checks are complete, and I approve this one rollout", default=False):
+                raise typer.Abort()
+            confirm_supervised = accept_mapping = True
+        from .backend_workflow import assert_ui_idle
+        from .workflow_lock import workflow_lock
+
+        # Keep qualification/configuration changes excluded for the entire physical
+        # command. The existing external runner still performs all motion checks.
+        try:
+            with workflow_lock():
+                assert_ui_idle()
+                return rollout(ctx, policy=prepared.policy, task=task, rig=rig, arms=arms,
+                               duration=duration, fps=fps, device=device, backend="external", gpu=gpu,
+                               external_service=prepared.external_service, controller_mode="reference",
+                               image_encoding="rgb8", jpeg_quality=85, call_mode="http", execution_mode="cuda_graph10",
+                               confirm_supervised=confirm_supervised, accept_mapping=accept_mapping)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from None
 
     options = InferenceOptions(policy=policy, task=task, backend=backend, device=device or "cpu", gpu=gpu,
                                modal_app=modal_app, external_service=external_service, center_crop=center_crop, rtc=rtc,

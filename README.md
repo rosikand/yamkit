@@ -281,6 +281,16 @@ For an existing Lambda GPU with a direct, private Lenovo SSH tunnel, use
 [docs/LAMBDA.md](docs/LAMBDA.md). Its separate inference setup keeps CUDA dependencies inside
 the GPU checkout and retains host qualification before any supervised robot rollout.
 
+For normal use with an already configured Lambda backend, preparation is automatic:
+
+```bash
+yamkit inference --backend lambda --policy molmoact2 --task 'put the red cube into the black container'
+yamkit rollout --backend lambda --policy molmoact2 --task 'put the red cube into the black container' --duration 60
+```
+
+`inference` is software-only; `rollout` asks for fresh on-site confirmation before opening hardware.
+Both reuse the frozen MolmoAct2 reference path. See [the simple CLI and one-time backend configuration](docs/INFERENCE_CLI.md).
+
 Remote MolmoAct2 also supports `--controller-mode reference`: complete 30-row chunks run
 sequentially using the linked YAM runner's literal 14D linear interpolation and post-send rate
 waits. Before inference, both followers move to their configured home poses with both grippers

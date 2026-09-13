@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from tests.test_inference_ui import _drain_js, attached_payload
 from tests.test_inference_ui import attached_browser as _attached_browser
@@ -189,7 +190,7 @@ def test_upload_capture_keeps_supported_duration_in_trace_command(attached_modal
     state.expected_override["task"] = TASK
     launched = []
 
-    def start(mode, argv, meta):
+    def start(mode, argv, meta, **_ownership):
         launched.append((mode, argv, meta))
         return {"active": True, "mode": mode, "meta": meta}
 
@@ -234,6 +235,44 @@ def test_restart_marks_pending_upload_interrupted_without_retry(inference_ui, mo
     status = json.loads(receipt.read_text())
     assert status["status"] == "interrupted" and "--trace-dir saved-trace" in status["retry_command"]
     assert not ui.manager.active
+
+
+@pytest.mark.parametrize("failure", ["write", "replace"])
+def test_unwritable_old_upload_receipt_does_not_prevent_ui_restart(inference_ui, monkeypatch, failure):
+    ui = inference_ui
+    run_dir = ui.root / "outputs/ui/deployments/old-finalized-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "meta.json").write_text(json.dumps({"id": run_dir.name, "status": "success"}))
+    receipt = run_dir / "hf-upload.json"
+    original = {"status": "uploading", "repo_id": "owner/private-rollouts", "updated_at": 1,
+                "retry_command": "yamkit bundle-rollout old-finalized-run"}
+    receipt.write_text(json.dumps(original))
+    original_bytes = receipt.read_bytes()
+    operation = Path.write_text if failure == "write" else Path.replace
+
+    def fail_status_write(path, *args, **kwargs):
+        if path.name == "hf-upload.json.tmp":
+            raise OSError("fixture disk or permission failure")
+        return operation(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text" if failure == "write" else "replace", fail_status_write)
+    monkeypatch.setattr(rollout_artifacts, "upload_rollout", lambda *_a, **_k: pytest.fail("No automatic upload retry"))
+    monkeypatch.setattr(ui.manager, "start", lambda *_a, **_k: pytest.fail("No child may start during restart"))
+    app = server.create_app(ui.rig.path, outputs_dir=ui.root / "outputs", session_manager=ui.manager)
+    with TestClient(app) as client:
+        assert client.get("/").status_code == 200
+        assert client.get("/api/session").json()["active"] is False
+        recovered = client.get(f"/api/deployments/{run_dir.name}").json()["upload"]
+        assert recovered["status"] == "interrupted"
+        assert "could not be saved" in recovered["error"]
+        assert recovered["retry_command"] == original["retry_command"]
+        assert receipt.read_bytes() == original_bytes
+        # A later explicit CLI upload may update its own receipt. The fallback
+        # must not mask that new evidence, including a retry's uploading phase.
+        receipt.write_text(json.dumps({**original, "updated_at": 2}))
+        assert client.get(f"/api/deployments/{run_dir.name}").json()["upload"]["status"] == "uploading"
+        receipt.write_text(json.dumps({"status": "uploaded", "revision": "fixture-immutable"}))
+        assert client.get(f"/api/deployments/{run_dir.name}").json()["upload"]["status"] == "uploaded"
 
 
 def test_saved_rollout_destination_is_returned_without_enabling_api_upload(inference_ui):

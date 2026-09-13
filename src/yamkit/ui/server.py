@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +44,20 @@ FRONTEND_DIR = ROOT / "ui"
 TRACE_FILES = frozenset({"summary.json", "trace.json", "metrics.json", "frame_timestamps.json", "video_timeline.json", "export-error.json",
                          "top.mp4", "left_wrist.mp4", "right_wrist.mp4",
                          "report.html", "joints-left.png", "joints-right.png"})
+
+
+@contextmanager
+def _inference_workflow_guard():
+    from ..backend_workflow import WorkflowError
+    from ..workflow_lock import workflow_lock
+
+    try:
+        with workflow_lock(root=ROOT) as descriptor:
+            yield descriptor
+    except WorkflowError as exc:
+        raise HTTPException(409, str(exc)) from None
+    except OSError:
+        raise HTTPException(409, "Inference operation lock is unavailable; check repository permissions and available disk space") from None
 
 
 def _capture_memory_preflight(duration: int) -> dict:
@@ -98,6 +112,19 @@ def _prompt_preparation_context(options, rig: RigConfig) -> dict:
     return {"attachment_id": receipt["attachment_id"], "instance_id": metadata["instance_id"],
             "inference_build_id": metadata["inference_build_id"], "expires_at": expires,
             "selection_key": options.operation_key}
+
+
+def _preparation_selection_context(options, rig: RigConfig) -> dict:
+    """Either an attached prompt or explicit local lifecycle config, without network work."""
+    try:
+        return _prompt_preparation_context(options, rig)
+    except (ValueError, KeyError, TypeError, OSError) as original:
+        from ..inference_workflow import recovery_context
+
+        try:
+            return recovery_context(options, rig)
+        except (ValueError, KeyError, TypeError, OSError):
+            raise original from None
 
 
 def _rollout_metadata(options, rig: RigConfig) -> dict:
@@ -384,6 +411,7 @@ def create_app(
     inference_launch_lock = threading.RLock()
     progress_lock = threading.RLock()
     progress_clocks: dict[str, tuple[float, float, dict]] = {}
+    interrupted_uploads: dict[str, tuple[dict, dict]] = {}
 
     def read_run_progress(run_dir: Path) -> dict | None:
         """Small persisted post-run receipt; does not inspect devices or credential files."""
@@ -455,6 +483,13 @@ def create_app(
         path = run_dir / "hf-upload.json"
         try:
             value = json.loads(path.read_text()) if path.is_file() and not path.is_symlink() else None
+            recovery = interrupted_uploads.get(run_dir.name)
+            if recovery:
+                if value == recovery[0]:
+                    return dict(recovery[1])
+                # A later explicit CLI upload owns its new receipt. Do not hide
+                # its current progress behind this process's restart fallback.
+                interrupted_uploads.pop(run_dir.name, None)
             return value if isinstance(value, dict) else None
         except (OSError, ValueError):
             return None
@@ -478,8 +513,16 @@ def create_app(
             continue
         previous = upload_status(old_run)
         if previous and previous.get("status") in ("queued", "packaging", "uploading"):
-            previous.update(status="interrupted", error="Dashboard restarted before upload completion; local artifacts retained")
-            write_upload_status(old_run, previous)
+            interrupted = {**previous, "status": "interrupted",
+                           "error": "Dashboard restarted before upload completion; local artifacts retained"}
+            try:
+                write_upload_status(old_run, interrupted)
+            except OSError:
+                # An unwritable historical directory must not prevent the UI
+                # from loading. Preserve the original and expose conservative
+                # interruption evidence until that exact receipt is replaced.
+                interrupted["error"] += ". Status could not be saved; check repository disk space and file permissions"
+                interrupted_uploads[old_run.name] = (previous, interrupted)
         progress = read_run_progress(old_run)
         if progress and progress.get("phase") not in ("done", "failed", "stopped"):
             write_run_progress(old_run, {**progress, "outcome": "failed", "postprocess_error": "interrupted"}, "failed")
@@ -505,8 +548,11 @@ def create_app(
                 complete_run_progress(run_dir, progress)
         except Exception as exc:  # noqa: BLE001 — post-run failures never affect hardware cleanup
             # Exceptions from HTTP clients can contain credentials and private endpoints.
-            write_upload_status(run_dir, {"status": "failed", **pending,
-                                          "error": f"{type(exc).__name__}: upload did not complete; local artifacts retained"})
+            try:
+                write_upload_status(run_dir, {"status": "failed", **pending,
+                                              "error": f"{type(exc).__name__}: upload did not complete; local artifacts retained"})
+            except OSError:
+                pass  # Live progress below still reports failure if its disk receipt cannot be saved.
             if progress:
                 write_run_progress(run_dir, {**progress, "postprocess_error": "upload_failed"}, "failed")
 
@@ -544,7 +590,11 @@ def create_app(
             # the report renderer succeeded. Keep postprocessing errors separate.
             try:
                 summary_path = run_dir / "summary.json"
-                if not summary_path.is_symlink() and summary_path.is_file() and summary_path.stat().st_size <= 65536:
+                safe_summary = (not summary_path.is_symlink() and summary_path.is_file()
+                                and summary_path.stat().st_size <= 65536)
+                if progress.get("capture_requested") and not safe_summary:
+                    raise OSError("Requested recording has no readable bounded summary")
+                if safe_summary:
                     summary = json.loads(summary_path.read_text())
                     if (summary.get("video_export_errors") or summary.get("render_error_type")
                             or summary.get("status") in ("EXPORT_FAILED", "EXPORT_SKIPPED_RESOURCES_OPEN")):
@@ -578,7 +628,16 @@ def create_app(
         with inference_launch_lock:
             run_dir = run_dirs.pop(status.get("meta", {}).get("operation_id", ""), None)
         if run_dir is not None:
-            finalize_run(run_dir, status)
+            try:
+                finalize_run(run_dir, status)
+            except OSError:
+                progress = read_run_progress(run_dir) or status.get("rollout_progress")
+                if not progress:
+                    raise
+                # Failed metadata/queued-upload persistence is post-release work.
+                # Keep its failure visible even on a full disk; never leave a
+                # completed child counting in "finalizing" or retry any upload.
+                write_run_progress(run_dir, {**progress, "postprocess_error": "recording_finalization_failed"}, "failed")
 
     sessions = session_manager or SessionManager()
     sessions.on_camera_acquire = cameras.suspend
@@ -624,8 +683,10 @@ def create_app(
             raise HTTPException(409, f"rig file not found or invalid: {rig_path}")
         return rig
 
-    def start(mode: str, argv: list[str], meta: dict[str, Any] | None = None) -> dict[str, Any]:
+    def start(mode: str, argv: list[str], meta: dict[str, Any] | None = None, *, inference_lock_fd=None) -> dict[str, Any]:
         try:
+            if inference_lock_fd is not None:
+                return sessions.start(mode, argv, meta, inference_lock_fd=inference_lock_fd)
             return sessions.start(mode, argv, meta)
         except RuntimeError as e:
             raise HTTPException(409, str(e)) from None
@@ -895,6 +956,9 @@ def create_app(
         capture_memory = None
         can_prepare = False
         try:
+            from ..workflow_lock import assert_workflow_available
+
+            assert_workflow_available(root=ROOT)
             options = inference_options(body)
             validate_trace(body)
             if sessions.active:
@@ -908,7 +972,7 @@ def create_app(
                         "can_prepare": False}
             except (ValueError, KeyError, TypeError, OSError):
                 try:
-                    _prompt_preparation_context(dataclasses.replace(options, mapping_accepted=False, supervised_confirmed=False), require_rig())
+                    _preparation_selection_context(dataclasses.replace(options, mapping_accepted=False, supervised_confirmed=False), require_rig())
                     can_prepare = True
                 except (ValueError, KeyError, TypeError, OSError):
                     pass  # Unsupported/stale infrastructure is never repaired by prompt preparation.
@@ -928,7 +992,7 @@ def create_app(
     @app.post("/api/inference/prepare")
     def inference_prepare(body: InferenceBody) -> dict:
         """Explicit software-only prompt warmup/qualification. Never chain this operation to motion."""
-        with inference_launch_lock:
+        with inference_launch_lock, _inference_workflow_guard():
             if sessions.active:
                 raise HTTPException(409, "Wait for the current UI session to finish before preparing a prompt")
             if body.mapping_accepted or body.supervised_confirmed:
@@ -944,7 +1008,7 @@ def create_app(
                     current = None
                 if current:
                     return {**current, "reused": True, "preparing": False}
-                context = _prompt_preparation_context(options, require_rig())
+                context = _preparation_selection_context(options, require_rig())
                 directory = ROOT / ".context" / "inference-preparation" / uuid.uuid4().hex
                 from ..rollout_artifacts import _safe_path
 
@@ -965,7 +1029,7 @@ def create_app(
                 raise HTTPException(422, reason) from None
 
     def inference_start(mode: str, args: list[str], options, *, argv_override=None, extra_meta=None) -> dict:
-        with inference_launch_lock:
+        with inference_launch_lock, _inference_workflow_guard() as inference_lock_fd:
             if sessions.active:
                 raise HTTPException(409, "Wait for the current UI session to finish")
             operation_id = uuid.uuid4().hex
@@ -985,7 +1049,8 @@ def create_app(
                 (run_dir / "run_metadata.json").write_text(json.dumps(snapshot, indent=2) + "\n")
             run_dirs[operation_id] = run_dir
             try:
-                st = start(mode, argv_override if argv_override is not None else sessions.yamkit_argv(*args), meta)
+                st = start(mode, argv_override if argv_override is not None else sessions.yamkit_argv(*args), meta,
+                           inference_lock_fd=inference_lock_fd)
             except HTTPException:
                 pending = run_dirs.pop(operation_id, None)
                 if pending is not None:

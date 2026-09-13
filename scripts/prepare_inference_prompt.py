@@ -36,7 +36,7 @@ def phase(value):
     print("[yamkit-prepare] " + value, flush=True)
 
 
-def execute(request_path: Path) -> int:
+def _execute(request_path: Path) -> int:
     from yamkit.config import RigConfig
     from yamkit.deployment import InferenceOptions
     from yamkit.external_ops import _probe_ready, _validated_metadata, http_credentials, owned_service
@@ -49,7 +49,11 @@ def execute(request_path: Path) -> int:
     from yamkit.modal_qualification import collect_qualification
     from yamkit.paths import ROOT
     from yamkit.rollout_artifacts import _read, _safe_path, sanitize, sanitize_text
-    from yamkit.ui.server import _capture_memory_preflight, _prompt_preparation_context
+    from yamkit.ui.server import (
+        _capture_memory_preflight,
+        _preparation_selection_context,
+        _prompt_preparation_context,
+    )
 
     directory = request_path.parent
     result = {"ready": False, "hardware_tested": False, "selection_key": None,
@@ -83,11 +87,18 @@ def execute(request_path: Path) -> int:
         if options.rig_path is None or not _safe_path(Path(options.rig_path)).is_relative_to(root):
             raise ValueError("Prompt preparation requires this repository's rig configuration")
         rig = RigConfig.load(options.rig_path)
-        context = _prompt_preparation_context(options, rig)
+        context = _preparation_selection_context(options, rig)
         if context != request["expected"]:
             raise ValueError("Prompt selection or attached service changed before preparation")
         if request["capture_trace"] and not _capture_memory_preflight(int(options.duration))["admission_passes"]:
             raise ValueError("Insufficient available memory to save this recording")
+        if context.get("recovery"):
+            from yamkit.inference_workflow import recover_reference_backend
+
+            save("previous-attachment.json", owned_service(options.external_service) or {"present": False})
+            phase("connecting")
+            recover_reference_backend(options, rig, context, directory=directory, progress=phase)
+            context = _prompt_preparation_context(options, rig)
         credentials = http_credentials(options.external_service)
         private_values = (credentials["token"],)
         # The helper cannot become a camera-owning child. Qualification also replaces
@@ -102,7 +113,8 @@ def execute(request_path: Path) -> int:
                 "instance_id", "inference_build_id", "external_service", "runtime_provenance",
                 "execution_identity", "http_session_expires_at")):
             raise ValueError("The live model service changed; refresh its attachment before preparing a prompt")
-        save("previous-attachment.json", receipt)
+        if not (directory / "previous-attachment.json").exists():
+            save("previous-attachment.json", receipt)
         previous_path = _settings_path({"profile": "molmoact2", "backend": "external",
                                        "external_service_name": options.external_service, "controller_mode": "reference"})
         previous = json.loads(_read(previous_path)) if previous_path.exists() else {"present": False}
@@ -146,6 +158,23 @@ def execute(request_path: Path) -> int:
         code = 1
     print("[yamkit-result] " + json.dumps(sanitize(result, secrets=private_values)), flush=True)
     return code
+
+
+def execute(request_path: Path) -> int:
+    from yamkit.backend_workflow import WorkflowError
+    from yamkit.paths import ROOT
+    from yamkit.workflow_lock import workflow_lock
+
+    try:
+        # UI launch holds the same lock until SessionManager marks its child active.
+        # A short bounded wait transfers ownership to this child without a race.
+        with workflow_lock(root=ROOT, wait_s=10):
+            return _execute(request_path)
+    except (WorkflowError, OSError):
+        phase("failed")
+        print('[yamkit-result] ' + json.dumps({"ready": False, "hardware_tested": False,
+              "reason": "Another inference operation is active or the preparation lock is unavailable; no motion was started"}), flush=True)
+        return 1
 
 
 if __name__ == "__main__":

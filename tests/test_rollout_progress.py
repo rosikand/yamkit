@@ -243,3 +243,77 @@ def test_stopped_and_export_error_are_not_promoted_to_done(upload_trial, monkeyp
     progress = await_progress(ui, run_id, "failed")
     assert progress["postprocess_error"] == "recording_export_incomplete"
     assert progress["outcome"] == "completed"
+
+
+def test_requested_capture_without_summary_is_not_reported_saved(upload_trial, monkeypatch):
+    ui = upload_trial.ui
+    original_finalize = server.DeploymentLog.finalize
+
+    def finalize(self, run_dir, status):
+        (run_dir / "summary.json").unlink(missing_ok=True)
+        original_finalize(self, run_dir, status)
+
+    monkeypatch.setattr(server.DeploymentLog, "finalize", finalize)
+    response = launch(ui, capture_trace=True)
+    assert response.status_code == 200, response.text
+    assert ui.manager.wait(timeout=8) == 0
+    run_id = response.json()["meta"]["run_id"]
+    progress = ui.client.get(f"/api/deployments/{run_id}").json()["rollout_progress"]
+    assert progress["phase"] == "failed"
+    assert progress["postprocess_error"] == "recording_summary_unavailable"
+    assert progress["outcome"] == "completed"  # Do not rewrite the physical subprocess result.
+    assert not ui.manager.active and not ui.manager.cameras_owned
+
+
+def test_post_release_metadata_write_failure_does_not_leave_progress_finalizing(upload_trial, monkeypatch):
+    ui = upload_trial.ui
+
+    def fail_finalize(*_args, **_kwargs):
+        raise OSError("fixture metadata write failed")
+
+    monkeypatch.setattr(server.DeploymentLog, "finalize", fail_finalize)
+    monkeypatch.setattr(rollout_artifacts, "upload_rollout", lambda *_a, **_k: pytest.fail("No automatic upload after finalization failure"))
+    response = launch(ui, capture_trace=True, upload_repo_id="owner/rollouts")
+    assert response.status_code == 200, response.text
+    assert ui.manager.wait(timeout=8) == 0
+    session = ui.client.get("/api/session").json()
+    assert not session["active"] and not session["cameras_owned"]
+    assert session["returncode"] == 0
+    assert session["rollout_progress"]["phase"] == "failed"
+    assert session["rollout_progress"]["postprocess_error"] == "recording_finalization_failed"
+    assert session["rollout_progress"]["outcome"] == "completed"
+    run_id = response.json()["meta"]["run_id"]
+    assert (ui.root / "outputs/ui/deployments" / run_id / "summary.json").is_file()
+
+
+@pytest.mark.parametrize("failed_stage", ["queued", "packaging", "uploading", "failed"])
+def test_hf_receipt_disk_failure_is_visible_and_never_retries_upload(upload_trial, monkeypatch, failed_stage):
+    ui = upload_trial.ui
+    original_write = Path.write_text
+    failed = False
+    uploads = []
+
+    def write(path, content, *args, **kwargs):
+        nonlocal failed
+        if path.name == "hf-upload.json.tmp":
+            failed |= json.loads(content).get("status") == failed_stage
+            if failed:
+                raise OSError("fixture HF receipt persistence failed")
+        return original_write(path, content, *args, **kwargs)
+
+    def upload(*_args, **_kwargs):
+        uploads.append(True)
+        raise RuntimeError("fixture HF request failure")
+
+    monkeypatch.setattr(Path, "write_text", write)
+    monkeypatch.setattr(rollout_artifacts, "package_rollout", lambda run_dir, **_: run_dir)
+    monkeypatch.setattr(rollout_artifacts, "upload_rollout", upload)
+    response = launch(ui, upload_repo_id="owner/rollouts")
+    assert response.status_code == 200, response.text
+    run_id = response.json()["meta"]["run_id"]
+    progress = await_progress(ui, run_id, "failed")
+    assert failed
+    assert progress["postprocess_error"] == ("recording_finalization_failed" if failed_stage == "queued" else "upload_failed")
+    assert progress["outcome"] == "completed"
+    assert len(uploads) == (1 if failed_stage == "failed" else 0)
+    assert not ui.manager.active and not ui.manager.cameras_owned

@@ -365,7 +365,7 @@ def test_capture_preserves_any_exact_qualified_task_in_managed_child(attached_mo
     assert preflight.json()["ready"] is True, preflight.text
     assert preflight.json()["capture_memory"]["admission_passes"] is True
     launched = []
-    monkeypatch.setattr(state.ui.manager, "start", lambda mode, argv, meta: launched.append((argv, meta)) or {
+    monkeypatch.setattr(state.ui.manager, "start", lambda mode, argv, meta, **_ownership: launched.append((argv, meta)) or {
         "active": True, "mode": mode, "meta": meta,
     })
     response = state.ui.client.post("/api/session/rollout", json={

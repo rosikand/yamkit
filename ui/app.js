@@ -1403,6 +1403,7 @@ pages.inference = {
     if (session.mode === "inference-prepare") {
       const phase = session.parsed?.preparation_phase;
       const labels = {validating: "Preparing task — validating the attached model",
+        connecting: "Preparing task — connecting or reusing the configured GPU service",
         warming_and_qualifying: "Preparing task — warming the model and checking simulated execution",
         checking: "Preparing task — saving the result", ready: "Task prepared. Click Start when you are ready.",
         cancelled: "Preparation cancelled. No rollout was launched.", failed: "Task preparation failed. See the operation log."};

@@ -41,7 +41,7 @@ _OPERATOR_PHASE_RE = re.compile(r"\[yamkit-operator\] (starting|homing|synchroni
 _ROLLOUT_PHASE_RE = re.compile(r"\[yamkit-rollout\] (running|returning_home|releasing|released)\s*$")
 _EXPORT_PROGRESS_PREFIX = "[yamkit-export] "
 _EXPORT_PHASES = frozenset({"saving_frames", "encoding_videos", "rendering", "finalizing"})
-_PREPARATION_PHASE_RE = re.compile(r"^\[yamkit-prepare\] (validating|warming_and_qualifying|checking|ready|failed|cancelled)$")
+_PREPARATION_PHASE_RE = re.compile(r"^\[yamkit-prepare\] (validating|connecting|warming_and_qualifying|checking|ready|failed|cancelled)$")
 # lerobot-record progress (message wording varies between versions; match loosely)
 _EPISODE_RE = re.compile(r"[Rr]ecord(?:ing)?\s+episode\s+(\d+)")
 _PREPARING_RE = re.compile(r"Preparing episode\s+(\d+): waiting for operator readiness\.")
@@ -401,7 +401,7 @@ class SessionManager:
         with self._lock:
             return self.active and self._preview is reg and self._camera_owner == reg.owner
 
-    def start(self, mode: str, argv: list[str], meta: dict[str, Any] | None = None) -> dict[str, Any]:
+    def start(self, mode: str, argv: list[str], meta: dict[str, Any] | None = None, *, inference_lock_fd=None) -> dict[str, Any]:
         with self._lock:
             if self.active or (self._reader is not None and self._reader.is_alive()):
                 raise RuntimeError(f"a {self.mode!r} session is already running (stop it first)")
@@ -411,6 +411,16 @@ class SessionManager:
             env.update(YAMKIT_PREVIEW_SESSION=session, YAMKIT_PREVIEW_TOKEN=token)
             env.pop("YAMKIT_OPENAI_API_KEY", None)
             env.pop("DATABASE_URL", None)
+            from ..workflow_lock import INHERITED_FD_ENV
+
+            env.pop(INHERITED_FD_ENV, None)
+            inherited = {}
+            if inference_lock_fd is not None:
+                # The server passes its already-held descriptor. Keeping the same
+                # open file description in the child retains ownership even if the
+                # UI exits or uses a nondefault port; no robot-controller changes.
+                env[INHERITED_FD_ENV] = str(inference_lock_fd)
+                inherited["pass_fds"] = (inference_lock_fd,)
             # LeRobot's recorder grabs the keyboard system-wide when it sees a display (Esc / arrows /
             # n / r / q in *any* window would end or skip an episode). Sessions started from the UI
             # are controlled by the UI's buttons only.
@@ -447,6 +457,7 @@ class SessionManager:
             try:
                 self._proc = subprocess.Popen(
                     argv,
+                    **inherited,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
