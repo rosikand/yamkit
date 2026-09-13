@@ -1,11 +1,14 @@
 # YAM π0.5: independent native reference execution
 
 Status on 2026-09-13: the pinned tokenizer and 9.35 GB YAM weights load on the
-existing GPU, and fresh contract-version-2 qualification now passes on Lenovo
+existing GPU, and contract-version-2 qualification passed on Lenovo
 using saved observations and fake arms. The 50 direct calls and 50 complete
 integrated FIFO chunks include 1,500 executed rows, with zero unexpected drops,
 SDK modifications, coherence violations or faults. This is software evidence,
 not a physical trial, manipulation success or authorization to move the arms.
+Contract version 3 adds the bounded-phase tail admission rule below; the version-2
+record is historical and cannot qualify the changed build. Fresh service identity
+and qualification are required before version-3 physical admission.
 
 The earlier two attempts stopped during direct warm sampling on a native gripper
 prediction outside [0,1] (`left_gripper.pos=1.000895619392395`) and never reached
@@ -23,8 +26,8 @@ anomaly guard, exact raw/executed accounting and force-limiter caveat.
 Checkpoint: [Jiafei1224/molmoact2-yam-pi05](https://huggingface.co/Jiafei1224/molmoact2-yam-pi05/tree/51ab2720d7e56d51410407f98ea64bbea97feb2e),
 revision `51ab2720d7e56d51410407f98ea64bbea97feb2e`.
 Weights SHA-256: `a777861c627234f9aa54a1bb7bdee29101ee6513f4773ef0a581d9c5527981e4`.
-Profile ID `pi05-yam`; execution contract `pi05_reference` version 2, with
-`i2rt_gripper_endpoint_projection_v1`. The old low-level
+Profile ID `pi05-yam`; execution contract `pi05_reference` version 3, with
+`i2rt_gripper_endpoint_projection_v1` and `completed_fifo_phase_tail_v1`. The old low-level
 `pi05` profile remains the unrelated, unmapped `lerobot/pi05_base` fixture.
 
 | Boundary | Pinned native convention |
@@ -89,6 +92,45 @@ equal real GPU/network latency. Network and safety adaptations are explicit: ≤
 session, Stop invalidation, configured bounds and release. Normal duration/Stop
 can leave an unexecuted tail; every such row is reported, not counted completed.
 
+### Bounded-phase tail admission, version 1
+
+A concrete version-2 software-only 5-second run completed three full chunks
+(90 rows), then started another RPC with less than its fixed 2-second request
+budget remaining. That request reached the shortened phase deadline and failed;
+release, recording and private upload succeeded, but the nonzero rollout result
+was correct. It is not reclassified as success. Preserved run:
+`outputs/ui/deployments/software-fake-f73fc0645ff0463eb7393eb7006dce43`, private-HF
+revision `8d5292f1e01d17fe298519821488caa82b6973a5`.
+
+Contract version 3 explicitly admits a new RPC only when its existing fixed
+`rpc_timeout_s` budget still fits, **after at least one complete FIFO chunk**.
+At a completed chunk with less time remaining, the existing 30 Hz loop continues
+observing and checking Stop/session state until normal phase completion, but
+does not request a new chunk or send another policy target. Equality still admits
+the RPC. The previous validated target is untouched; no new state/target checks,
+extra observations, repeated sends, joint shaping or reduced RPC budgets are
+introduced. Each observation consumes the existing tick budget, so a slow read
+has no added sleep or catch-up burst. Existing observation exceptions and Stop
+or session failures retain their existing semantics; healthy completion follows
+the normal home/release path, while Stop/fault releases without home.
+
+This is an intentional yamkit bounded-RPC admission difference from the unbounded
+native BaseStrategy near the end of a phase, not a native model or FIFO optimization.
+No existing queued row is dropped or reordered by this rule. Initial short runs
+retain their original first-RPC behavior, and **every actual RPC timeout remains
+a fault**, including one after previously completed chunks. A partial first FIFO
+at duration/Stop is still explicitly accounted rather than called a full chunk.
+
+Metrics and traces identify `bounded_phase_tail=completed_fifo_phase_tail_v1`:
+`phase_tail_wait_ticks` counts existing observation ticks admitted to the tail,
+`phase_tail_wait_s` measures actual time in the existing tick wait (including its
+checks, excluding observation time), and `phase_tail_requests_avoided` records
+the single terminal admission transition, not one invented RPC per waiting tick.
+`phase_tail_wait_started` includes the decision time and original tick-start time.
+Unchanged full-chunk cases retain exact native row/observation/send timing parity
+and zero tail counters. Fake boundary/overrun/Stop/expiry tests are software
+evidence only; a new build-bound qualification is still mandatory.
+
 ## Concrete native-loader hardening
 
 The upstream PI05 `from_pretrained(strict=True)` catches weight-loading exceptions
@@ -127,7 +169,7 @@ passively. Qualification never captures a new camera frame. Runtime/session/task
 invalidate physical admission. The p95 RPC budget is 1.6 s (20% margin on the
 2 s request limit), explicitly separate from the one-second nominal action chunk.
 
-The current passing Lenovo record is
+The historical pre-tail-guard version-2 Lenovo record is
 `.context/pi05-qualification/17c40a159fe64227aba5942c3272ae68/qualification.json`
 under `/home/andre/rohan-new`, with `qualified=true` and `reasons=[]`. It binds
 runtime build
@@ -168,8 +210,9 @@ markers rather than fabricated finite actions. The CLI identifies the offending
 gripper and saved report path. Diagnostics do not change acceptance, rows or timing.
 
 Fake/native tests do not validate dynamics, calibration, camera placement or task
-success. The current real-GPU qualification passes with complete integrated
-real-model row accounting and explicit raw-versus-projected action evidence;
+success. The historical version-2 real-GPU qualification passed with complete
+integrated real-model row accounting and explicit raw-versus-projected action
+evidence; version 3 requires fresh service identity and qualification evidence.
 `hardware_tested=false` and physical task success remains unproven. Final recorded
 fake-run artifact verification is still pending. Failed or stale qualification
 must remain visible, and no software result replaces fresh on-site supervision,

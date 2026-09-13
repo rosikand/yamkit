@@ -264,5 +264,7 @@ def test_exact_native_base_strategy_cadence_and_observations(
     np.testing.assert_allclose([at for at, _ in actual.sent], [at for at, _ in native.sent], rtol=0, atol=1e-10)
     np.testing.assert_array_equal([row for _, row in actual.sent], [row for _, row in native.sent])
     assert actual.now == pytest.approx(native.now, abs=1e-10)
+    assert result["phase_tail_wait_ticks"] == result["phase_tail_requests_avoided"] == 0
+    assert result["phase_tail_wait_s"] == 0
     if inference_s[0] > 1 / 30 and observation_s[0] < 1 / 30 and send_s[0] < 1 / 30:
         assert actual.sent[1][0] - actual.sent[0][0] < 1 / 30

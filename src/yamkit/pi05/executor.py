@@ -18,7 +18,7 @@ import numpy as np
 
 from yamkit.inference.mapping import YAM_NAMES
 
-from .contract import ACTION_TRANSFORM, CONTRACT_ID, PROFILE
+from .contract import ACTION_TRANSFORM, CONTRACT_ID, PHASE_TAIL_RULE, PROFILE
 
 
 class Pi05ExecutionFault(ValueError):
@@ -95,6 +95,8 @@ class Pi05ReferenceExecutor:
         self.predicted_rows = self.completed_rows = self.completed_chunks = self.modified_commands = 0
         self.attempted_rows = self.unknown_partial_dispatches = 0
         self.observations = 0
+        self.phase_tail_wait_ticks = self.phase_tail_requests_avoided = 0
+        self.phase_tail_wait_s = 0.0
         self.projected_rows = self.projected_gripper_values = 0
         self.executed_projected_rows = self.executed_projected_gripper_values = 0
         self.maximum_gripper_projection = 0.0
@@ -141,6 +143,27 @@ class Pi05ReferenceExecutor:
                 if not self.check():
                     break
                 remaining = self.deadline - self.clock()
+                if self.completed_chunks and remaining < self.rpc_timeout_s:
+                    # At a completed FIFO only, preserve the normal observation
+                    # tick without requesting a response whose full existing RPC
+                    # budget no longer fits. There is no new target/measurement
+                    # check, hardware read or send beyond the existing observe().
+                    # Initial short RPCs and actual timeouts remain faults below.
+                    if not self.phase_tail_requests_avoided:
+                        self.phase_tail_requests_avoided = 1
+                        self.event("phase_tail_wait_started", monotonic_s=self.clock(),
+                                   tick_started_monotonic_s=chunk_tick_started,
+                                   completed_chunks=self.completed_chunks, remaining_phase_s=remaining,
+                                   rpc_timeout_s=self.rpc_timeout_s, rule=dict(PHASE_TAIL_RULE))
+                    self.phase_tail_wait_ticks += 1
+                    waiting_at = self.clock()
+                    try:
+                        keep_running = self._wait_until(chunk_tick_started + 1 / PROFILE.fps)
+                    finally:
+                        self.phase_tail_wait_s += max(0.0, self.clock() - waiting_at)
+                    if not keep_running:
+                        break
+                    continue
                 if remaining < 0.01:
                     break
                 requested_at = self.clock()
@@ -252,6 +275,10 @@ class Pi05ReferenceExecutor:
                 "completed_chunks": self.completed_chunks, "admitted_chunks": len(self.chunks),
                 "inference_calls": self.inference_calls, "faults": self.faults,
                 "observations": self.observations,
+                "bounded_phase_tail": dict(PHASE_TAIL_RULE),
+                "phase_tail_wait_ticks": self.phase_tail_wait_ticks,
+                "phase_tail_wait_s": self.phase_tail_wait_s,
+                "phase_tail_requests_avoided": self.phase_tail_requests_avoided,
                 "stop_requested": self.stop_requested, "interpolation_points": 0,
                 "execution_rate_hz": (float(1 / np.median(intervals)) if len(intervals) and np.median(intervals) > 0
                                       else None),

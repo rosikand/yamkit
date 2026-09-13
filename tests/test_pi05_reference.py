@@ -8,7 +8,13 @@ import pytest
 
 from yamkit.inference.mapping import MOLMO_NAMES, YAM_NAMES
 from yamkit.inference.profiles import get_profile
-from yamkit.pi05.contract import ACTION_TRANSFORM, PROFILE, validate_checkpoint_config
+from yamkit.pi05.contract import (
+    ACTION_TRANSFORM,
+    CONTRACT,
+    PHASE_TAIL_RULE,
+    PROFILE,
+    validate_checkpoint_config,
+)
 from yamkit.pi05.executor import Pi05ExecutionFault, Pi05ReferenceExecutor, finite_rows, prepare_native_rows
 from yamkit.pi05.runtime import pinned_tokenizer_snapshot, restore_native_weights
 
@@ -315,3 +321,120 @@ def test_shortened_rpc_deadline_is_still_a_fault_not_healthy_duration_completion
     assert sent == []
     assert engine.metrics()["faults"] == 1
     assert engine.metrics()["completed_rows"] == 0
+
+
+def test_completed_fifo_phase_tail_waits_to_duration_without_new_rpc_or_dropped_rows():
+    engine, clock, events, sent, observed = make_executor()
+    observed_at, original_observe = [], engine.observe
+    def observe():
+        observed_at.append(clock())
+        return original_observe()
+    engine.observe = observe
+    result = engine.run(duration_s=3)
+    assert CONTRACT["version"] == 3 and result["bounded_phase_tail"] == PHASE_TAIL_RULE
+    assert result["inference_calls"] == result["completed_chunks"] == 1
+    assert result["predicted_rows"] == result["completed_rows"] == len(sent) == 30
+    assert result["dropped_rows"] == result["faults"] == result["reordered_rows"] == 0
+    assert result["phase_tail_requests_avoided"] == 1 and result["phase_tail_wait_ticks"] > 0
+    assert len(observed) == 30 + result["phase_tail_wait_ticks"]
+    assert observed[:30] == list(range(30)) and set(observed[30:]) == {30}
+    np.testing.assert_allclose(np.diff(observed_at[30:]), 1 / 30, atol=1e-10)
+    assert clock() == pytest.approx(engine.deadline, abs=1e-10)
+    assert result["phase_tail_wait_s"] == pytest.approx(engine.deadline - observed_at[30], abs=1e-10)
+    tail_events = [record for kind, record in events if kind == "phase_tail_wait_started"]
+    assert len(tail_events) == 1 and tail_events[0]["rpc_timeout_s"] == 2
+
+
+@pytest.mark.parametrize("remaining,chunks", [(1.999999, 1), (2.0, 2), (2.000001, 2)])
+def test_tail_admission_is_strictly_less_than_fixed_rpc_budget(remaining, chunks):
+    engine, clock, _, sent, _ = make_executor()
+    original_observe, boundary = engine.observe, []
+    def observe():
+        result = original_observe()
+        if engine.completed_chunks == 1 and not boundary:
+            clock.now = engine.deadline - remaining
+            boundary.append(clock())
+        return result
+    engine.observe = observe
+    result = engine.run(duration_s=5)
+    assert result["completed_chunks"] == result["inference_calls"] == chunks
+    assert len(sent) == 30 * chunks and result["dropped_rows"] == result["faults"] == 0
+    assert result["phase_tail_requests_avoided"] == 1
+
+
+@pytest.mark.parametrize("returned", [True, False])
+def test_full_budget_rpc_timeout_after_completed_chunk_is_still_a_fault(returned):
+    engine, clock, _, sent, _ = make_executor()
+    original_predict = engine.predict
+    def predict(observation, timeout):
+        if not engine.completed_chunks:
+            return original_predict(observation, timeout)
+        assert timeout == 2.0
+        clock.wait(timeout + .00058)
+        if not returned:
+            raise RuntimeError("transport request timed out")
+        return rows()
+    engine.predict = predict
+    expected = Pi05ExecutionFault if returned else RuntimeError
+    with pytest.raises(expected, match="deadline|timed out"):
+        engine.run(duration_s=6)
+    result = engine.metrics()
+    assert result["completed_chunks"] == 1 and len(sent) == 30 and result["inference_calls"] == 2
+    assert result["faults"] == 1 and not engine.finished
+    assert result["phase_tail_wait_ticks"] == result["phase_tail_requests_avoided"] == 0
+
+
+def test_stop_during_tail_is_not_delayed_and_cannot_dispatch_or_replan():
+    engine, clock, _, sent, _ = make_executor()
+    def wait(delay):
+        clock.wait(delay)
+        if engine.phase_tail_wait_ticks >= 3:
+            engine.stop.set()
+    engine.wait = wait
+    result = engine.run(duration_s=3)
+    assert result["stop_requested"] and result["faults"] == 0
+    assert clock() < engine.deadline and result["phase_tail_wait_ticks"] == 3
+    assert result["inference_calls"] == 1 and len(sent) == 30 and result["dropped_rows"] == 0
+
+
+@pytest.mark.parametrize("failure", ["session", "observation"])
+def test_tail_session_or_observation_error_remains_a_fault(failure):
+    engine, clock, _, sent, _ = make_executor()
+    original_observe = engine.observe
+    def fail():
+        raise RuntimeError("tail monitor failed")
+    if failure == "session":
+        engine.session_check = lambda: fail() if engine.phase_tail_wait_ticks >= 3 else None
+    else:
+        engine.observe = lambda: fail() if engine.phase_tail_wait_ticks >= 3 else original_observe()
+    with pytest.raises(RuntimeError, match="tail monitor failed"):
+        engine.run(duration_s=3)
+    result = engine.metrics()
+    assert clock() < engine.deadline and result["faults"] == 1 and not engine.finished
+    assert result["phase_tail_wait_ticks"] == 3 and result["inference_calls"] == 1 and len(sent) == 30
+
+
+def test_tail_observation_overrun_has_no_added_wait_catchup_or_extra_reads():
+    engine, clock, events, sent, _ = make_executor()
+    original_observe, tail_ticks = engine.observe, []
+    def observe():
+        if engine.completed_chunks:
+            tail_ticks.append(clock())
+            clock.wait(.05)  # Existing observation is slower than one native period.
+        return original_observe()
+    engine.observe = observe
+    result = engine.run(duration_s=3)
+    np.testing.assert_allclose(np.diff(tail_ticks), .05, atol=1e-10)
+    assert result["phase_tail_wait_s"] == 0 and result["phase_tail_wait_ticks"] > 0
+    assert engine.deadline <= clock() < engine.deadline + .05
+    assert result["inference_calls"] == 1 and len(sent) == 30 and result["faults"] == 0
+    started = next(record for kind, record in events if kind == "phase_tail_wait_started")
+    assert started["monotonic_s"] == pytest.approx(started["tick_started_monotonic_s"] + .05)
+
+
+def test_initial_partial_fifo_is_not_reclassified_as_phase_tail_wait():
+    engine, _, _, sent, _ = make_executor()
+    result = engine.run(duration_s=.5)
+    assert 0 < len(sent) < 30 and result["completed_chunks"] == 0
+    assert result["predicted_rows"] == 30 and result["dropped_rows"] == 30 - len(sent)
+    assert result["phase_tail_wait_ticks"] == result["phase_tail_requests_avoided"] == 0

@@ -23,6 +23,15 @@ ACTION_TRANSFORM = {
     "yam_reference_revision": "9f06bba2a36dd84fb36d0c31337c85d4bf1cea22",
     "force_limiter_caveat": "endpoint target-range equivalence only; not proof of identical contact-force dynamics",
 }
+PHASE_TAIL_RULE = {
+    "id": "completed_fifo_phase_tail_v1", "version": 1,
+    "eligibility": "at least one complete 30-row FIFO chunk; no queued rows",
+    "admission": "do not start a new RPC when remaining phase time is less than the existing fixed rpc_timeout_s",
+    "cadence": "observe once per existing 30 Hz tick; Stop/session checks and sleep max(1/30 - elapsed, 0)",
+    "dispatch": "no new RPC or command; previous validated target is unchanged",
+    "timeouts": "first shortened RPC and every genuine RPC timeout remain faults; no timeout is relabeled success",
+    "scope": "explicit yamkit bounded-phase admission, not an optimization of native model/FIFO/tick semantics",
+}
 CAMERA_MAP = {"observation.images.top": "observation.images.top",
               "observation.images.left_wrist": "observation.images.left",
               "observation.images.right_wrist": "observation.images.right"}
@@ -43,7 +52,7 @@ PROFILE = ModelProfile(
     "google/paligemma-3b-pt-224", "35e4f46485b4d07967e7e9935bc3786aad50687c", (360, 640),
 )
 CONTRACT = {
-    "id": CONTRACT_ID, "version": 2, "checkpoint": CHECKPOINT, "revision": REVISION,
+    "id": CONTRACT_ID, "version": 3, "checkpoint": CHECKPOINT, "revision": REVISION,
     "lerobot_version": "0.6.1", "lerobot_revision": LEROBOT_REVISION,
     "camera_order": list(PROFILE.native_image_keys), "state_names": list(MOLMO_NAMES),
     "action_names": list(MOLMO_NAMES), "action_mode": "absolute",
@@ -57,6 +66,7 @@ CONTRACT = {
     "command_shaping": "explicit gripper endpoint projection only",
     "joint_command_shaping": False, "temporal_command_shaping": False,
     "action_transform": ACTION_TRANSFORM,
+    "bounded_phase_tail": PHASE_TAIL_RULE,
     "state_source": "measured observation at chunk boundary",
     "observation_cadence": "every control tick; only empty-FIFO observations reach model",
     "tick_cadence": "loop-start before observation/RPC/send; sleep max(1/30 - elapsed, 0)",
