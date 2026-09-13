@@ -23,7 +23,7 @@ from .paths import ROOT
 CONFIG_RELATIVE = "data/inference/backends.json"
 # Conservative startup admission, NOT a measured peak or an OOM guarantee. Existing
 # authenticated services are reused without a GPU check or changes to model execution.
-GPU_STARTUP_RESERVE_MIB = {"molmoact2": 24 * 1024, "pi05-yam": 24 * 1024}
+GPU_STARTUP_RESERVE_MIB = {"molmoact2": 24 * 1024, "pi05-yam": 24 * 1024, "pi05-base": 16 * 1024}
 GPU_HEADROOM_MIB = 2 * 1024
 
 
@@ -298,7 +298,7 @@ def valid_record(record):
  if not isinstance(record,dict): return False
  return (type(record.get('version')) is int and record['version']==1 and record.get('uid')==os.geteuid()
   and isinstance(record.get('service'),str) and re.fullmatch(r'[a-z0-9][a-z0-9-]{0,79}',record['service'])
-  and record.get('policy') in ('molmoact2','pi05-yam')
+  and record.get('policy') in ('molmoact2','pi05-yam','pi05-base')
   and type(record.get('gpu')) is int and 0<=record['gpu']<=15
   and type(record.get('port')) is int and 1<=record['port']<=65535
   and type(record.get('pid')) is int and record['pid']>0
@@ -400,6 +400,12 @@ command=[str(root/'.venv-inference/bin/python'),'-m',module,
  '--service-id',c['service'],'--region',c['region'],'--port',str(c['port']),
  '--token-file',c['token_file'],'--session-seconds',str(c['session_seconds']),'--task',c['task']]
 if c['policy']=='molmoact2': command+=['--provider','lambda']
+if c['policy']=='pi05-base':
+ env['PYTHONPATH']=str(root/'src')
+ command=[str(root/'data/openpi/venv/bin/python'),'-m','yamkit.openpi.service',
+  '--root',str(root),'--service',c['service'],'--port',str(c['port']),
+  '--token-file',c['token_file'],'--statistics','data/openpi/yam/normalization.json',
+  '--session-seconds',str(c['session_seconds'])]
 child=subprocess.Popen(command,cwd=root,env=env,stdin=subprocess.DEVNULL,stdout=logfd,stderr=logfd,
  start_new_session=True,pass_fds=(fd,))
 stamp=process_stamp(child.pid)
@@ -427,13 +433,15 @@ print(json.dumps({'status':record_state(record)}))
 
 
 def _start_remote(target, task):
-    if target.policy not in ("molmoact2", "pi05-yam"):
+    if target.policy not in ("molmoact2", "pi05-yam", "pi05-base"):
         raise WorkflowError("Automatic startup for this policy requires its separate native runtime; no MolmoAct2 substitution is allowed")
     values = {**target.remote, "service": target.service, "port": target.port, "task": task, "policy": target.policy}
     values["minimum_free_mib"] = GPU_STARTUP_RESERVE_MIB[target.policy] + GPU_HEADROOM_MIB
     repo = values.pop("repo")
-    command = ("cd " + shlex.quote(repo) + " && . data/inference/env.sh && "
-               + shlex.join([".venv-inference/bin/python", "-c", _REMOTE_BOOTSTRAP,
+    interpreter = "data/openpi/venv/bin/python" if target.policy == "pi05-base" else ".venv-inference/bin/python"
+    environment = "" if target.policy == "pi05-base" else ". data/inference/env.sh && "
+    command = ("cd " + shlex.quote(repo) + " && " + environment
+               + shlex.join([interpreter, "-c", _REMOTE_BOOTSTRAP,
                               json.dumps(values, allow_nan=False)]))
     raw = _ssh(target, [target.ssh["host"], command])
     try:
@@ -471,8 +479,9 @@ def _start_remote(target, task):
 def _check_remote_startup(target) -> None:
     """One bounded read of exact owned startup identity, never arbitrary remote logs."""
     values = {"service": target.service, "policy": target.policy, "port": target.port}
+    interpreter = "data/openpi/venv/bin/python" if target.policy == "pi05-base" else ".venv-inference/bin/python"
     command = ("cd " + shlex.quote(target.remote["repo"]) + " && "
-               + shlex.join([".venv-inference/bin/python", "-c", _REMOTE_STARTUP_STATUS,
+               + shlex.join([interpreter, "-c", _REMOTE_STARTUP_STATUS,
                               json.dumps(values, allow_nan=False)]))
     raw = _ssh(target, [target.ssh["host"], command], timeout=15)
     try:

@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 
 from yamkit import cli, inference_workflow
 from yamkit.backend_workflow import WorkflowError
-from yamkit.policy_selection import OPENPI_YAM_BLOCKER, canonical_policy
+from yamkit.policy_selection import canonical_policy
 
 
 @pytest.mark.parametrize("name,expected", [
@@ -20,27 +20,35 @@ def test_only_explicit_configured_aliases(name, expected):
 
 
 @pytest.mark.parametrize("name", ["pi05_base", "pi05-base"])
-def test_official_base_blocked_before_backend_contact_or_rig_read(name, monkeypatch):
-    monkeypatch.setattr(inference_workflow, "load_target", lambda *_a, **_k: pytest.fail("must not contact backend"))
-    with pytest.raises(WorkflowError, match="Official OpenPI.*normalization"):
-        inference_workflow._prepare_inference(backend="lambda", policy=name, task="cube", rig="missing.yaml",
-                                             duration=60, arms=(), config=None, progress=lambda _: None, force=False)
+def test_official_base_routes_only_to_official_workflow(name, monkeypatch):
+    from yamkit.openpi import workflow
+
+    monkeypatch.setattr(inference_workflow, "load_target", lambda *_a, **_k: pytest.fail("no MA2 backend substitution"))
+    calls = []
+    sentinel = object()
+    monkeypatch.setattr(workflow, "prepare", lambda **kwargs: calls.append(kwargs) or sentinel)
+    result = inference_workflow._prepare_inference(backend="lambda", policy=name, task="cube", rig="unopened.yaml",
+                                                 duration=60, arms=(), config=None, progress=lambda _: None, force=False)
+    assert result is sentinel and len(calls) == 1
+    assert calls[0]["task"] == "cube" and calls[0]["duration"] == 60 and calls[0]["rig"] == "unopened.yaml"
 
 
-def test_exact_requested_base_cli_explains_contract_without_confirmation(monkeypatch, tmp_path):
+def test_failed_official_preparation_still_blocks_before_confirmation(monkeypatch, tmp_path):
     from yamkit import workflow_lock
+    from yamkit.openpi import workflow
 
     monkeypatch.setattr(workflow_lock, "ROOT", tmp_path)
     monkeypatch.setattr(inference_workflow, "ROOT", tmp_path)
+
+    def failed(**_kwargs):
+        raise WorkflowError("Official OpenPI software qualification failed; no motion was started")
+
+    monkeypatch.setattr(workflow, "prepare", failed)
+    monkeypatch.setattr(workflow, "run_prepared", lambda *_a, **_kw: pytest.fail("no physical delegate after failure"))
     result = CliRunner().invoke(cli.app, ["rollout", "--backend", "lambda", "--policy", "pi05_base",
                                          "--task", "put the red cube into the black container", "--duration", "60"])
     assert result.exit_code == 2
-    assert "Official OpenPI" in result.output and "normalization" in result.output
-    # Rich wraps messages to terminal width; assert precise semantics separately.
-    assert "grippers" in result.output and "transitions" in result.output
-    assert "out-of-range grippers" in OPENPI_YAM_BLOCKER
-    assert "initial joint transitions" in OPENPI_YAM_BLOCKER
-    assert "OPENPI_YAM_EXPERIMENT_2026-09-13.md" in OPENPI_YAM_BLOCKER
+    assert "Official OpenPI" in result.output and "qualification failed" in result.output
     assert "I am on site" not in result.output
     assert not (tmp_path / "outputs").exists()
 

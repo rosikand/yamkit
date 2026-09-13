@@ -136,11 +136,14 @@ def prepare_inference(*, backend, policy, task, rig=DEFAULT_RIG, duration=60, ar
 
 
 def _prepare_inference(*, backend, policy, task, rig, duration, arms, config, progress, force):
-    from .policy_selection import OPENPI_YAM_BLOCKER, canonical_policy
+    from .policy_selection import canonical_policy
 
     policy = canonical_policy(policy)
     if policy == "pi05-base":
-        raise WorkflowError(OPENPI_YAM_BLOCKER)
+        from .openpi.workflow import prepare
+
+        return prepare(backend=backend, task=task, rig=rig, duration=duration, arms=arms,
+                       config=config, progress=progress, force=force)
     if policy == "pi05-yam":
         from .pi05_workflow import prepare_pi05
 

@@ -841,7 +841,10 @@ def rollout(
                 raise typer.BadParameter(str(exc)) from None
             capture_trace = True
         native_pi05 = policy in ("pi05-yam", "pi05-base")
-        expected = {"controller_mode": "pi05_reference" if native_pi05 else "reference", "call_mode": "http",
+        from .openpi.interface import CONTRACT_ID as openpi_controller
+
+        controller = openpi_controller if policy == "pi05-base" else "pi05_reference" if native_pi05 else "reference"
+        expected = {"controller_mode": controller, "call_mode": "http",
                     "execution_mode": "eager" if native_pi05 else "cuda_graph10"}
         actual = {"controller_mode": controller_mode, "call_mode": call_mode, "execution_mode": execution_mode}
         for name, value in expected.items():
@@ -872,7 +875,12 @@ def rollout(
             try:
                 with workflow_lock():
                     assert_ui_idle()
-                    if prepared.policy == "pi05-yam":
+                    if prepared.policy == "pi05-base":
+                        from .openpi.workflow import run_prepared
+
+                        result = run_prepared(prepared, fake_hardware=True, artifact_dir=destination,
+                                              capture_trace=capture_trace, upload_repo_id=upload_repo_id)
+                    elif prepared.policy == "pi05-yam":
                         from .fake_inference import run_fake_pi05
 
                         result = run_fake_pi05(prepared, artifact_dir=destination, capture_trace=capture_trace,
@@ -919,6 +927,16 @@ def rollout(
         try:
             with workflow_lock():
                 assert_ui_idle(require_cameras_idle=True)
+                if prepared.policy == "pi05-base":
+                    from .openpi.workflow import run_prepared
+
+                    result = run_prepared(prepared, confirm_supervised=confirm_supervised,
+                                          accept_mapping=accept_mapping, capture_trace=capture_trace,
+                                          upload_repo_id=upload_repo_id)
+                    _print_inference_result(result)
+                    if result.get("exit_status", 0):
+                        raise typer.Exit(code=1)
+                    return
                 if prepared.policy == "pi05-yam":
                     from .pi05_workflow import run_prepared_pi05
 
