@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +58,20 @@ def _inference_workflow_guard():
         raise HTTPException(409, str(exc)) from None
     except OSError:
         raise HTTPException(409, "Inference operation lock is unavailable; check repository permissions and available disk space") from None
+
+
+@contextmanager
+def _direct_preview_start_guard():
+    """Atomically fence lazy capture starts against terminal inference ownership."""
+    from ..workflow_lock import workflow_lock
+
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(workflow_lock(root=ROOT))
+        except (ValueError, OSError):
+            yield False
+        else:
+            yield True
 
 
 def _capture_memory_preflight(duration: int) -> dict:
@@ -408,7 +422,7 @@ def create_app(
             return None
 
     rig0 = load_rig()
-    cameras = CameraHub(rig0.cameras if rig0 else {})
+    cameras = CameraHub(rig0.cameras if rig0 else {}, start_guard=_direct_preview_start_guard)
     run_dirs: dict[str, Path] = {}
     inference_launch_lock = threading.RLock()
     progress_lock = threading.RLock()
@@ -467,6 +481,7 @@ def create_app(
 
     def current_session_status() -> dict[str, Any]:
         status = sessions.status()
+        status["direct_cameras_open"] = cameras.direct_cameras_open()
         if status.get("mode") == "rollout" and not status.get("active"):
             run_id = status.get("meta", {}).get("run_id")
             if isinstance(run_id, str) and Path(run_id).name == run_id:
@@ -763,6 +778,13 @@ def create_app(
             except PreviewUnavailable:
                 raise HTTPException(503, "session camera preview unavailable") from None
             return PreviewStreamingResponse(stream)
+        from ..workflow_lock import assert_workflow_available
+
+        try:
+            assert_workflow_available(root=ROOT)
+        except (ValueError, OSError):
+            raise HTTPException(409, "Another inference operation is active; use its UI preview or wait for it to finish") from None
+        # ensure_running repeats this guard at actual subscription/thread start.
         return CameraStreamingResponse(cam, media_type=MJPEG_MEDIA_TYPE)
 
     # ---------------------------------------------------------------------------- sessions --

@@ -11,6 +11,7 @@ import logging
 import threading
 import time
 from collections.abc import Iterator
+from contextlib import nullcontext
 from typing import Any
 
 import anyio
@@ -25,7 +26,7 @@ REOPEN_DELAY_S = 1.0  # after a failed open/read: the next stream client retries
 
 
 class _Camera:
-    def __init__(self, name: str, cfg: dict[str, Any]) -> None:
+    def __init__(self, name: str, cfg: dict[str, Any], *, start_guard=None) -> None:
         self.name = name
         self.cfg = cfg
         self.device = cfg.get("index_or_path")
@@ -40,6 +41,7 @@ class _Camera:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._allowed = True
+        self._start_guard = start_guard or (lambda: nullcontext(True))
 
     @property
     def running(self) -> bool:
@@ -50,10 +52,17 @@ class _Camera:
             if not self._allowed:
                 return False
             if not self.running:
-                self._stop.clear()
-                self.error = None
-                self._thread = threading.Thread(target=self._loop, daemon=True, name=f"cam-{self.name}")
-                self._thread.start()
+                # Hold the shared inference guard through the actual thread start,
+                # not HTTP response creation: a delayed browser subscription may
+                # otherwise open the device after a terminal rollout checks status.
+                with self._start_guard() as allowed:
+                    if not allowed:
+                        self.error = "Another inference operation is active; direct previews are unavailable"
+                        return False
+                    self._stop.clear()
+                    self.error = None
+                    self._thread = threading.Thread(target=self._loop, daemon=True, name=f"cam-{self.name}")
+                    self._thread.start()
             return True
 
     def stop(self, join: bool = False, *, disable: bool = False, timeout: float = STOP_JOIN_S) -> bool:
@@ -206,8 +215,9 @@ class CameraStreamingResponse(StreamingResponse):
 class CameraHub:
     """All rig cameras + a suspend switch used while a recording session owns the devices."""
 
-    def __init__(self, cameras: dict[str, dict[str, Any]]) -> None:
-        self.cams = {name: _Camera(name, dict(cfg)) for name, cfg in (cameras or {}).items()}
+    def __init__(self, cameras: dict[str, dict[str, Any]], *, start_guard=None) -> None:
+        self._start_guard = start_guard
+        self.cams = {name: _Camera(name, dict(cfg), start_guard=start_guard) for name, cfg in (cameras or {}).items()}
         self.suspended_by: str | None = None
         self._lock = threading.RLock()
         self._closing = False
@@ -229,7 +239,7 @@ class CameraHub:
                     del self.cams[name]
             for name, cfg in cameras.items():
                 if name not in self.cams:
-                    cam = _Camera(name, dict(cfg))
+                    cam = _Camera(name, dict(cfg), start_guard=self._start_guard)
                     if self.suspended_by is not None:
                         cam.stop(disable=True)
                     self.cams[name] = cam
@@ -278,3 +288,8 @@ class CameraHub:
     def statuses(self) -> list[dict[str, Any]]:
         with self._lock:
             return [{**c.status(), "suspended_by": self.suspended_by} for c in self.cams.values()]
+
+    def direct_cameras_open(self) -> list[str]:
+        """Passive thread ownership only; never fetch frames or start a capture."""
+        with self._lock:
+            return [name for name, camera in self.cams.items() if camera.running]

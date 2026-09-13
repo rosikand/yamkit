@@ -13,6 +13,17 @@ port before loading the application, so it cannot rewrite the running server's
 progress or upload records. It does not stop or replace the existing process.
 Do not work around an occupied port by starting another server for the same rig.
 
+Before starting a rollout from a separate terminal, hide camera previews in every UI tab
+(or close those tabs) and allow up to five seconds for the direct captures to release.
+The terminal checks passive camera ownership and explains if a preview still holds a device;
+it does not close your tabs or stop your UI. Alternatively use **UI Start**, which performs
+the existing camera handoff automatically. Software-only model preparation can run alongside
+already-open previews. New direct captures are fenced while an inference operation owns the
+shared workflow lock; a running UI child's camera proxy remains available.
+The terminal's passive camera check queries the standard UI at `127.0.0.1:8400`.
+If using a custom UI port, close its previews before a terminal rollout: the shared
+guard blocks new captures, but does not discover captures already open on another port.
+
 Closing a browser tab does not stop the UI server or its run. To manage the server
 from your own terminal, start it there and use Ctrl-C **only after** the session,
 recording save and any HF upload are finished. Stopping the UI during saving or
@@ -112,8 +123,10 @@ instance, controller or endpoint cannot supply the default task. The existing ex
 runtime identity, qualification, mapping, duration and service expiry. Read-only checks
 update automatically when a selection changes; no separate readiness click is needed.
 
-For the attached Lambda reference service, **Start** prepares a changed prompt through
-the existing service and tunnel when necessary. Preparation uses generated images and
+For a configured Lambda reference service, **Start** checks the live service through the
+existing tunnel even when local qualification is still current. It reuses the running
+model or starts the configured bounded software service if necessary, and prepares a
+changed prompt. Preparation uses generated images and
 fake arms, keeps the current model and controller unchanged, and never opens physical
 cameras or connects motors. It runs the existing host qualification only when the exact
 settings are not already ready; repeating a ready task does not repeat qualification.
@@ -124,8 +137,9 @@ After preparation succeeds, the foreground page asks for the normal supervised m
 confirmation before starting the requested rollout. A confirmation from before preparation
 is not reused. Cancel, failure, changed settings, navigation, refresh, or leaving the tab
 cannot silently queue a physical run; return to Inference and click Start explicitly.
-Missing/expired services, incompatible runtime settings and insufficient recording memory
-remain errors, rather than triggering provisioning, restarting a service or shortening a run.
+An unconfigured missing/expired service, incompatible runtime settings or insufficient
+recording memory remains an error. Preparation never provisions a VM, takes over or restarts
+an active service, or shortens a run.
 Preparation does not approve physical mapping or prove that the manipulation will succeed.
 
 Prompt text is used exactly as entered. Preparing another task updates the service's current
