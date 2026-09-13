@@ -73,6 +73,13 @@ def run_rollout(transport, *, task, duration_s, rig_path: Path, statistics, qual
 
     from .artifacts import OpenPiCapture, repository_path, rollout_phase
 
+    def phase(value):
+        try:
+            rollout_phase(value)
+        except BaseException as exc:  # noqa: BLE001 — display cannot bypass cleanup, including on interrupt
+            return exc
+        return None
+
     metadata = transport.ready()
     validate_qualification(qualification, metadata, task=task, rig_path=rig_path, statistics=statistics)
     binding = rig_contract(rig_path)
@@ -91,7 +98,8 @@ def run_rollout(transport, *, task, duration_s, rig_path: Path, statistics, qual
     stop = _BoundedStop(shutdown_event or threading.Event(), transport)
     report = {"controller_mode": CONTRACT_ID, "policy": "pi05-base", "adapter_build_id": adapter_build_id(),
               "instance_id": metadata["instance_id"], "task": task, "duration_s": duration_s,
-              "service_identity": qualification["service_identity"], "hardware_tested": not fake_hardware,
+              "service_identity": qualification["service_identity"], "hardware_tested": False,
+              "hardware_activation_attempted": False,
               "fake_hardware": fake_hardware, "released": False, "status": "preparing",
               "home_attempted": False, "home_completed": False, "started_at": time.time()}
     if fake_hardware:
@@ -100,6 +108,14 @@ def run_rollout(transport, *, task, duration_s, rig_path: Path, statistics, qual
     robot, engine, failure = None, None, None
     handlers, finished, devices = {}, threading.Event(), None
     stack = ExitStack()
+
+    def note_cleanup_failure(exc, field):
+        nonlocal failure
+        report[field] = type(exc).__name__
+        if failure is None:
+            failure = exc
+            report["failure_type"] = type(exc).__name__
+            report["status"] = "stopped" if stop.is_set() else "failed"
 
     def watch_stop():
         while not finished.wait(.01):
@@ -121,6 +137,7 @@ def run_rollout(transport, *, task, duration_s, rig_path: Path, statistics, qual
             from yamkit.fake_inference import molmo_fake_devices
 
             devices = stack.enter_context(molmo_fake_devices(fake_observations))
+        report["hardware_activation_attempted"] = report["hardware_tested"] = not fake_hardware
         robot = make_robot(rig_path, stop)
         robot.connect()
         if stop.is_set():
@@ -168,15 +185,27 @@ def run_rollout(transport, *, task, duration_s, rig_path: Path, statistics, qual
                                   max_joint_speed=binding["max_joint_speed"], max_gripper_speed=binding["max_gripper_speed"],
                                   event=lambda kind, **data: capture.safely(capture.event, kind, **data))
         report["status"] = "running"
-        rollout_phase("running")
+        display_error = phase("running")
+        if display_error is not None:
+            raise display_error
         capture.start()
         try:
             engine.run(duration_s=duration_s)
+        except BaseException as exc:
+            failure = exc
+            raise
         finally:
-            capture.end()
+            try:
+                capture.end()
+            except BaseException as exc:  # Preserve the primary control fault on telemetry failure.
+                if failure is None:
+                    raise
+                report["capture_cleanup_failure_type"] = type(exc).__name__
         if not stop.is_set():
             report["home_attempted"] = True
-            rollout_phase("returning_home")
+            display_error = phase("returning_home")
+            if display_error is not None:
+                raise display_error
             _home(robot, stop)
             report["home_completed"] = True
         report["status"] = "stopped" if stop.is_set() else "completed"
@@ -185,9 +214,20 @@ def run_rollout(transport, *, task, duration_s, rig_path: Path, statistics, qual
         report["status"] = "stopped" if stop.is_set() else "failed"
         report["failure_type"] = type(exc).__name__
     finally:
-        capture.end()
-        report["execution"] = engine.metrics() if engine is not None else {}
-        rollout_phase("releasing")
+        # Telemetry is not allowed to sit outside the release invariant. In
+        # particular a low-memory event/metrics allocation must still release.
+        try:
+            capture.end()
+        except BaseException as exc:  # noqa: BLE001 — best effort telemetry, unconditional release below
+            note_cleanup_failure(exc, "capture_cleanup_failure_type")
+        try:
+            report["execution"] = engine.metrics() if engine is not None else {}
+        except BaseException as exc:  # noqa: BLE001 — failed metrics cannot strand either arm
+            report["execution"] = {}
+            note_cleanup_failure(exc, "metrics_failure_type")
+        display_error = phase("releasing")
+        if display_error is not None:
+            note_cleanup_failure(display_error, "display_failure_type")
         try:
             if robot is not None:
                 robot.disconnect(home=False)
@@ -225,7 +265,9 @@ def run_rollout(transport, *, task, duration_s, rig_path: Path, statistics, qual
                     report["released"] = False
                     failure = failure or exc
         if report["released"]:
-            rollout_phase("released")
+            display_error = phase("released")
+            if display_error is not None:
+                note_cleanup_failure(display_error, "display_failure_type")
         report["completed_at"] = time.time()
     summary = capture.finalize(destination, report, upload_repo_id=upload_repo_id,
                                metadata={"qualification_path_is_host_bound": True,

@@ -329,6 +329,8 @@ class OpenPiCapture:
                    "qualification_evidence": False, "task_success": None,
                    "phase_started_monotonic_s": self.started, "phase_ended_monotonic_s": self.ended,
                    "action_names": list(YAM_NAMES), "camera_names": list(CAMERAS), "video_fps": CAPTURE_VIDEO_HZ,
+                   "video_fps_role": "nominal capture cadence, not constant encoded frame rate",
+                   "video_timing_mode": "variable frame rate preserving monotonic observation timestamps",
                    "policy_label": POLICY_LABEL, "capture_capacity_hz": CAPTURE_VIDEO_HZ + CAPTURE_REQUEST_HZ,
                    "capture_scope": "30 Hz phase-bin RGB plus every policy input; all measured-state observations retained; no extra reads",
                    "rgb_sampling": {"cadence_hz": CAPTURE_VIDEO_HZ, "mandatory_policy_inputs": True,

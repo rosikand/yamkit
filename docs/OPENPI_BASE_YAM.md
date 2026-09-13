@@ -62,8 +62,12 @@ The existing UI does not yet launch official base; use the terminal command. `pi
 | Manifest SHA-256 | `439423350a9160e2157291aec1a48e8454193c7126e24fda670df39bb7c503db` |
 
 There is no fine-tuning, learned adapter, LoRA, checkpoint conversion/substitution,
-scripted task trajectory, changed sampling algorithm, or model-output clipping. All raw
-50×32 outputs are retained, including finite values outside normalized `[-1,1]`.
+scripted task trajectory, changed sampling algorithm, or model-output clipping. Native
+finite, correctly shaped 50×32 outputs delivered by the authenticated transport are
+retained before YAM decoding/admission, including values outside normalized `[-1,1]`.
+Malformed/nonfinite native outputs are rejected at the service or transport boundary;
+their arrays are not available to client recording. Those failures retain sanitized
+failure types/status only, not a claim to preserve every server-side anomaly.
 Model weights and the native policy are unchanged. JAX bulk preallocation is disabled
 to share the existing GPU; that changes allocation, not inference mathematics.
 See [pinned model/assets and native parity](OPENPI_REFERENCE.md).
@@ -198,10 +202,14 @@ mismatch was a harness defect, but that does **not** prove the mismatch was the 
 of the model output or predict success in a real closed-loop trial. Hard bounds stay active.
 
 With capture enabled, recording reserves memory before device construction. RGB follows
-the 30 FPS camera schedule plus every actual policy-input image triplet; state observations,
-native raw chunks, decoded targets, endpoint conversions, transition points and timestamps
-are retained independently. Playback is 30 FPS with an explicit timestamp mapping; it is
-not a claim of 50 distinct camera exposures per second. Saving/rendering/private-HF upload
+a nominal 30 Hz phase-bin capture cadence plus every actual policy-input image triplet;
+state observations, native raw chunks, decoded targets, endpoint conversions, transition
+points and timestamps are retained independently. Exported videos are variable-frame-rate:
+they preserve the original monotonic receipt timestamps and hold the preceding image
+across RPC gaps, without inventing frames. The first full 60-second fake run produced
+three 60.005739-second videos with 976 original encoded frames each—not 1,800 constant-
+30-FPS frames. Neither the nominal capture cadence nor video metadata claims 50 distinct
+camera exposures per second. Saving/rendering/private-HF upload
 begin only after confirmed release. Originals remain local on export/upload failure.
 Files appear under `outputs/ui/deployments/`; fake runs are clearly labeled synthetic.
 

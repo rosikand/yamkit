@@ -139,3 +139,12 @@ def test_fake_delegate_exception_does_not_leak_private_text(official, monkeypatc
     assert result.exit_code == 2
     assert "Software-only fake execution failed" in result.output
     assert "fake-private-value" not in result.output
+def test_terminal_summary_retains_counters_not_full_row_ledger():
+    from yamkit.cli import _openpi_cli_summary
+
+    source = {"status": "completed", "artifact_directory": "retained", "execution": {
+        "completed_rows": 1250, "faults": 0, "rows": [{"complete": True}], "chunks": [{}],
+        "execution_contract": {"id": "tested"}}}
+    summary = _openpi_cli_summary(source)
+    assert summary["execution"] == {"completed_rows": 1250, "faults": 0}
+    assert summary["artifact_directory"] == "retained" and source["execution"]["rows"]

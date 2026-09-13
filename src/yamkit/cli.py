@@ -894,6 +894,8 @@ def rollout(
                 # No arbitrary transport/SDK messages or chained traceback can leak.
                 raise typer.BadParameter(f"Software-only fake execution failed ({type(exc).__name__}); "
                                          f"inspect {destination}. No hardware was opened") from None
+            if prepared.policy == "pi05-base":
+                result = _openpi_cli_summary(result)
             _print_inference_result({**result, "hardware_tested": False, "fake_hardware": True,
                                      "motion_approval_received": False, "physical_task_success": None})
             if result.get("exit_status", 0):
@@ -933,7 +935,7 @@ def rollout(
                     result = run_prepared(prepared, confirm_supervised=confirm_supervised,
                                           accept_mapping=accept_mapping, capture_trace=capture_trace,
                                           upload_repo_id=upload_repo_id)
-                    _print_inference_result(result)
+                    _print_inference_result(_openpi_cli_summary(result))
                     if result.get("exit_status", 0):
                         raise typer.Exit(code=1)
                     return
@@ -1388,6 +1390,13 @@ def policy_probe(
         raise typer.BadParameter(str(exc)) from None
     console.print(format_probe_report(result), markup=False)
     _print_inference_result(result)
+
+
+def _openpi_cli_summary(result: dict) -> dict:
+    """Keep terminal output readable; complete row/point evidence stays on disk."""
+    execution = result.get("execution", {})
+    return {**result, "execution": {key: value for key, value in execution.items()
+                                    if key not in ("rows", "chunks", "execution_contract")}}
 
 
 def _print_inference_result(result: dict) -> None:

@@ -172,14 +172,18 @@ def test_configure_environment_refuses_escaping_cache_symlink(tmp_path, monkeypa
         runtime.configure_environment(repo)
 
 
-def test_diagnostic_package_has_no_robot_imports():
+def test_diagnostic_and_pure_interface_modules_have_no_robot_imports():
     package = Path(runtime.__file__).parent
     forbidden = ("yamkit.arm", "yamkit.teleop", "yamkit.camera", "yamkit.pi05.rollout",
-                 "lerobot.robots", "lerobot.cameras", "i2rt", "can", "cv2")
+                 "lerobot.robots", "lerobot.cameras", "lerobot_robot_yamkit", "i2rt", "can", "cv2")
     for file in package.glob("*.py"):
         tree = ast.parse(file.read_text())
+        # The new explicit physical lifecycle is tested separately for exact
+        # approval and fake-device guards. Even it cannot import device factories
+        # eagerly at module load; diagnostics and pure modules remain device-free.
+        nodes = tree.body if file.name == "rollout.py" else ast.walk(tree)
         imports = []
-        for node in ast.walk(tree):
+        for node in nodes:
             if isinstance(node, ast.Import):
                 imports.extend(item.name for item in node.names)
             elif isinstance(node, ast.ImportFrom):
