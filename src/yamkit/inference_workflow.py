@@ -136,13 +136,16 @@ def prepare_inference(*, backend, policy, task, rig=DEFAULT_RIG, duration=60, ar
 
 
 def _prepare_inference(*, backend, policy, task, rig, duration, arms, config, progress, force):
-    if policy in ("pi05", "pi05-yam"):
+    from .policy_selection import OPENPI_YAM_BLOCKER, canonical_policy
+
+    policy = canonical_policy(policy)
+    if policy == "pi05-base":
+        raise WorkflowError(OPENPI_YAM_BLOCKER)
+    if policy == "pi05-yam":
         from .pi05_workflow import prepare_pi05
 
         return prepare_pi05(backend=backend, task=task, rig=rig, duration=duration, arms=arms,
                             config=config, progress=progress, force=force)
-    if policy == "lerobot/MolmoAct2-BimanualYAM-LeRobot":
-        policy = "molmoact2"
     # Validate form errors before connecting or starting any software service.
     reference_options(policy=policy, task=task, service="validation", rig=rig, duration=duration, arms=arms)
     target = load_target(backend, policy, config=config)

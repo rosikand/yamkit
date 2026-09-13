@@ -819,8 +819,10 @@ def rollout(
 
     if backend == "lambda":
         from .inference_workflow import prepare_inference
+        from .policy_selection import canonical_policy
 
-        native_pi05 = policy in ("pi05", "pi05-yam")
+        policy = canonical_policy(policy)
+        native_pi05 = policy in ("pi05-yam", "pi05-base")
         expected = {"controller_mode": "pi05_reference" if native_pi05 else "reference", "call_mode": "http",
                     "execution_mode": "eager" if native_pi05 else "cuda_graph10"}
         actual = {"controller_mode": controller_mode, "call_mode": call_mode, "execution_mode": execution_mode}

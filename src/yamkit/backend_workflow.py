@@ -64,9 +64,10 @@ def load_target(backend: str, policy: str, *, config: Path | None = None) -> Bac
     """Resolve only local metadata; never reads token or private-key contents."""
     from .external_ops import _read_json, owned_service
     from .inference.http_transport import validate_endpoint_url
+    from .policy_selection import canonical_policy
 
     _name(backend, "Backend")
-    policy = "pi05-yam" if policy == "pi05" else _name(policy, "Policy")
+    policy = _name(canonical_policy(policy), "Policy")
     path = _local_path(str(config or (ROOT / CONFIG_RELATIVE)))
     if not path.exists():
         # Existing installations need no new configuration to reuse a single attachment.
@@ -103,6 +104,11 @@ def load_target(backend: str, policy: str, *, config: Path | None = None) -> Bac
         endpoint = validate_endpoint_url(entry.get("endpoint"), http_ingress="ssh")
     except (ValueError, TypeError):
         raise WorkflowError("Backend endpoint must be http://127.0.0.1:PORT") from None
+    for other_name, other in policies.items():
+        if other_name != policy and isinstance(other, dict) and (
+                other.get("service") == service or other.get("endpoint") == endpoint):
+            raise WorkflowError("Each configured policy needs its own service name and loopback port; "
+                                "different models cannot share a service identity or listener")
     token_file = _local_path(entry["token_file"]) if entry.get("token_file") else None
     ssh = selected.get("ssh")
     if ssh is not None:
