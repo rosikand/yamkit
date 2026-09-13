@@ -163,7 +163,7 @@ def test_native_fault_error_is_actionable_without_private_chain_or_release_claim
         workflow.run_prepared_pi05(selection, confirm_supervised=True, accept_mapping=True)
     assert "private endpoint" not in str(caught.value)
     assert "released" not in str(caught.value)
-    assert "outputs/inference/pi05-" in str(caught.value)
+    assert "outputs/ui/deployments/pi05-" in str(caught.value)
     assert native.transports[-1].closed
 
 

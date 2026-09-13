@@ -1,8 +1,9 @@
 """Synchronous native PI05 FIFO execution with explicit I/O seams.
 
 This module imports no hardware. Callers own resource acquisition and release.
-No interpolation, global rate catch-up, prefix drops, overlap merges or target
-shaping are performed. A tick starts before observation/inference, as in the
+No interpolation, global rate catch-up, prefix drops, overlap merges or joint
+shaping are performed. The explicit, logged SDK endpoint adapter applies only
+to narrowly bounded gripper extrapolation. A tick starts before observation/inference, as in the
 pinned LeRobot runner. Stop can discard a tail, which is reported explicitly.
 """
 
@@ -17,21 +18,50 @@ import numpy as np
 
 from yamkit.inference.mapping import YAM_NAMES
 
-from .contract import CONTRACT_ID, PROFILE
+from .contract import ACTION_TRANSFORM, CONTRACT_ID, PROFILE
 
 
 class Pi05ExecutionFault(ValueError):
     """A native chunk, command, observation or execution lifecycle is invalid."""
 
 
-def finite_rows(chunk) -> np.ndarray:
+def native_finite_rows(chunk) -> np.ndarray:
+    """Native postprocessed values, not yet executable physical targets."""
     values = np.asarray(chunk)
     if values.shape != (30, 14) or values.dtype.kind not in "fiu" or not np.isfinite(values).all():
         raise Pi05ExecutionFault("π0.5 requires exactly 30×14 finite native action values")
-    rows = values.astype(np.float64, copy=True)
+    return values.astype(np.float64, copy=True)
+
+
+def finite_rows(chunk) -> np.ndarray:
+    """Strict executable-target validation; never silently projects anything."""
+    rows = native_finite_rows(chunk)
     if np.any(rows[:, [6, 13]] < 0) or np.any(rows[:, [6, 13]] > 1):
         raise Pi05ExecutionFault("π0.5 gripper output is outside [0,1]; no automatic clipping is allowed")
     return rows
+
+
+def prepare_native_rows(chunk) -> tuple[np.ndarray, np.ndarray, list[dict]]:
+    """Explicit gripper-only SDK endpoint adaptation with a gross-anomaly guard.
+
+    The saved PI postprocessor/model remains untouched. All native values and
+    each modification are returned for trace/replay. The 1% raw guard is an
+    additional yamkit engineering safeguard, not an upstream numerical tolerance.
+    Joint, finite, shape and final [0,1] protections remain strict.
+    """
+    raw = native_finite_rows(chunk)
+    columns = ACTION_TRANSFORM["columns"]
+    lower, upper = ACTION_TRANSFORM["raw_anomaly_range"]
+    grippers = raw[:, columns]
+    if np.any(grippers < lower) or np.any(grippers > upper):
+        raise Pi05ExecutionFault("π0.5 native gripper exceeds [-0.01,1.01] anomaly guard; projection refused")
+    executed = raw.copy()
+    executed[:, columns] = np.clip(grippers, *ACTION_TRANSFORM["executed_range"])
+    projections = [{"row_index": int(row), "column_index": int(column), "name": YAM_NAMES[column],
+                    "raw": float(raw[row, column]), "executed": float(executed[row, column]),
+                    "delta": float(executed[row, column] - raw[row, column])}
+                   for row, column in zip(*np.nonzero(raw != executed), strict=True)]
+    return raw, finite_rows(executed), projections
 
 
 def latency_summary(samples: list[float]) -> dict:
@@ -65,6 +95,9 @@ class Pi05ReferenceExecutor:
         self.predicted_rows = self.completed_rows = self.completed_chunks = self.modified_commands = 0
         self.attempted_rows = self.unknown_partial_dispatches = 0
         self.observations = 0
+        self.projected_rows = self.projected_gripper_values = 0
+        self.executed_projected_rows = self.executed_projected_gripper_values = 0
+        self.maximum_gripper_projection = 0.0
         self.coherence_violations = self.dropped_rows = self.inference_calls = self.faults = 0
         self.rpc_latencies, self.observation_ages, self.dispatch_times, self.chunks = [], [], [], []
         self.started = self.ended = None
@@ -117,21 +150,29 @@ class Pi05ReferenceExecutor:
                 returned_at = self.clock()
                 elapsed = returned_at - requested_at
                 self.rpc_latencies.append(elapsed)
-                rows = finite_rows(result)
-                self.predicted_rows += len(rows)
+                raw_rows = native_finite_rows(result)
+                self.predicted_rows += len(raw_rows)
                 if elapsed >= requested_timeout:
                     raise Pi05ExecutionFault("π0.5 inference exceeded its request deadline")
                 if not self.check():
                     break  # In particular, never dispatch a late response after Stop.
+                raw_rows, rows, projections = prepare_native_rows(raw_rows)
                 targets = [dict(zip(YAM_NAMES, row.tolist(), strict=True)) for row in rows]
+                raw_targets = [dict(zip(YAM_NAMES, row.tolist(), strict=True)) for row in raw_rows]
                 for target in targets:
                     self.validate_target(target)
+                projected_row_indices = {value["row_index"] for value in projections}
+                self.projected_rows += len(projected_row_indices)
+                self.projected_gripper_values += len(projections)
+                self.maximum_gripper_projection = max(self.maximum_gripper_projection,
+                                                      max((abs(value["delta"]) for value in projections), default=0.0))
                 chunk_index = len(self.chunks)
                 record = {"index": chunk_index, "predicted_rows": 30, "completed_rows": 0,
                           "observation_time": observed_at, "rpc_latency_s": elapsed,
                           "policy_observation_index": self.observations - 1}
                 self.chunks.append(record)
-                self.event("chunk_admitted", **record, rows=rows.tolist())
+                self.event("chunk_admitted", **record, raw_rows=raw_rows.tolist(), rows=rows.tolist(),
+                           action_transform=dict(ACTION_TRANSFORM), gripper_projections=projections)
                 for index, target in enumerate(targets):
                     if not self.check():
                         break
@@ -148,7 +189,8 @@ class Pi05ReferenceExecutor:
                     dispatch_at = self.clock()
                     self.attempted_rows += 1
                     self.event("dispatch_attempt", chunk_index=chunk_index, row_index=index,
-                               monotonic_s=dispatch_at, tick_started_monotonic_s=tick_started, requested=target)
+                               monotonic_s=dispatch_at, tick_started_monotonic_s=tick_started,
+                               raw_requested=raw_targets[index], requested=target)
                     try:
                         sent = self.send(dict(target), self.dispatch_check)
                     except BaseException:
@@ -165,10 +207,13 @@ class Pi05ReferenceExecutor:
                         self.coherence_violations += 1
                         raise Pi05ExecutionFault("π0.5 SDK target differs from the native row; stopping")
                     self.dispatch_times.append(dispatch_at)
+                    if index in projected_row_indices:
+                        self.executed_projected_rows += 1
+                        self.executed_projected_gripper_values += sum(value["row_index"] == index for value in projections)
                     self.observation_ages.append(dispatch_at - observed_at)
                     self.event("dispatch", chunk_index=chunk_index, row_index=index,
                                monotonic_s=dispatch_at, tick_started_monotonic_s=tick_started,
-                               requested=target, sent=dict(sent))
+                               raw_requested=raw_targets[index], requested=target, sent=dict(sent))
                     # Match BaseStrategy: observation, inference and dispatch
                     # all consume this tick's budget. An inference overrun has
                     # NO added wait; next tick begins with a fresh observation.
@@ -192,9 +237,16 @@ class Pi05ReferenceExecutor:
     def metrics(self) -> dict:
         intervals = np.diff(self.dispatch_times)
         return {"controller_mode": CONTRACT_ID, "predicted_rows": self.predicted_rows,
+                "action_transform": dict(ACTION_TRANSFORM),
+                "projected_rows": self.projected_rows, "projected_gripper_values": self.projected_gripper_values,
+                "executed_projected_rows": self.executed_projected_rows,
+                "executed_projected_gripper_values": self.executed_projected_gripper_values,
+                "maximum_gripper_projection": self.maximum_gripper_projection,
                 "attempted_rows": self.attempted_rows, "unknown_partial_dispatches": self.unknown_partial_dispatches,
                 "completed_rows": self.completed_rows, "dropped_rows": self.dropped_rows,
                 "uncompleted_rows": self.predicted_rows - self.completed_rows,
+                "intended_unused_rows": self.dropped_rows if self.finished and not self.faults else 0,
+                "unexpected_dropped_rows": self.dropped_rows if self.faults else 0,
                 "prefix_dropped_rows": 0, "reordered_rows": 0,
                 "modified_commands": self.modified_commands, "coherence_violations": self.coherence_violations,
                 "completed_chunks": self.completed_chunks, "admitted_chunks": len(self.chunks),

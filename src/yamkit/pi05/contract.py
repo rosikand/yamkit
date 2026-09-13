@@ -13,6 +13,16 @@ CHECKPOINT = "Jiafei1224/molmoact2-yam-pi05"
 REVISION = "51ab2720d7e56d51410407f98ea64bbea97feb2e"
 LEROBOT_REVISION = "7e241bd630a3719a56157a497ce5d08f244784f1"
 CONTRACT_ID = "pi05_reference"
+ACTION_TRANSFORM = {
+    "id": "i2rt_gripper_endpoint_projection_v1", "version": 1,
+    "columns": [6, 13], "raw_anomaly_range": [-0.01, 1.01], "executed_range": [0.0, 1.0],
+    "algorithm": "reject raw anomalies; project grippers to nearest endpoint; all twelve joints unchanged",
+    "placement": "robot-host adapter after unchanged native checkpoint postprocessing, before strict target validation",
+    "guard_origin": "yamkit conservative 1% normalized-travel guard; not an upstream tolerance or roundoff claim",
+    "sdk_revision": "47fee5e7dec4e30ca054f798bda1c8894b465ed2",
+    "yam_reference_revision": "9f06bba2a36dd84fb36d0c31337c85d4bf1cea22",
+    "force_limiter_caveat": "endpoint target-range equivalence only; not proof of identical contact-force dynamics",
+}
 CAMERA_MAP = {"observation.images.top": "observation.images.top",
               "observation.images.left_wrist": "observation.images.left",
               "observation.images.right_wrist": "observation.images.right"}
@@ -33,7 +43,7 @@ PROFILE = ModelProfile(
     "google/paligemma-3b-pt-224", "35e4f46485b4d07967e7e9935bc3786aad50687c", (360, 640),
 )
 CONTRACT = {
-    "id": CONTRACT_ID, "version": 1, "checkpoint": CHECKPOINT, "revision": REVISION,
+    "id": CONTRACT_ID, "version": 2, "checkpoint": CHECKPOINT, "revision": REVISION,
     "lerobot_version": "0.6.1", "lerobot_revision": LEROBOT_REVISION,
     "camera_order": list(PROFILE.native_image_keys), "state_names": list(MOLMO_NAMES),
     "action_names": list(MOLMO_NAMES), "action_mode": "absolute",
@@ -43,7 +53,10 @@ CONTRACT = {
     "image_transform": "native PI05 resize-with-padding to 224x224 then [0,1] to [-1,1]",
     "boundary_crop": "none", "model_dtype": "bfloat16", "rtc": False,
     "queue": "native synchronous FIFO: all 30 rows once, in order, then reobserve/replan",
-    "interpolation": False, "prefix_drop": False, "command_shaping": False,
+    "interpolation": False, "prefix_drop": False,
+    "command_shaping": "explicit gripper endpoint projection only",
+    "joint_command_shaping": False, "temporal_command_shaping": False,
+    "action_transform": ACTION_TRANSFORM,
     "state_source": "measured observation at chunk boundary",
     "observation_cadence": "every control tick; only empty-FIFO observations reach model",
     "tick_cadence": "loop-start before observation/RPC/send; sleep max(1/30 - elapsed, 0)",
@@ -102,6 +115,10 @@ def build_id() -> str:
     from yamkit.inference.identity import inference_build_id
 
     digest = hashlib.sha256(b"yamkit-pi05-reference-v1\0" + inference_build_id().encode())
-    for path in sorted(Path(__file__).parent.glob("*.py")):
+    package = Path(__file__).parent
+    paths = [*package.glob("*.py"), package.parent / "pi05_artifacts.py", package.parent / "pi05_workflow.py"]
+    for path in sorted(paths):
+        if not path.is_file():
+            raise ValueError(f"PI build identity source is missing: {path.name}")
         digest.update(path.name.encode() + b"\0" + hashlib.sha256(path.read_bytes()).digest())
     return digest.hexdigest()

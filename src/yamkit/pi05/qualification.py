@@ -15,8 +15,8 @@ import numpy as np
 from yamkit.inference.mapping import YAM_NAMES
 from yamkit.inference.protocol import PROTOCOL_VERSION, encode_image
 
-from .contract import CONTRACT, PROFILE, build_id
-from .executor import Pi05ExecutionFault, Pi05ReferenceExecutor, finite_rows, latency_summary
+from .contract import ACTION_TRANSFORM, CONTRACT, PROFILE, build_id
+from .executor import Pi05ExecutionFault, Pi05ReferenceExecutor, latency_summary, prepare_native_rows
 from .transport import validate_readiness
 
 
@@ -99,6 +99,7 @@ class FakeArms:
 _CONTROLLED_EXECUTION_REASONS = frozenset({
     "π0.5 requires exactly 30×14 finite native action values",
     "π0.5 gripper output is outside [0,1]; no automatic clipping is allowed",
+    "π0.5 native gripper exceeds [-0.01,1.01] anomaly guard; projection refused",
     "π0.5 dispatch was stopped or its bounded session ended",
     "π0.5 inference exceeded its request deadline",
     "π0.5 SDK target differs from the native row; stopping",
@@ -182,8 +183,9 @@ def collect_qualification(transport, *, observations: list[dict], task: str, req
     metadata = transport.ready(15.0)
     validate_readiness(metadata)
     session_id, sequence = str(uuid.uuid4()), 0
-    direct, direct_chunks, errors = [], [], []
-    report = {"version": 1, "profile": PROFILE.id, "controller_mode": CONTRACT["id"],
+    direct, direct_chunks, direct_executed_chunks, direct_projections, errors = [], [], [], [], []
+    report = {"version": 2, "profile": PROFILE.id, "controller_mode": CONTRACT["id"],
+              "action_transform": dict(ACTION_TRANSFORM),
               "model_revision": PROFILE.revision, "pi05_build_id": build_id(),
               "instance_id": metadata["instance_id"], "task": task, "created_at": time.time(),
               "expires_at": metadata.get("http_session_expires_at"), "hardware_tested": False,
@@ -223,12 +225,14 @@ def collect_qualification(transport, *, observations: list[dict], task: str, req
             phase, sample_index, observation_index = "direct_warm", index, index % len(observations)
             validation_row_index = None
             began = time.monotonic()
-            chunk = finite_rows(predict(observations[index % len(observations)], 2.0))
+            raw_chunk, chunk, projections = prepare_native_rows(predict(observations[index % len(observations)], 2.0))
             direct.append(time.monotonic() - began)
             for validation_row_index, row in enumerate(chunk):
                 validator(dict(zip(YAM_NAMES, row.tolist(), strict=True)))
             validation_row_index = None
-            direct_chunks.append(chunk.tolist())
+            direct_chunks.append(raw_chunk.tolist())
+            direct_executed_chunks.append(chunk.tolist())
+            direct_projections.append(projections)
             event("direct_sample", completed=index + 1, total=requests)
         phase, sample_index, observation_index = "integrated", None, 0
         last_chunk, request_sequence = None, None
@@ -320,6 +324,14 @@ def collect_qualification(transport, *, observations: list[dict], task: str, req
         report["qualified"] = not errors
         # Serialized full model rows are retained for exact offline FIFO replay.
         report["direct_chunks"] = direct_chunks
+        report["direct_executed_chunks"] = direct_executed_chunks
+        report["direct_gripper_projections"] = direct_projections
+        report["direct_transform_summary"] = {
+            "projected_rows": sum(len({item["row_index"] for item in chunk}) for chunk in direct_projections),
+            "projected_gripper_values": sum(len(chunk) for chunk in direct_projections),
+            "maximum_gripper_projection": max((abs(item["delta"]) for chunk in direct_projections for item in chunk),
+                                              default=0.0),
+        }
     return report
 
 

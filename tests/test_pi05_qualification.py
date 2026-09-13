@@ -11,7 +11,7 @@ import pytest
 from yamkit.inference.mapping import YAM_NAMES
 from yamkit.pi05 import admission, qualification, rollout
 from yamkit.pi05.admission import rig_observation_schema, validate_qualification
-from yamkit.pi05.contract import CONTRACT, PROFILE, build_id
+from yamkit.pi05.contract import ACTION_TRANSFORM, CONTRACT, PROFILE, build_id
 from yamkit.pi05.executor import Pi05ExecutionFault, Pi05ReferenceExecutor
 from yamkit.pi05.qualification import load_saved_observation, make_request, save_qualification
 from yamkit.pi05.transport import validate_readiness
@@ -23,6 +23,7 @@ def metadata():
             "ready": True, "instance_id": "pi05-test-instance", "http_session_expires_at": time.time() + 3600,
             "execution_identity": {"profile": PROFILE.id, "model_revision": PROFILE.revision,
                                    "controller_contract": CONTRACT["id"], "model_dtype": "bfloat16",
+                                   "action_transform": ACTION_TRANSFORM,
                                    "chunk_size": 30, "action_width": 14, "num_inference_steps": 10,
                                    "native_rtc_enabled": False, "strict_weights_restored": True,
                                    "compile_model": False}}
@@ -105,7 +106,8 @@ def test_tiny_saved_images_cannot_qualify_full_rig_payload(monkeypatch):
 
 @pytest.mark.parametrize("field,value", [("strict_weights_restored", False), ("native_rtc_enabled", True),
                                          ("compile_model", True), ("chunk_size", 50),
-                                         ("action_width", 32), ("model_dtype", "float32")])
+                                         ("action_width", 32), ("model_dtype", "float32"),
+                                         ("action_transform", {})])
 def test_changed_native_execution_cannot_be_ready(field, value):
     valid = metadata()
     valid["execution_identity"][field] = value
@@ -179,6 +181,63 @@ def test_diagnostic_qualification_never_claims_physical_ready_without_full_host_
     assert any("host and rig" in reason for reason in result["reasons"])
 
 
+def test_real_observed_overshoot_is_explicitly_projected_and_raw_preserved_in_qualification(monkeypatch):
+    class FastExecutor(Pi05ReferenceExecutor):
+        def _wait_until(self, deadline):
+            return self.check()
+
+    class NativeOvershoot(Transport):
+        def predict_chunk(self, request, timeout):
+            time.sleep(0.02)
+            chunk = np.full((30, 14), 0.25)
+            chunk[0, 6] = 1.000895619392395  # Actual preserved real-GPU response, not float roundoff.
+            return {"chunk": chunk.tolist()}
+
+    monkeypatch.setattr(qualification, "Pi05ReferenceExecutor", FastExecutor)
+    result = qualification.collect_qualification(NativeOvershoot(), observations=[observation()], task="move cube", requests=1)
+    assert result["action_transform"] == ACTION_TRANSFORM
+    assert result["direct_chunks"][0][0][6] == 1.000895619392395
+    assert result["direct_executed_chunks"][0][0][6] == 1.0
+    assert result["direct_gripper_projections"][0] == [{"row_index": 0, "column_index": 6,
+        "name": YAM_NAMES[6], "raw": 1.000895619392395, "executed": 1.0, "delta": 1.0 - 1.000895619392395}]
+    assert result["direct_transform_summary"]["projected_rows"] == 1
+    assert result["direct_transform_summary"]["projected_gripper_values"] == 1
+    assert result["integrated"]["completed_rows"] == 30
+    assert result["integrated"]["executed_projected_gripper_values"] == 1
+    assert result["integrated"]["modified_commands"] == result["integrated"]["coherence_violations"] == 0
+    assert result["stop_proof"]["commands_after_stop"] == 0
+    assert result["qualified"] is False  # One sample/no real rig does not become physical readiness.
+
+
+def test_current_full_qualification_binds_transform_identity_and_exact_projection_accounting(monkeypatch):
+    current = metadata()
+    host = {"host_id": "fixture", "rig_sha256": "fixture", "observation_schema": {"fixture": True}}
+    monkeypatch.setattr(admission, "rig_binding", lambda _: host)
+    result = {"completed_chunks": 50, "predicted_rows": 1500, "attempted_rows": 1500, "completed_rows": 1500,
+              "dropped_rows": 0, "modified_commands": 0, "coherence_violations": 0, "faults": 0,
+              "unknown_partial_dispatches": 0, "action_transform": ACTION_TRANSFORM,
+              "projected_rows": 1, "projected_gripper_values": 2,
+              "executed_projected_rows": 1, "executed_projected_gripper_values": 2,
+              "maximum_gripper_projection": 0.000895619392395}
+    report = {"qualified": True, "reasons": [], "profile": PROFILE.id, "model_revision": PROFILE.revision,
+              "controller_mode": CONTRACT["id"], "pi05_build_id": build_id(), "action_transform": ACTION_TRANSFORM,
+              "instance_id": current["instance_id"], "task": "move cube", "robot_host": host,
+              "observation_schema": host["observation_schema"], "hardware_tested": False, "bounds_checked": True,
+              "completed_warm_samples": 50, "completed_at": time.time(), "expires_at": current["http_session_expires_at"],
+              "direct_warm_round_trip_s": {"p95": 0.4}, "integrated": result,
+              "stop_proof": {"stop_requested_during_inflight_rpc": True, "commands_after_stop": 0,
+                             "all_fake_robots_released": True}}
+    validate_qualification(report, current, task="move cube", rig_path="inert")
+    for key, value in (("action_transform", {}), ("maximum_gripper_projection", 0.02),
+                       ("maximum_gripper_projection", 1 << 1024), ("projected_gripper_values", 3),
+                       ("executed_projected_gripper_values", 0), ("projected_rows", -1)):
+        with pytest.raises(ValueError, match="current passing"):
+            validate_qualification({**report, "integrated": {**result, key: value}}, current,
+                                   task="move cube", rig_path="inert")
+    with pytest.raises(ValueError, match="current passing"):
+        validate_qualification({**report, "action_transform": {}}, current, task="move cube", rig_path="inert")
+
+
 class FailingChunkTransport(Transport):
     def __init__(self, *, rejected_sample, chunk=None, error=None):
         super().__init__()
@@ -196,8 +255,7 @@ class FailingChunkTransport(Transport):
         return {"chunk": np.full((30, 14), 0.25).tolist()}
 
 
-@pytest.mark.parametrize("column,value", [(6, 1.000123456789), (13, -0.000123456789),
-                                          (6, 1.000895619392395)])  # Captured real-GPU overshoot, unchanged.
+@pytest.mark.parametrize("column,value", [(6, 1.010123456789), (13, -0.010123456789)])
 def test_rejected_native_gripper_preserves_exact_response_and_sample_without_clipping(column, value):
     chunk = np.full((30, 14), 0.25).tolist()
     chunk[17][column] = value
@@ -213,7 +271,7 @@ def test_rejected_native_gripper_preserves_exact_response_and_sample_without_cli
     assert failure["sample_index"] == failure["observation_index"] == 38
     assert failure["request_sequence_id"] == 39
     assert failure["native_response_received"] is True
-    assert failure["reason"] == "π0.5 gripper output is outside [0,1]; no automatic clipping is allowed"
+    assert failure["reason"] == "π0.5 native gripper exceeds [-0.01,1.01] anomaly guard; projection refused"
     evidence = failure["native_response"]
     assert evidence["raw_chunk"] == chunk
     assert chunk[17][column] == value  # Reporting never mutates native output.
@@ -273,7 +331,7 @@ def test_integrated_failure_retains_its_response_and_releases_fake_arms(monkeypa
 
     monkeypatch.setattr(qualification, "Pi05ReferenceExecutor", FastExecutor)
     chunk = np.full((30, 14), 0.25).tolist()
-    chunk[0][13] = 1.001
+    chunk[0][13] = 1.011
     transport = FailingChunkTransport(rejected_sample=3, chunk=chunk)
     result = qualification.collect_qualification(transport, observations=[observation()], task="move cube", requests=2)
     assert result["failure"]["phase"] == "integrated"

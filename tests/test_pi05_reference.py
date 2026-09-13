@@ -8,8 +8,8 @@ import pytest
 
 from yamkit.inference.mapping import MOLMO_NAMES, YAM_NAMES
 from yamkit.inference.profiles import get_profile
-from yamkit.pi05.contract import PROFILE, validate_checkpoint_config
-from yamkit.pi05.executor import Pi05ExecutionFault, Pi05ReferenceExecutor, finite_rows
+from yamkit.pi05.contract import ACTION_TRANSFORM, PROFILE, validate_checkpoint_config
+from yamkit.pi05.executor import Pi05ExecutionFault, Pi05ReferenceExecutor, finite_rows, prepare_native_rows
 from yamkit.pi05.runtime import pinned_tokenizer_snapshot, restore_native_weights
 
 
@@ -201,6 +201,72 @@ def test_stop_midchunk_accounts_for_every_unsent_native_row():
     assert result["dropped_rows"] == 23
     assert result["completed_chunks"] == 0
     assert result["prefix_dropped_rows"] == 0
+    assert result["intended_unused_rows"] == 23
+    assert result["unexpected_dropped_rows"] == 0
+
+
+@pytest.mark.parametrize("value,expected", [(-0.01, 0.0), (-0.000895619392395, 0.0), (0.0, 0.0),
+                                           (0.4, 0.4), (1.0, 1.0), (1.000895619392395, 1.0), (1.01, 1.0)])
+def test_explicit_gripper_adapter_keeps_raw_and_all_joint_values(value, expected):
+    source = rows()
+    source[9, [6, 13]] = value
+    raw, executed, projections = prepare_native_rows(source)
+    np.testing.assert_array_equal(raw, source)
+    assert source[9, 6] == raw[9, 6] == value
+    assert executed[9, 6] == executed[9, 13] == expected
+    np.testing.assert_array_equal(executed[:, [*range(6), *range(7, 13)]], raw[:, [*range(6), *range(7, 13)]])
+    assert len(projections) == (2 if value != expected else 0)
+    assert all(item["raw"] == value and item["executed"] == expected for item in projections)
+    finite_rows(executed)
+    if value != expected:
+        with pytest.raises(Pi05ExecutionFault, match="no automatic clipping"):
+            finite_rows(source)  # Strict executable validation was not weakened.
+
+
+@pytest.mark.parametrize("value", [np.nextafter(-0.01, -np.inf), np.nextafter(1.01, np.inf), -1.0, 2.0, np.nan, np.inf])
+def test_gripper_anomaly_is_rejected_before_first_dispatch(value):
+    source = rows()
+    source[29, 13] = value
+    engine, _, _, sent, _ = make_executor(predictor=lambda: source)
+    with pytest.raises(Pi05ExecutionFault):
+        engine.run(duration_s=5)
+    assert sent == []
+    assert engine.metrics()["faults"] == 1
+
+
+def test_executor_logs_native_and_projected_commands_as_separate_accounting():
+    source = rows()
+    source[0, 6] = 1.000895619392395
+    source[1, 13] = -0.001
+    engine, _, events, sent, _ = make_executor(predictor=lambda: source)
+    result = engine.run(duration_s=5, max_chunks=1)
+    chunk = next(payload for name, payload in events if name == "chunk_admitted")
+    assert chunk["raw_rows"] == source.tolist()
+    assert chunk["rows"][0][6] == 1.0 and chunk["rows"][1][13] == 0.0
+    assert chunk["action_transform"] == result["action_transform"] == ACTION_TRANSFORM
+    assert len(chunk["gripper_projections"]) == 2
+    dispatch = next(payload for name, payload in events if name == "dispatch")
+    assert dispatch["raw_requested"][YAM_NAMES[6]] == 1.000895619392395
+    assert dispatch["requested"][YAM_NAMES[6]] == dispatch["sent"][YAM_NAMES[6]] == 1.0
+    assert result["projected_rows"] == result["executed_projected_rows"] == 2
+    assert result["projected_gripper_values"] == result["executed_projected_gripper_values"] == 2
+    assert result["modified_commands"] == result["coherence_violations"] == result["dropped_rows"] == 0
+    assert len(sent) == 30
+
+
+def test_projection_never_hides_joint_bound_violation():
+    source = rows()
+    source[0, 6] = 1.000895619392395
+    source[29, 0] = 100.0
+
+    def validate(target):
+        if abs(target[YAM_NAMES[0]]) > 1:
+            raise Pi05ExecutionFault("joint bounds")
+
+    engine, _, _, sent, _ = make_executor(predictor=lambda: source, validate=validate)
+    with pytest.raises(Pi05ExecutionFault, match="joint bounds"):
+        engine.run(duration_s=5)
+    assert sent == []
 
 
 @pytest.mark.parametrize("bad", [np.zeros((29, 14)), np.zeros((30, 13)),

@@ -1,6 +1,10 @@
 """Native LeRobot methods/processors, fake model tensors, no checkpoint or hardware."""
 
+import ast
+import copy
+import hashlib
 import json
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,7 +17,7 @@ from lerobot.policies.pi05.modeling_pi05 import PI05Policy
 from lerobot.processor import UnnormalizerProcessorStep
 
 from yamkit.inference.mapping import YAM_NAMES
-from yamkit.pi05.executor import Pi05ReferenceExecutor
+from yamkit.pi05.executor import Pi05ReferenceExecutor, prepare_native_rows
 
 
 def native_policy():
@@ -38,6 +42,78 @@ def test_saved_native_unnormalizer_is_identical_whole_chunk_and_native_single_ro
     rows = torch.stack([post({TransitionKey.ACTION: raw[:, index]})[TransitionKey.ACTION]
                         for index in range(30)], dim=1)
     torch.testing.assert_close(chunk, rows, rtol=0, atol=0)
+
+
+def test_native_quantile_extrapolation_is_not_hidden_inside_model_postprocessor():
+    normalized = torch.zeros((1, 30, 14))
+    normalized[0, 0, 6] = 1.03
+    normalized[0, 0, 13] = 1.02
+    native = postprocessor()({TransitionKey.ACTION: normalized})[TransitionKey.ACTION][0].numpy()
+    assert 1 < native[0, 6] < 1.01 and 1 < native[0, 13] < 1.01
+    raw, executed, changes = prepare_native_rows(native)
+    np.testing.assert_array_equal(raw, native)
+    assert executed[0, 6] == executed[0, 13] == 1.0
+    assert len(changes) == 2
+    np.testing.assert_array_equal(executed[1:], native[1:])
+
+
+def _pinned_sdk_range_methods():
+    """Compile reviewed inert methods ONLY: no i2rt import or hardware constructor.
+
+    AST hashes were independently compared with public I2RT commit
+    47fee5e7dec4e30ca054f798bda1c8894b465ed2. A vendor method change requires
+    a fresh source review, not silently changing our comparison oracle.
+    """
+    root = Path(__file__).parents[1] / "third_party/i2rt/i2rt/robots"
+    specifications = (
+        ("utils.py", "JointMapper", None, "c2c89f3da43de1b48a81b2757ff15f72e5a5b64df0f30dd957a2d36f2529ce5d"),
+        ("motor_chain_robot.py", "MotorChainRobot", "update", "70d952d5af1e7f194b6b0d06a0ad035135d2ab6667b50974e56b537d72f8c4b6"),
+    )
+    nodes = []
+    for filename, cls, method, expected in specifications:
+        tree = ast.parse((root / filename).read_text())
+        node = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == cls)
+        if method:
+            node = next(node for node in node.body if isinstance(node, ast.FunctionDef) and node.name == method)
+        assert hashlib.sha256(ast.dump(node, include_attributes=False).encode()).hexdigest() == expected
+        nodes.append(node)
+    namespace = {"np": np, "copy": copy, "Dict": dict, "Tuple": tuple}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), "<reviewed-inert-sdk-range-methods>", "exec"), namespace)  # noqa: S102 — hash-verified inert methods, no module import
+    return namespace["JointMapper"], namespace["update"]
+
+
+@pytest.mark.parametrize("calibration", [(0.1, 11.3), (11.3, -0.1)])
+@pytest.mark.parametrize("value", [-0.01, -0.000895619392395, 0.0, 0.4, 1.0, 1.000895619392395, 1.01])
+def test_projection_matches_pinned_sdk_physical_endpoint_mapping_in_both_directions(calibration, value):
+    mapper_class, update = _pinned_sdk_range_methods()
+    mapper = mapper_class({6: calibration}, 7)
+    source = np.zeros((30, 14))
+    source[:, [6, 13]] = value
+    _, executed, _ = prepare_native_rows(source)
+
+    def sdk_physical_target(command):
+        receipts = []
+        fake = SimpleNamespace(
+            _commands=SimpleNamespace(pos=mapper.to_robot_joint_pos_space(command), torques=np.zeros(7)),
+            _command_lock=nullcontext(), _state_lock=nullcontext(),
+            _joint_state=SimpleNamespace(vel=np.zeros(7)),
+            _compute_gravity_compensation=lambda _: np.zeros(7),
+            _coulomb_friction=np.zeros(7), use_coulomb_friction=False,
+            gravity_comp_factor=1, _clip_motor_torque=np.inf, _gripper_index=6,
+            _limit_gripper_force=-1, _gripper_limits=calibration,
+            _update_joint_state=lambda _torques, commands: receipts.append(commands.pos.copy()),
+        )
+        # This executes the actual pinned SDK update body with an inert sink,
+        # never a robot constructor, bus, encoder, motor or acquisition thread.
+        update(fake)
+        assert len(receipts) == 1
+        return receipts[0]
+
+    for start in (0, 7):
+        original = sdk_physical_target(source[0, start:start + 7])
+        adapted = sdk_physical_target(executed[0, start:start + 7])
+        np.testing.assert_allclose(adapted, original, rtol=0, atol=1e-12)
+        assert min(calibration) <= adapted[6] <= max(calibration)
 
 
 def test_executor_fifo_matches_actual_native_select_action_queue_for_all_rows():

@@ -13,7 +13,22 @@ from yamkit.inference.mapping import YAM_NAMES
 from yamkit.inference.standalone_service import stable_host_id
 from yamkit.validation import finite_vector, vendor_joint_limits
 
-from .contract import CONTRACT_ID, PROFILE, build_id
+from .contract import ACTION_TRANSFORM, CONTRACT_ID, PROFILE, build_id
+
+
+def _projection_accounting_valid(result: dict) -> bool:
+    """Expected endpoint transformations are distinct from unexpected SDK edits."""
+    fields = ("projected_rows", "projected_gripper_values", "executed_projected_rows", "executed_projected_gripper_values")
+    if any(type(result.get(name)) is not int or not 0 <= result[name] <= 3000 for name in fields):
+        return False
+    rows, values = result["projected_rows"], result["projected_gripper_values"]
+    maximum = result.get("maximum_gripper_projection")
+    lower, upper = ACTION_TRANSFORM["raw_anomaly_range"]
+    return (rows <= 1500 and rows <= values <= 2 * rows
+            and result["executed_projected_rows"] == rows and result["executed_projected_gripper_values"] == values
+            and type(maximum) in (float, int) and 0 <= maximum <= max(-lower, upper - 1.0)
+            and math.isfinite(maximum)
+            and (maximum == 0) == (values == 0))
 
 
 def rig_binding(rig_path: Path) -> dict:
@@ -92,6 +107,8 @@ def validate_qualification(report: dict, metadata: dict, *, task: str, rig_path:
     if (report.get("qualified") is not True or report.get("reasons") != []
             or report.get("profile") != PROFILE.id or report.get("model_revision") != PROFILE.revision
             or report.get("controller_mode") != CONTRACT_ID or report.get("pi05_build_id") != build_id()
+            or report.get("action_transform") != ACTION_TRANSFORM
+            or result.get("action_transform") != ACTION_TRANSFORM or not _projection_accounting_valid(result)
             or report.get("instance_id") != metadata.get("instance_id") or report.get("task") != task
             or report.get("robot_host") != rig_binding(rig_path)
             or report.get("observation_schema") != report.get("robot_host", {}).get("observation_schema")

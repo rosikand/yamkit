@@ -2,20 +2,25 @@
 
 Status on 2026-09-13, after publisher authorization: the pinned tokenizer and
 9.35 GB YAM weights load successfully on the existing GPU. Real saved-observation
-qualification is **blocked by a native gripper prediction outside [0,1]**:
+qualification originally stopped on a native gripper prediction outside [0,1]:
 `left_gripper.pos=1.000895619392395`. Two attempts stopped during direct warm
-sampling; neither reached integrated fake execution. No successful qualification,
-physical trial or manipulation success is claimed. See the
+sampling; neither reached integrated fake execution. The overnight source review
+adds an explicit SDK endpoint adapter; **fresh qualification of contract version
+2 is required**, not inferred from those failed runs. No physical trial or
+manipulation success is claimed. See the
 [authorization follow-up](PI05_QUALIFICATION_2026-09-13.md) for retained evidence.
 Do not launch the physical entrypoint until qualification passes.
 The working MolmoAct2 path remains separate and unchanged.
+See [the range review](PI05_YAM_RANGE_REVIEW.md) for primary sources, the raw
+anomaly guard, exact raw/executed accounting and force-limiter caveat.
 
 ## Immutable source contract
 
 Checkpoint: [Jiafei1224/molmoact2-yam-pi05](https://huggingface.co/Jiafei1224/molmoact2-yam-pi05/tree/51ab2720d7e56d51410407f98ea64bbea97feb2e),
 revision `51ab2720d7e56d51410407f98ea64bbea97feb2e`.
 Weights SHA-256: `a777861c627234f9aa54a1bb7bdee29101ee6513f4773ef0a581d9c5527981e4`.
-Profile ID `pi05-yam`; execution contract `pi05_reference`. The old low-level
+Profile ID `pi05-yam`; execution contract `pi05_reference` version 2, with
+`i2rt_gripper_endpoint_projection_v1`. The old low-level
 `pi05` profile remains the unrelated, unmapped `lerobot/pi05_base` fixture.
 
 | Boundary | Pinned native convention |
@@ -46,8 +51,12 @@ normalized state into 256 bins and appends it to the task. Native image processi
 resizes with padding to 224×224 and maps [0,1] pixels to [-1,1].
 
 The saved postprocessor applies QUANTILES unnormalization, disabled absolute
-conversion, then CPU transfer. There is no saved output clamp. Native values
-outside physical joint/gripper bounds cause rejection; they are not clipped.
+conversion, then CPU transfer. There is no saved output clamp. A separate
+robot-host adapter projects only gripper values within the conservative raw
+[-0.01,1.01] envelope to physical [0,1] endpoints, with raw/executed values logged.
+Larger gripper excursions, nonfinite/shape errors and out-of-bound joints still
+cause rejection. The envelope is a yamkit engineering guard, not an upstream
+tolerance; it is never automatically widened.
 Whole-chunk postprocessing is tested bit-for-bit against the same native
 per-row postprocessor. Both relative conversions are disabled, so no moving
 state anchor can alter queued rows.
@@ -84,7 +93,8 @@ the same native constructor and key-remapping helper, then calls strict
 `load_state_dict` with failure propagation. It never silently uses random weights.
 An explicit eager variant disables only the optional native `torch.compile`
 setting; denoising count, preprocessing, normalization, dtype configuration and
-rows are unchanged. Eager performance is not yet measured.
+raw model rows are unchanged. Earlier eager latency samples are retained in the
+authorization follow-up, but do not constitute a passing qualification.
 
 The PaliGemma tokenizer is pinned at
 `google/paligemma-3b-pt-224@35e4f46485b4d07967e7e9935bc3786aad50687c`.
@@ -138,4 +148,6 @@ gripper and saved report path. Diagnostics do not change acceptance, rows or tim
 Fake/native tests do not validate dynamics, calibration, camera placement or task
 success. Current real GPU latency samples are partial, not a passing qualification.
 Integrated real-model row accounting and Stop proof have not been reached. The
-workflow must show the native-output blocker instead of offering a ready PI run.
+workflow must show a failed or stale qualification instead of offering a ready PI
+run. New range-adapter qualification must report explicit projections separately
+from unexpected SDK modifications and preserve every raw model row.

@@ -6,7 +6,6 @@ admission and explicit motion-confirmation checks pass inside run_rollout.
 
 from __future__ import annotations
 
-import json
 import math
 import signal
 import threading
@@ -17,6 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from yamkit.inference.mapping import YAM_NAMES
+from yamkit.pi05_artifacts import NativeCapture, repository_path, rollout_phase
 
 from .admission import validate_qualification
 from .contract import CONTRACT_ID, PROFILE, build_id
@@ -79,36 +79,44 @@ def _home(robot, stop):
 
 def run_rollout(transport, *, task: str, duration_s: float, rig_path: Path, qualification: dict,
                 accept_mapping: bool = False, confirm_supervised: bool = False,
-                artifact_dir: Path, shutdown_event=None, robot_factory=None, home=None) -> dict:
+                artifact_dir: Path, shutdown_event=None, robot_factory=None, home=None,
+                capture_trace: bool = False, upload_repo_id: str | None = None,
+                artifact_metadata: dict | None = None) -> dict:
     """One explicit physical run. Call only after fresh operator approval.
 
     Internal factory/home seams exist solely for fake-hardware tests. Production
     uses the existing plugin's cooperative ownership, measured-state/target
     bounds, two-arm prevalidation, interruptible home and release paths.
     """
-    from yamkit.paths import ROOT
-
     if accept_mapping is not True or confirm_supervised is not True:
         raise ValueError("π0.5 physical rollout requires mapping acceptance and fresh supervised confirmation")
     if (type(duration_s) not in (float, int) or not math.isfinite(duration_s) or not 0 < duration_s <= 90):
         raise ValueError("π0.5 rollout duration must be positive and at most 90 seconds")
     metadata = transport.ready(15.0)
     validate_qualification(qualification, metadata, task=task, rig_path=rig_path)
-    destination = artifact_dir.resolve()
-    destination.relative_to(Path(ROOT).resolve())
+    if upload_repo_id is not None:
+        from huggingface_hub.utils import validate_repo_id
+
+        validate_repo_id(upload_repo_id)
+        if upload_repo_id.count("/") != 1:
+            raise ValueError("An explicit private HF namespace/dataset destination is required")
+        capture_trace = True
+    destination = repository_path(artifact_dir)
     destination.mkdir(parents=True, exist_ok=False)
+    capture = NativeCapture(task=task, duration_s=duration_s, capture_trace=capture_trace)
     event = shutdown_event or threading.Event()
     stop = _BoundedStop(event, transport)
     if stop.is_set():
         raise ValueError("π0.5 rollout was stopped before hardware activation")
-    session_id, sequence, trace = str(uuid.uuid4()), 0, []
+    session_id, sequence = str(uuid.uuid4()), 0
     robot, engine, failure = None, None, None
     handlers, watch_done = {}, threading.Event()
     report = {"controller_mode": CONTRACT_ID, "model_revision": PROFILE.revision,
               "pi05_build_id": build_id(), "instance_id": metadata["instance_id"],
               "task": task, "duration_s": duration_s, "session_id": session_id,
               "hardware_tested": robot_factory is None, "released": False,
-              "home_attempted": False, "home_completed": False, "status": "preparing"}
+              "home_attempted": False, "home_completed": False, "status": "preparing",
+              "started_at": time.time()}
 
     def cancel_on_stop():
         while not watch_done.wait(0.01):
@@ -123,7 +131,10 @@ def run_rollout(transport, *, task: str, duration_s: float, rig_path: Path, qual
         request = make_request(observation, task=task, session_id=session_id,
                                sequence_id=sequence, timeout_s=timeout)
         sequence += 1
-        return transport.predict_chunk(request, timeout)["chunk"]
+        result = transport.predict_chunk(request, timeout)["chunk"]
+        capture.safely(capture.response, result, sequence_id=sequence - 1,
+                       observation_index=capture.counts["observation_frames_seen"] - 1)
+        return result
 
     try:
         if threading.current_thread() is threading.main_thread():
@@ -135,6 +146,11 @@ def run_rollout(transport, *, task: str, duration_s: float, rig_path: Path, qual
             raise RuntimeError("π0.5 startup was stopped")
         if metadata["http_session_expires_at"] - time.time() < duration_s + 60.0:
             raise RuntimeError("π0.5 model session lacks time for the rollout and bounded startup/home; prepare again")
+        if robot_factory is not None and home is None:
+            raise ValueError("Fake π0.5 execution requires an explicit fake home callback; hardware fallback is forbidden")
+        capture.reserve()  # Complete RAM admission/prefault before any hardware constructor.
+        if stop.is_set():
+            raise RuntimeError("π0.5 startup was stopped during recording preparation")
         robot = (robot_factory or _make_robot)(rig_path, stop)
         robot.connect()
         if stop.is_set():
@@ -142,20 +158,28 @@ def run_rollout(transport, *, task: str, duration_s: float, rig_path: Path, qual
 
         def observe():
             values = robot.get_observation()
-            return {"state": np.array([values[name] for name in YAM_NAMES]),
-                    **{name: values[name] for name in PROFILE.image_keys}}
+            observation = {"state": np.array([values[name] for name in YAM_NAMES]),
+                           **{name: values[name] for name in PROFILE.image_keys}}
+            capture.safely(capture.observation, observation)
+            return observation
 
         def send(target, check):
             return robot.send_reference_action(target, dispatch_check=check)
 
         report["status"] = "running"
+        rollout_phase("running")
+        capture.start()
         engine = Pi05ReferenceExecutor(predict=predict, observe=observe, send=send,
                                       validate_target=robot.validate_action_target, stop=stop,
                                       session_check=transport.ensure_session_active,
-                                      event=lambda kind, **record: trace.append({"kind": kind, **record}))
-        engine.run(duration_s=duration_s)
+                                      event=lambda kind, **record: capture.safely(capture.event, kind, **record))
+        try:
+            engine.run(duration_s=duration_s)
+        finally:
+            capture.end()
         if not stop.is_set():
             report["home_attempted"] = True
+            rollout_phase("returning_home")
             (home or _home)(robot, stop)
             report["home_completed"] = True
         report["status"] = "stopped" if stop.is_set() else "completed"
@@ -166,9 +190,11 @@ def run_rollout(transport, *, task: str, duration_s: float, rig_path: Path, qual
     finally:
         # Release before any artifact serialization or upload; no home on fault.
         try:
+            rollout_phase("releasing")
             if robot is not None:
                 robot.disconnect(home=False)
             report["released"] = True
+            rollout_phase("released")
         except BaseException as exc:  # noqa: BLE001 — preserve release failures and stop every resource
             report.update(status="release_failed", release_error_type=type(exc).__name__)
             failure = failure or exc
@@ -182,8 +208,12 @@ def run_rollout(transport, *, task: str, duration_s: float, rig_path: Path, qual
         if engine is not None:
             report["execution"] = engine.metrics()
         report["completed_at"] = time.time()
-        (destination / "trace.json").write_text(json.dumps({"events": trace}, indent=2, allow_nan=False) + "\n")
-        (destination / "report.json").write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+        summary = capture.finalize(destination, report, upload_repo_id=upload_repo_id, metadata=artifact_metadata)
+        report.update(artifact_directory=str(destination), artifact_status=summary["status"])
+        if "upload" in summary:
+            report["upload"] = summary["upload"]
+        if summary["status"] != "TRACE_SAVED":
+            failure = failure or RuntimeError("Native π0.5 artifact export is incomplete; originals retained")
     if failure is not None:
         raise RuntimeError(f"π0.5 rollout {report['status']}; inspect its retained report") from failure
     return report

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from yamkit.inference.service import ModelRuntime
 
-from .contract import CAMERA_MAP, CONTRACT, PROFILE, build_id, validate_snapshot
+from .contract import ACTION_TRANSFORM, CAMERA_MAP, CONTRACT, PROFILE, build_id, validate_snapshot
 
 
 def pinned_tokenizer_snapshot(snapshot_download) -> str:
@@ -98,6 +98,7 @@ class Pi05Runtime(ModelRuntime):
     def _execution_identity(self) -> dict:
         return {**super()._execution_identity(), "controller_contract": CONTRACT["id"],
                 "native_rtc_enabled": False, "strict_weights_restored": True,
+                "action_transform": dict(ACTION_TRANSFORM),
                 "compile_model": False}
 
     def ready(self) -> dict:
@@ -111,5 +112,6 @@ class Pi05Runtime(ModelRuntime):
         if len(response["chunk"]) != PROFILE.chunk_size:
             raise ValueError("π0.5 must return all 30 native action rows")
         response["controller_contract"] = CONTRACT["id"]
+        response["action_transform"] = dict(ACTION_TRANSFORM)
         response["pi05_build_id"] = build_id()
         return response

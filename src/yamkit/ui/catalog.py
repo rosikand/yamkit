@@ -295,7 +295,10 @@ def _recording_summary(directory: Path, meta: dict, videos: list[str], *, timing
     trace_present = bool(summary or original_paths.get("trace_dir")
                          or _deployment_file(directory / "trace.json")
                          or _deployment_file(directory / "export-error.json"))
-    if trace_present:
+    native_recording_disabled = (summary.get("controller_mode") == "pi05_reference"
+                                 and summary.get("capture_requested") is False
+                                 and requested is False and not videos)
+    if trace_present and not native_recording_disabled:
         requested = True
     expected_cameras = list(_TRACE_CAMERAS) if requested else [Path(name).stem for name in videos]
     missing = [camera for camera in expected_cameras if f"{camera}.mp4" not in videos]

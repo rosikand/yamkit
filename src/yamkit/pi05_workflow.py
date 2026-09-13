@@ -80,7 +80,8 @@ def _qualification_failure_message(report, report_path):
             + str(report_path))
 
 
-def prepare_pi05(*, backend, task, rig, duration=60, arms=(), config=None, progress=lambda _value: None, force=False):
+def prepare_pi05(*, backend, task, rig, duration=60, arms=(), config=None, progress=lambda _value: None, force=False,
+                 own_preparation_dir=None):
     from .external_ops import _read_json, _read_private, _save
     from .pi05.admission import passive_target_validator, validate_qualification
     from .pi05.qualification import collect_qualification, load_saved_observation, save_qualification
@@ -101,7 +102,8 @@ def prepare_pi05(*, backend, task, rig, duration=60, arms=(), config=None, progr
         raise WorkflowError("Configure saved_observations with existing recording NPZ files for native π0.5 qualification; "
                             "no live observation capture is performed")
     try:
-        metadata = connect_configured_runtime(target, task, lambda: _readiness(target, token), progress=progress)
+        kwargs = {"own_preparation_dir": own_preparation_dir} if own_preparation_dir is not None else {}
+        metadata = connect_configured_runtime(target, task, lambda: _readiness(target, token), progress=progress, **kwargs)
     except WorkflowError as exc:
         raise WorkflowError(str(exc) + "; π0.5 also requires authorized access to google/paligemma-3b-pt-224. "
                             "If access is denied, accept its license with the configured HF account; never substitute a tokenizer/model") from None
@@ -157,12 +159,18 @@ def prepare_pi05(*, backend, task, rig, duration=60, arms=(), config=None, progr
     return selection, result
 
 
-def run_prepared_pi05(selection, *, confirm_supervised, accept_mapping):
+def run_prepared_pi05(selection, *, confirm_supervised, accept_mapping, artifact_dir=None,
+                      capture_trace=False, upload_repo_id=None, fake_robot=None, artifact_metadata=None):
     """Called only inside the CLI's lifetime lock after fresh terminal approval."""
     from .external_ops import _read_private
     from .pi05.rollout import run_rollout
 
-    if confirm_supervised is not True or accept_mapping is not True:
+    if fake_robot is not None:
+        from .fake_inference import SavedRobot
+
+        if type(fake_robot) is not SavedRobot or confirm_supervised or accept_mapping:
+            raise WorkflowError("Explicit fake execution takes only SavedRobot and cannot carry motion approval")
+    elif confirm_supervised is not True or accept_mapping is not True:
         raise WorkflowError("Native π0.5 requires fresh mapping acceptance and supervised confirmation")
     target = load_target("lambda", "pi05-yam", config=selection.config)
     if target.service != selection.external_service or target.token_file is None:
@@ -176,12 +184,18 @@ def run_prepared_pi05(selection, *, confirm_supervised, accept_mapping):
     except (OSError, ValueError, TypeError):
         raise WorkflowError("Native π0.5 qualification evidence changed after confirmation; prepare again before a new supervised command") from None
     transport = _transport(target, token, metadata)
-    artifact_dir = ROOT / "outputs/inference" / ("pi05-" + uuid.uuid4().hex)
+    artifact_dir = (ROOT / "outputs/ui/deployments" / ("pi05-" + uuid.uuid4().hex)
+                    if artifact_dir is None else _local_path(str(artifact_dir)))
     try:
+        extra = {}
+        if fake_robot is not None:
+            extra = {"robot_factory": lambda *_: fake_robot, "home": lambda *_: None}
+        if capture_trace or upload_repo_id is not None or artifact_metadata is not None:
+            extra.update(capture_trace=capture_trace, upload_repo_id=upload_repo_id, artifact_metadata=artifact_metadata)
         return run_rollout(transport, task=selection.task, duration_s=selection.duration,
                            rig_path=Path(selection.rig_path), qualification=qualification,
                            confirm_supervised=True, accept_mapping=True,
-                           artifact_dir=artifact_dir)
+                           artifact_dir=artifact_dir, **extra)
     except (RuntimeError, OSError):
         # Native runner failures can chain private transport/SDK diagnostics.
         # Keep the terminal error actionable without guessing release success.

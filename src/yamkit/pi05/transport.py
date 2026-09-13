@@ -5,7 +5,7 @@ from __future__ import annotations
 from yamkit.inference.http_transport import HttpTransport
 from yamkit.inference.protocol import validate_request, validate_response
 
-from .contract import CONTRACT_ID, PROFILE, build_id
+from .contract import ACTION_TRANSFORM, CONTRACT, CONTRACT_ID, PROFILE, build_id
 
 
 def validate_readiness(metadata: dict) -> None:
@@ -18,9 +18,12 @@ def validate_readiness(metadata: dict) -> None:
             or metadata.get("model") != PROFILE.repo_id or metadata.get("execution_mode") != "eager"
             or metadata.get("pi05_build_id") != build_id()
             or metadata.get("controller_contract", {}).get("id") != CONTRACT_ID
+            or metadata["controller_contract"].get("version") != CONTRACT["version"]
+            or metadata["controller_contract"].get("action_transform") != ACTION_TRANSFORM
             or metadata.get("ready") is not True or identity.get("profile") != PROFILE.id
             or identity.get("model_revision") != PROFILE.revision
             or identity.get("controller_contract") != CONTRACT_ID
+            or identity.get("action_transform") != ACTION_TRANSFORM
             or identity.get("model_dtype") != "bfloat16" or identity.get("chunk_size") != 30
             or identity.get("action_width") != 14 or identity.get("num_inference_steps") != 10
             or identity.get("native_rtc_enabled") is not False
@@ -62,6 +65,7 @@ class Pi05Transport(HttpTransport):
         response = super().predict_chunk(request, timeout_s)
         validate_response(response, request, PROFILE)
         if (response.get("instance_id") != self.instance_id or response.get("pi05_build_id") != build_id()
+                or response.get("action_transform") != ACTION_TRANSFORM
                 or response.get("controller_contract") != CONTRACT_ID or len(response["chunk"]) != 30):
             self.cancel()
             raise ValueError("π0.5 response instance, source, contract or full chunk changed")
