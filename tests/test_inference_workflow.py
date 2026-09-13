@@ -11,11 +11,60 @@ from urllib.error import URLError
 import pytest
 from typer.testing import CliRunner
 
+from tests.test_external_ops import attach
+from tests.test_external_ops import attachment as _attachment
 from yamkit import backend_workflow as backend
 from yamkit import cli
 from yamkit import inference_workflow as workflow
 from yamkit import workflow_lock as locks
 from yamkit.backend_workflow import WorkflowError
+
+attachment = _attachment
+
+
+@pytest.fixture
+def legacy_attachment(attachment, tmp_path, monkeypatch):
+    """A genuinely validated saved attachment, with its readiness HTTP stubbed."""
+    monkeypatch.setattr(backend, "ROOT", tmp_path)
+    monkeypatch.setattr(workflow, "ROOT", tmp_path)
+    monkeypatch.setattr(locks, "ROOT", tmp_path)
+    receipt = attach(attachment)
+    attachment.calls.clear()
+    return SimpleNamespace(root=tmp_path, receipt=receipt, calls=attachment.calls)
+
+
+def test_missing_default_configuration_retains_existing_attachment_compatibility(legacy_attachment):
+    fixture = legacy_attachment
+    target = backend.load_target("lambda", "molmoact2")
+    assert target.service == fixture.receipt["name"]
+    assert target.endpoint == fixture.receipt["http_endpoint"]
+    assert target.policy == "molmoact2" and target.backend == "lambda"
+    assert target.token_file is target.ssh is target.remote is None
+    assert not fixture.calls and not (fixture.root / backend.CONFIG_RELATIVE).exists()
+
+
+@pytest.mark.parametrize("filename", ["data/inference/typo.json", backend.CONFIG_RELATIVE])
+def test_explicit_missing_configuration_never_searches_existing_attachment(legacy_attachment, monkeypatch, filename):
+    from yamkit import external_ops
+
+    fixture = legacy_attachment
+    assert backend.load_target("lambda", "molmoact2").service == fixture.receipt["name"]
+    monkeypatch.setattr(external_ops, "owned_service", lambda *_a: pytest.fail("An explicit path forbids fallback search"))
+    with pytest.raises(WorkflowError, match="Explicit backend configuration file does not exist"):
+        backend.load_target("lambda", "molmoact2", config=fixture.root / filename)
+    assert not fixture.calls and not (fixture.root / filename).exists()
+
+
+def test_cli_missing_explicit_config_is_actionable_before_backend_or_confirmation(legacy_attachment, monkeypatch):
+    monkeypatch.setattr(workflow, "ensure_backend", lambda *_a, **_k: pytest.fail("No backend connection or startup"))
+    fixture = legacy_attachment
+    result = CliRunner().invoke(cli.app, ["rollout", "--backend", "lambda", "--policy", "molmoact2",
+                                         "--task", "cube", "--rig", str(fixture.root / "unread-rig.yaml"),
+                                         "--backend-config", str(fixture.root / "missing.json"), "--fake-hardware"])
+    assert result.exit_code == 2
+    assert "Explicit backend configuration file does not exist" in result.output
+    assert "--backend-config" in result.output and "I am on site" not in result.output
+    assert not fixture.calls and not (fixture.root / "outputs").exists()
 
 
 @pytest.fixture

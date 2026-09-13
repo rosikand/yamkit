@@ -72,8 +72,12 @@ def load_target(backend: str, policy: str, *, config: Path | None = None) -> Bac
 
     _name(backend, "Backend")
     policy = _name(canonical_policy(policy), "Policy")
-    path = _local_path(str(config or (ROOT / CONFIG_RELATIVE)))
+    path = _local_path(str(config if config is not None else ROOT / CONFIG_RELATIVE))
     if not path.exists():
+        if config is not None:
+            raise WorkflowError("Explicit backend configuration file does not exist; fix --backend-config or omit it "
+                                "to use the default configuration or an existing compatible attachment. "
+                                "See docs/INFERENCE_CLI.md")
         # Existing installations need no new configuration to reuse a single attachment.
         candidates = []
         directory = ROOT / "data/inference/external"
