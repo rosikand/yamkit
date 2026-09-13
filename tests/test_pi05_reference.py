@@ -10,7 +10,7 @@ from yamkit.inference.mapping import MOLMO_NAMES, YAM_NAMES
 from yamkit.inference.profiles import get_profile
 from yamkit.pi05.contract import PROFILE, validate_checkpoint_config
 from yamkit.pi05.executor import Pi05ExecutionFault, Pi05ReferenceExecutor, finite_rows
-from yamkit.pi05.runtime import restore_native_weights
+from yamkit.pi05.runtime import pinned_tokenizer_snapshot, restore_native_weights
 
 
 def checkpoint_config():
@@ -97,6 +97,23 @@ def test_native_loader_rejects_missing_returned_keys():
 def test_native_loader_rejects_ambiguous_prefix_collision():
     with pytest.raises(ValueError, match="duplicate"):
         restore_native_weights(NativeWeights(), {"a": 1, "model.a": 2})
+
+
+def test_gated_tokenizer_is_actionable_and_never_substituted():
+    import httpx
+    from huggingface_hub.errors import GatedRepoError
+
+    attempted = []
+
+    def download(repo, **kwargs):
+        attempted.append((repo, kwargs["revision"]))
+        raise GatedRepoError("private diagnostic must not escape",
+                             response=httpx.Response(403, request=httpx.Request("GET", "https://huggingface.co/")))
+
+    with pytest.raises(ValueError, match="Accept its publisher terms") as error:
+        pinned_tokenizer_snapshot(download)
+    assert "private diagnostic" not in str(error.value)
+    assert attempted == [("google/paligemma-3b-pt-224", "35e4f46485b4d07967e7e9935bc3786aad50687c")]
 
 
 class Clock:

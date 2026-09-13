@@ -14,6 +14,22 @@ from yamkit.inference.service import ModelRuntime
 from .contract import CAMERA_MAP, CONTRACT, PROFILE, build_id, validate_snapshot
 
 
+def pinned_tokenizer_snapshot(snapshot_download) -> str:
+    """Never substitute an unreviewed tokenizer or bypass publisher access."""
+    from huggingface_hub.errors import GatedRepoError
+
+    try:
+        return snapshot_download(PROFILE.dependency_repo, revision=PROFILE.dependency_revision,
+                                 allow_patterns=["*.json", "*.txt", "*.model", "*.jinja", "tokenizer*"])
+    except GatedRepoError:
+        raise ValueError(
+            "π0.5 requires access to the pinned google/paligemma-3b-pt-224 tokenizer. "
+            "Accept its publisher terms at https://huggingface.co/google/paligemma-3b-pt-224 "
+            "with the runtime's Hugging Face account, then use yamkit hub login on the GPU checkout. "
+            "No substitute tokenizer was loaded; π0.5 is not qualified."
+        ) from None
+
+
 def restore_native_weights(policy, state_dict) -> None:
     """Native key compatibility, strict restore, and NO upstream silent fallback.
 
@@ -50,8 +66,7 @@ class Pi05Runtime(ModelRuntime):
         snapshot = Path(snapshot_download(PROFILE.repo_id, revision=PROFILE.revision,
                                          allow_patterns=["*.json", "*.safetensors"]))
         validate_snapshot(snapshot)
-        dependency = snapshot_download(PROFILE.dependency_repo, revision=PROFILE.dependency_revision,
-                                       allow_patterns=["*.json", "*.txt", "*.model", "*.jinja", "tokenizer*"])
+        dependency = pinned_tokenizer_snapshot(snapshot_download)
         config = PreTrainedConfig.from_pretrained(snapshot)
         config.device = device
         config.pretrained_path = snapshot

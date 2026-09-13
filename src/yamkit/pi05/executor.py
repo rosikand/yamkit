@@ -102,7 +102,7 @@ class Pi05ReferenceExecutor:
                 if not self.check():
                     break
                 remaining = self.deadline - self.clock()
-                if remaining <= 0:
+                if remaining < 0.01:
                     break
                 requested_at = self.clock()
                 self.inference_calls += 1
