@@ -1,22 +1,23 @@
 # YAM π0.5: independent native reference execution
 
 Status on 2026-09-13: the pinned tokenizer and 9.35 GB YAM weights load on the
-existing GPU, and contract-version-2 qualification passed on Lenovo
-using saved observations and fake arms. The 50 direct calls and 50 complete
-integrated FIFO chunks include 1,500 executed rows, with zero unexpected drops,
-SDK modifications, coherence violations or faults. This is software evidence,
-not a physical trial, manipulation success or authorization to move the arms.
-Contract version 3 adds the bounded-phase tail admission rule below; the version-2
-record is historical and cannot qualify the changed build. Fresh service identity
-and qualification are required before version-3 physical admission.
+existing GPU. Fresh contract-version-3 qualification passed on Lenovo with saved
+observations and fake arms: 50 direct calls and 50 complete integrated FIFO
+chunks / 1,500 executed rows, with zero unexpected drops, SDK modifications,
+coherence violations or faults. A real-GPU five-second fake CLI run also passed
+capture, three-video playback and full private-HF hash verification. This is
+software evidence, not a physical trial, manipulation success or authorization
+to move the arms. The final idle-host sign-off is software READY for fresh
+supervised approval; see the [overnight handoff](OVERNIGHT_HANDOFF_2026-09-13.md)
+for the dated deployment evidence and distinct official-base blocker.
 
 The earlier two attempts stopped during direct warm sampling on a native gripper
 prediction outside [0,1] (`left_gripper.pos=1.000895619392395`) and never reached
 integrated execution. Their failed evidence remains in the
 [authorization follow-up](PI05_QUALIFICATION_2026-09-13.md); it is not reused as
 passing evidence. The new qualification exercises the explicit SDK endpoint
-adapter described below. Recorded fake-run local/private-HF/UI verification is
-still pending final evidence, so overall rollout readiness is not yet claimed.
+adapter and bounded-phase tail rule described below; historical version-2 proof
+does not qualify this newer build.
 The working MolmoAct2 path remains separate and unchanged.
 See [the range review](PI05_YAM_RANGE_REVIEW.md) for primary sources, the raw
 anomaly guard, exact raw/executed accounting and force-limiter caveat.
@@ -129,7 +130,8 @@ the single terminal admission transition, not one invented RPC per waiting tick.
 `phase_tail_wait_started` includes the decision time and original tick-start time.
 Unchanged full-chunk cases retain exact native row/observation/send timing parity
 and zero tail counters. Fake boundary/overrun/Stop/expiry tests are software
-evidence only; a new build-bound qualification is still mandatory.
+evidence only. The current version-3 build received the fresh qualification
+reported below; future identity changes still require renewed qualification.
 
 ## Concrete native-loader hardening
 
@@ -169,7 +171,39 @@ passively. Qualification never captures a new camera frame. Runtime/session/task
 invalidate physical admission. The p95 RPC budget is 1.6 s (20% margin on the
 2 s request limit), explicitly separate from the one-second nominal action chunk.
 
-The historical pre-tail-guard version-2 Lenovo record is
+The passing version-3 Lenovo record is
+`.context/pi05-qualification/ebbb44c231ee4704a801204bb46894d1/qualification.json`
+under `/home/andre/rohan-new`. It binds runtime build
+`ebec79a9a5ff27333a572193df378359391a86707cc852d8527dad48665e81ec`, instance
+`9d8df83c-9bd3-4547-9cc2-9a787f81446a`, and session expiry
+`1789330739.4388595` (2026-09-13 20:18:59 UTC). Actual UI software preparation
+completed in 212.24 s with exit 0 / ready true; motion approvals remained false.
+Direct warm p50/p95/max were 0.4358435749891214 / 0.5070293031225447 /
+0.50993867701618 s; one direct gripper scalar projected by 0.0018082857131958008.
+All 50 integrated chunks / 1,500 rows completed at
+29.924748810782212 Hz, with zero errors, unexpected drops, SDK modifications,
+coherence violations or interpolation. One integrated gripper scalar projected
+by 0.00006818771362304688. Integrated RPC p95 was 0.699393955245614 s and
+observation-age p95 1.5480936542036943 s. In the separate Stop-in-flight probe, zero commands
+were sent after Stop, all fake arms released and the 30 returned rows were
+accounted as intentionally unused.
+
+The successful five-second fake CLI run saved
+`outputs/ui/deployments/software-fake-1644f54e4c5945cdbd39d7ac5fd64b72` and
+completed its full capture/export/private-upload pipeline in 48.99 s. Its two
+chunks / 60 rows and 107 observations had zero errors, drops or gripper
+projections. The bounded tail recorded 47 observation ticks, 1.53967 s of existing
+tick wait and one avoided terminal RPC. Fake resources released before export;
+all three videos (107 original frames each, 5.00802 s), timelines and preserved
+originals were checked, and all 335
+files at private-HF revision `9e2f1741a4fc02818c792a2803ea6c5f81361500` were
+downloaded and hash-verified. Lenovo verification:
+`.context/overnight/pi05-artifact-verification-20260913/result.json`. Actual UI
+recording/video header and byte-range routes also passed safe GET checks in
+`.context/overnight/ui-playback-20260913T122814Z-2d20788e/result.json`; this is
+saved-media verification, not a hardware-camera test.
+
+The historical pre-tail-guard version-2 Lenovo record remains at
 `.context/pi05-qualification/17c40a159fe64227aba5942c3272ae68/qualification.json`
 under `/home/andre/rohan-new`, with `qualified=true` and `reasons=[]`. It binds
 runtime build
@@ -194,9 +228,8 @@ two-arm bounds/measurement checks, startup home/open, direct target dispatch and
 release. Healthy completion homes preserving the final measured gripper opening;
 Stop/fault releases without home or retries. JSON trace/report saving happens
 after release. Native local recordings, three-video playback, UI history and
-private-HF packaging/upload are implemented. Final end-to-end artifact evidence
-from the real-GPU, fake-hardware recorded run is pending; MA2 recording success
-alone does not establish PI recording readiness.
+private-HF packaging/upload are implemented and verified through the native
+real-GPU, fake-hardware recorded run above, independently of MA2 recording.
 Reports distinguish attempted rows from complete receipts: a failed bimanual
 SDK call records an unknown partial dispatch, because one arm may have received
 its target even if the other arm failed. Zero completed rows is not proof of
@@ -210,10 +243,10 @@ markers rather than fabricated finite actions. The CLI identifies the offending
 gripper and saved report path. Diagnostics do not change acceptance, rows or timing.
 
 Fake/native tests do not validate dynamics, calibration, camera placement or task
-success. The historical version-2 real-GPU qualification passed with complete
-integrated real-model row accounting and explicit raw-versus-projected action
-evidence; version 3 requires fresh service identity and qualification evidence.
-`hardware_tested=false` and physical task success remains unproven. Final recorded
-fake-run artifact verification is still pending. Failed or stale qualification
-must remain visible, and no software result replaces fresh on-site supervision,
+success. Version-3 real-GPU qualification and recorded fake-run artifact
+verification passed with complete row accounting and explicit raw-versus-projected
+action evidence. `hardware_tested=false` and physical task success remains
+unproven. Qualification is bound to runtime/session/task/rig/source and expiry;
+failed or stale qualification must remain visible. No software result replaces
+fresh on-site supervision,
 mount/stop verification and exact-command approval before any physical run.
