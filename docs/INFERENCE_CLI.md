@@ -38,8 +38,11 @@ without home. Ctrl-C remains the terminal Stop. There are no automatic physical 
 
 The simple MolmoAct2 path fixes reference execution, 30 Hz, HTTP, `cuda_graph10`, full 640×480
 raw RGB, no crop and no RTC. Legacy `--backend external`/`modal`/`local` commands retain their
-existing defaults and behavior. Normal CLI rollout prints controller metrics; use the UI's
-Recording/Upload choices for video capture, playback and HF archives.
+existing defaults and behavior. Normal CLI rollout prints controller metrics. Add
+`--capture-trace` for local three-camera video/trace/report artifacts, or
+`--upload-repo-id namespace/private-rollout-dataset` to save locally and upload after release.
+The Inference UI exposes the same recording and private-HF choices. Original local traces
+are preserved even if export or upload fails; a requested pipeline failure exits nonzero.
 
 ## Configure an existing GPU once
 
@@ -174,12 +177,38 @@ substitute another tokenizer, loosen checkpoint loading, or run an unqualified p
 VM is provisioned and the workflow never stops MolmoAct2 to free GPU memory automatically.
 
 ```bash
-yamkit inference --backend lambda --policy pi05 --task 'put the red cube into the black container'
+yamkit inference --backend lambda --policy pi05_yam --task 'put the red cube into the black container'
 # Only after successful native qualification and fresh on-site verification:
-yamkit rollout --backend lambda --policy pi05 --task 'put the red cube into the black container' --duration 5
+yamkit rollout --backend lambda --policy pi05_yam --task 'put the red cube into the black container' --duration 60
 ```
 
-The rollout command still asks for one explicit terminal confirmation. Native π0.5 saves JSON
-trace/report artifacts under `outputs/inference/pi05-<operation>/` after release. Native video,
-HF upload and UI policy selection are not yet integrated; use MolmoAct2's established UI for
-that workflow. Software qualification does not prove physical task success.
+## Explicit software-only replay
+
+`--fake-hardware` is a deliberate CLI-only test mode for the configured Lambda MA2 and
+YAM π0.5 paths. It still contacts the real service and requires current policy-specific
+qualification, but installs guarded fake arms/cameras and rejects CAN or real camera
+construction. It cannot be combined with approval flags or `--dry-run`.
+
+```bash
+yamkit rollout --backend lambda --policy pi05_yam \
+  --task 'put the red cube into the black container' --duration 5 \
+  --fake-hardware --capture-trace
+```
+
+Configure `saved_observations` for that policy first (the same NPZ schema described above).
+MA2 normally qualifies using generated images; these saved inputs are only for explicit
+fake replay. No live observation is acquired to fill a missing file. Fake recordings are
+labelled synthetic, carry `hardware_tested=false` and no motion approval, and appear under
+`outputs/ui/deployments/software-fake-…`. The images replay a saved scene; fake joint feedback
+is not dynamics, camera alignment, grasp success, or physical safety validation.
+
+The sparse UI Policy selector keeps MolmoAct2 and native YAM π0.5 distinct. Native preparation
+and Start call the same backend/qualification/runner APIs as the CLI. Advanced controls cannot
+turn the native policy into a MolmoAct2 controller. Official `pi05_base` stays blocked before
+hardware while its documented YAM normalization/action/timing contract is missing; see
+[the official OpenPI report](OPENPI_REFERENCE.md) for the separate, genuine-model GPU diagnostic.
+
+The rollout command still asks for one explicit terminal confirmation. Native π0.5 saves
+trace/report artifacts under `outputs/ui/deployments/pi05-<operation>/` after release;
+optional video and upload use the same post-release pipeline. Software qualification does
+not prove physical task success.

@@ -189,7 +189,7 @@ def execute_request(request_path, *, motion=False):
                               status=status if status in ("completed", "stopped", "failed", "release_failed") else "unknown",
                               released=report.get("released") is True, artifact_directory=str(trace))
                 if (status not in ("completed", "stopped") or report.get("released") is not True
-                        or report.get("exit_status", 0) != 0
+                        or report.get("exit_status", 0) not in ((0, 130) if status == "stopped" else (0,))
                         or report.get("artifact_status", "TRACE_SAVED") != "TRACE_SAVED"):
                     raise WorkflowError("Native rollout or recording did not complete successfully; inspect " + str(trace)
                                         + ". No automatic physical retry was started")

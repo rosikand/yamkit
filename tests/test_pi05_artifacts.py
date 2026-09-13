@@ -31,6 +31,23 @@ def report():
                           "interpolation_points": 0, "modified_commands": 0}}
 
 
+def assert_outcome(directory, *, execution_status="completed", exit_status=0, error=None):
+    summary = json.loads((directory / "summary.json").read_text())
+    recorded = json.loads((directory / "report.json").read_text())
+    meta = json.loads((directory / "meta.json").read_text())
+    metrics = json.loads((directory / "metrics.json").read_text())["native_pi05_rollout"]
+    for value in (summary, recorded, meta, metrics):
+        assert value["execution_status"] == execution_status
+        assert value["exit_status"] == exit_status
+        assert value["pipeline_complete"] is (exit_status == 0)
+        assert value["postprocess_error"] == error
+        assert value["upload_pending"] is False
+    assert recorded["status"] == metrics["status"] == execution_status
+    assert meta["returncode"] == exit_status
+    assert meta["status"] == ("stopped" if execution_status == "stopped"
+                               else "success" if exit_status == 0 else "failed")
+
+
 @pytest.fixture
 def bounded_tools(monkeypatch):
     actual = artifacts._trace_tools()
@@ -141,6 +158,7 @@ def test_release_failure_prevents_encoder_renderer_and_upload(bounded_tools, mon
     assert list(tmp_path.glob("*.mp4")) == []
     assert not (tmp_path / "frames").exists()
     assert json.loads((tmp_path / "report.json").read_text())["released"] is False
+    assert_outcome(tmp_path, exit_status=1, error="release_not_confirmed")
 
 
 def test_real_video_export_native_report_and_ui_catalog_playback(bounded_tools, tmp_path):
@@ -160,6 +178,7 @@ def test_real_video_export_native_report_and_ui_catalog_playback(bounded_tools, 
     text = (directory / "report.html").read_text()
     assert "fake-arm software run" in text and "timeupdate" in text
     assert "cached command state" not in text
+    assert_outcome(directory)
 
 
 def test_explicit_native_trace_only_run_is_not_mislabeled_missing_recording(bounded_tools, tmp_path):
@@ -211,6 +230,9 @@ def test_ui_native_bundle_joins_preserved_original_trace_frames(bounded_tools, m
     manifest = validate_bundle(bundle)
     assert manifest["run_id"] == ui_run.name
     assert manifest["frame_counts"] == dict.fromkeys(artifacts.CAMERAS, 2)
+    archived = json.loads((bundle / "meta.json").read_text())
+    assert archived["returncode"] == 0 and archived["pipeline_complete"]
+    assert archived["execution_status"] == "completed"
     assert (source / "frames/top/frame-000001.png").is_file()
     assert not (ui_run / "frames").exists()
 
@@ -237,6 +259,10 @@ def test_upload_only_after_release_and_export_with_no_retry(bounded_tools, monke
         summary = json.loads((bundle.parent / "summary.json").read_text())
         assert summary["resources_released"] is True
         assert summary["status"] == "TRACE_SAVED"
+        meta = json.loads((bundle / "meta.json").read_text())
+        assert meta["returncode"] == 0 and meta["upload_pending"]
+        assert meta["pipeline_complete"] is False
+        assert meta["resources_released"] is True
         raise RuntimeError("Bearer do-not-show-this-private-value")
 
     monkeypatch.setattr(artifacts, "upload_rollout", upload)
@@ -246,6 +272,48 @@ def test_upload_only_after_release_and_export_with_no_retry(bounded_tools, monke
     status = json.loads((tmp_path / "hf-upload.json").read_text())
     assert status["status"] == "failed"
     assert "do-not-show" not in json.dumps(status)
+    assert result["status"] == "TRACE_SAVED"  # Valid local media remains replayable.
+    assert_outcome(tmp_path, exit_status=1, error="upload_failed")
+    assert json.loads((tmp_path / "report.json").read_text())["released"] is True
+
+
+@pytest.mark.parametrize("returned", [{"status": "failed"}, {"status": "pending"}, False, None])
+def test_upload_unconfirmed_return_is_pipeline_failure_not_success(bounded_tools, monkeypatch, tmp_path, returned):
+    capture, _ = capture_frames()
+    called = []
+    def upload(_bundle, *, repo_id):
+        called.append(repo_id)
+        return returned
+    monkeypatch.setattr(artifacts, "upload_rollout", upload)
+    result = capture.finalize(tmp_path, report(), upload_repo_id="test/private")
+    assert called == ["test/private"] and result["status"] == "TRACE_SAVED"
+    assert result["upload"]["status"] == "failed"
+    assert_outcome(tmp_path, exit_status=1, error="upload_failed")
+
+
+@pytest.mark.parametrize("status", ["uploaded", "already_uploaded"])
+def test_confirmed_upload_finalizes_success_without_mutating_archive(bounded_tools, monkeypatch, tmp_path, status):
+    capture, _ = capture_frames()
+    monkeypatch.setattr(artifacts, "upload_rollout", lambda *_a, **_k: {"status": status, "repo_id": "test/private"})
+    capture.finalize(tmp_path, report(), upload_repo_id="test/private")
+    assert_outcome(tmp_path)
+    assert json.loads((tmp_path / "bundle/meta.json").read_text())["upload_pending"] is True
+
+
+@pytest.mark.parametrize("status", ["stopped", "failed"])
+def test_saved_recording_retains_stop_or_control_failure_identity(bounded_tools, tmp_path, status):
+    capture = artifacts.NativeCapture(task="cube", duration_s=.1)
+    result = capture.finalize(tmp_path, {**report(), "status": status})
+    assert result["status"] == "TRACE_SAVED" and result["resources_released"]
+    assert_outcome(tmp_path, execution_status=status, exit_status=130 if status == "stopped" else 1)
+
+
+def test_render_failure_updates_history_without_relabeling_completed_execution(bounded_tools, monkeypatch, tmp_path):
+    capture = artifacts.NativeCapture(task="cube", duration_s=.1)
+    monkeypatch.setattr(artifacts, "_render_native_report", lambda *_a: (_ for _ in ()).throw(RuntimeError("renderer")))
+    outcome = capture.finalize(tmp_path, report())
+    assert outcome["status"] == "EXPORT_FAILED"
+    assert_outcome(tmp_path, exit_status=1, error="recording_export_failed")
 
 
 def test_export_failure_retains_trace_and_prevents_upload(bounded_tools, monkeypatch, tmp_path):
@@ -258,6 +326,7 @@ def test_export_failure_retains_trace_and_prevents_upload(bounded_tools, monkeyp
     assert len(result["video_export_errors"]) == 3
     assert (tmp_path / "trace.json").is_file()
     assert (tmp_path / "frames/top/frame-000000.png").is_file()
+    assert_outcome(tmp_path, exit_status=1, error="recording_export_failed")
 
 
 def test_fake_lifecycle_cannot_import_real_robot_and_exports_after_release(bounded_tools, monkeypatch, tmp_path):
@@ -323,4 +392,69 @@ def test_fake_lifecycle_cannot_import_real_robot_and_exports_after_release(bound
                                 capture_trace=True)
     assert result["hardware_tested"] is False and result["status"] == "stopped"
     assert result["artifact_status"] == "TRACE_SAVED"
+    assert result["exit_status"] == 130 and result["pipeline_complete"] is False
+    assert result["execution_status"] == "stopped" and result["postprocess_error"] is None
+    assert_outcome(tmp_path / "run", execution_status="stopped", exit_status=130)
     assert events.index("released") < events.index("export")
+
+
+@pytest.mark.parametrize("upload_failure", [False, True])
+def test_public_fake_rollout_reports_pipeline_outcome_after_release(bounded_tools, monkeypatch, tmp_path, upload_failure):
+    monkeypatch.setattr(rollout, "validate_qualification", lambda *_a, **_k: None)
+    events = []
+
+    class Transport:
+        def ready(self, _timeout):
+            return {"instance_id": "fake", "http_session_expires_at": time.time() + 1000}
+
+        def ensure_session_active(self):
+            return None
+
+        def predict_chunk(self, _request, _timeout):
+            return {"chunk": np.zeros((30, 14)).tolist()}
+
+        def cancel(self):
+            return None
+
+        def close(self):
+            events.append("transport_closed")
+
+    class Robot:
+        def connect(self):
+            events.append("connect")
+
+        def get_observation(self):
+            return {**dict.fromkeys(YAM_NAMES, 0.0), **{name: observation()[name] for name in PROFILE.image_keys}}
+
+        def validate_action_target(self, _target):
+            return None
+
+        def send_reference_action(self, target, *, dispatch_check):
+            dispatch_check()
+            return target
+
+        def disconnect(self, *, home):
+            assert home is False
+            events.append("released")
+
+    def upload(_bundle, *, repo_id):
+        assert "released" in events and "transport_closed" in events
+        events.append("upload")
+        return {"status": "failed" if upload_failure else "uploaded", "repo_id": repo_id}
+
+    monkeypatch.setattr(artifacts, "upload_rollout", upload)
+    kwargs = {"task": "cube", "duration_s": .1, "rig_path": Path("unused"), "qualification": {},
+              "accept_mapping": True, "confirm_supervised": True, "artifact_dir": tmp_path / "run",
+              "robot_factory": lambda *_: Robot(), "home": lambda *_: events.append("home"),
+              "capture_trace": True, "upload_repo_id": "test/private"}
+    if upload_failure:
+        with pytest.raises(RuntimeError, match="retained report"):
+            rollout.run_rollout(Transport(), **kwargs)
+        assert_outcome(tmp_path / "run", exit_status=1, error="upload_failed")
+    else:
+        result = rollout.run_rollout(Transport(), **kwargs)
+        assert result["status"] == result["execution_status"] == "completed"
+        assert result["released"] and result["pipeline_complete"] and result["exit_status"] == 0
+        assert result["artifact_status"] == "TRACE_SAVED" and result["postprocess_error"] is None
+        assert_outcome(tmp_path / "run")
+    assert events.count("connect") == events.count("home") == events.count("released") == events.count("upload") == 1

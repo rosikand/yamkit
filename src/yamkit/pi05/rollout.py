@@ -210,10 +210,14 @@ def run_rollout(transport, *, task: str, duration_s: float, rig_path: Path, qual
         report["completed_at"] = time.time()
         summary = capture.finalize(destination, report, upload_repo_id=upload_repo_id, metadata=artifact_metadata)
         report.update(artifact_directory=str(destination), artifact_status=summary["status"])
+        report.update({key: summary[key] for key in ("execution_status", "exit_status", "pipeline_complete",
+                                                     "postprocess_error", "upload_pending")})
         if "upload" in summary:
             report["upload"] = summary["upload"]
         if summary["status"] != "TRACE_SAVED":
             failure = failure or RuntimeError("Native π0.5 artifact export is incomplete; originals retained")
+        elif summary["postprocess_error"]:
+            failure = failure or RuntimeError("Native π0.5 requested post-processing is incomplete; originals retained")
     if failure is not None:
         raise RuntimeError(f"π0.5 rollout {report['status']}; inspect its retained report") from failure
     return report

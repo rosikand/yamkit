@@ -264,6 +264,14 @@ def test_native_returned_fault_or_stop_cannot_be_reported_as_success(helper, mon
     assert not result["ready"] and result["status"] == report["status"]
 
 
+def test_native_explicit_stopped_exit_status_stays_130(helper, monkeypatch):
+    monkeypatch.setattr(pi05_workflow, "run_prepared_pi05", lambda *_a, **_k: {
+        "status": "stopped", "released": True, "exit_status": 130, "artifact_status": "TRACE_SAVED"})
+    request = helper.request(motion=True, mapping_accepted=True, supervised_confirmed=True)
+    assert native.execute_request(request, motion=True) == 130
+    assert not json.loads((request.parent / "result.json").read_text())["ready"]
+
+
 def test_helper_changed_selection_or_arbitrary_error_never_exposes_diagnostics(helper, monkeypatch, capsys):
     request = helper.request()
     monkeypatch.setattr(native, "preparation_context", lambda _: (_ for _ in ()).throw(RuntimeError("secret_fixture_value")))

@@ -67,6 +67,38 @@ def rollout_phase(phase):
         pass  # Display failure cannot interrupt resource release or motor control.
 
 
+def _finalize_outcome(directory, summary, report, meta, *, upload_pending=False):
+    """Keep completed control/release evidence distinct from the requested pipeline."""
+    execution_status = report["status"]
+    if summary["resources_released"] is not True:
+        error = "release_not_confirmed"
+    elif summary["status"] != "TRACE_SAVED":
+        error = "recording_export_failed"
+    elif "upload" in summary and summary["upload"].get("status") not in ("uploaded", "already_uploaded"):
+        error = "upload_failed"
+    else:
+        error = None
+    exit_status = (1 if error or execution_status not in ("completed", "stopped")
+                   else 130 if execution_status == "stopped" else 0)
+    outcome = {"execution_status": execution_status, "exit_status": exit_status,
+               "pipeline_complete": exit_status == 0 and not upload_pending,
+               "postprocess_error": error, "upload_pending": upload_pending}
+    summary.update(outcome)
+    report.update(outcome)
+    meta.update(outcome, returncode=exit_status,
+                status="stopped" if execution_status == "stopped" else "success" if exit_status == 0 else "failed",
+                resources_released=summary["resources_released"])
+    _write(directory / "summary.json", summary)
+    _write(directory / "report.json", report)
+    _write(directory / "metrics.json", {"controller_mode": CONTRACT_ID,
+                                        "native_pi05_rollout": report,
+                                        "pi05_execution": report.get("execution", {})})
+    _write(directory / "meta.json", meta)
+    repository_path(directory / "log.txt").write_text(
+        "Native π0.5 lifecycle: " + execution_status + "; pipeline: "
+        + ("upload pending" if upload_pending else "complete" if outcome["pipeline_complete"] else "incomplete") + "\n")
+
+
 class NativeCapture:
     """Capture at existing observation seams; serialize only after release.
 
@@ -233,6 +265,7 @@ class NativeCapture:
                 "Startup/home frames and complete process stdout/stderr are not captured."]})
         repository_path(directory / "log.txt").write_text("Native π0.5 lifecycle: " + str(meta["status"]) + "\n")
         if not released:
+            _finalize_outcome(directory, summary, report, meta)
             return summary
         tools = _trace_tools()
         progress = tools.ExportProgress()
@@ -274,11 +307,10 @@ class NativeCapture:
                                                       "resources_released": True})
         finally:
             self.frame_pool = None
-            _write(directory / "summary.json", summary)
-            _write(directory / "report.json", report)
-            _write(directory / "metrics.json", {"controller_mode": CONTRACT_ID,
-                                                "native_pi05_rollout": report,
-                                                "pi05_execution": report.get("execution", {})})
+            # Packaging requires finalized local metadata. The immutable archive
+            # may record upload_pending; the local history is updated after upload.
+            _finalize_outcome(directory, summary, report, meta,
+                              upload_pending=upload_repo_id is not None and summary["status"] == "TRACE_SAVED")
         if upload_repo_id is not None:
             if summary["status"] != "TRACE_SAVED":
                 summary["upload"] = {"status": "failed", "repo_id": upload_repo_id}
@@ -288,14 +320,15 @@ class NativeCapture:
                 progress.report("uploading", force=True)
                 try:
                     result = upload_rollout(package_native_rollout(directory), repo_id=upload_repo_id)
+                    if not isinstance(result, dict) or result.get("status") not in ("uploaded", "already_uploaded"):
+                        raise ValueError("Private upload did not confirm completion")
                     summary["upload"] = {key: result.get(key) for key in ("status", "repo_id", "revision")}
                 except Exception as exc:  # noqa: BLE001 — no raw service diagnostics or automatic retry
                     summary["upload"] = {"status": "failed", "repo_id": upload_repo_id}
                     _write(directory / "hf-upload.json", {"status": "failed", "repo_id": upload_repo_id,
                                                            "error_type": type(exc).__name__,
                                                            "error": "Private upload failed; local originals retained"})
-            _write(directory / "summary.json", summary)
-            _write(directory / "report.json", report)
+            _finalize_outcome(directory, summary, report, meta)
         progress.report("finalizing", force=True)
         return summary
 
