@@ -138,6 +138,38 @@ def test_native_quantile_epsilon_order_and_no_unit_range_clipping():
     np.testing.assert_allclose(candidate.unnormalize_14(np.ones(14), q), np.asarray(q.q99) + 1e-6)
 
 
+@pytest.mark.parametrize("dtype", [np.float16, np.float32, np.float64])
+def test_native_quantile_operations_preserve_input_dtype_staging_bit_for_bit(dtype):
+    low = np.linspace(-0.71, 0.23, 14, dtype=np.float64)
+    high = low + np.linspace(0.17, 1.71, 14, dtype=np.float64)
+    q = candidate.CandidateQuantiles(low, high, "synthetic literal-expression parity", CORPUS)
+    raw = np.random.default_rng(20260913).normal(size=(50, 14)).astype(dtype)
+    original = raw.copy()
+    # Literal pinned Normalize / Unnormalize expressions: do not pre-promote x.
+    expected_normalized = (raw - low) / (high - low + 1e-6) * 2.0 - 1.0
+    expected_unnormalized = (raw + 1.0) / 2.0 * (high - low + 1e-6) + low
+    np.testing.assert_array_equal(candidate.normalize_14(raw, q), expected_normalized)
+    np.testing.assert_array_equal(candidate.unnormalize_14(raw, q), expected_unnormalized)
+    np.testing.assert_array_equal(raw, original)
+    if dtype != np.float64:
+        incorrectly_promoted = (raw.astype(np.float64) + 1.0) / 2.0 * (high - low + 1e-6) + low
+        assert not np.array_equal(expected_unnormalized, incorrectly_promoted)
+
+
+def test_float32_model_chunk_decode_matches_native_unnormalization_before_reconstruction():
+    stats = statistics()
+    raw = np.random.default_rng(17).normal(size=(50, 32)).astype(np.float32)
+    low, high = np.asarray(stats.actions.q01), np.asarray(stats.actions.q99)
+    expected = (raw[:, :14] + 1.0) / 2.0 * (high - low + 1e-6) + low
+    decoded = candidate.decode_chunk(raw, state(), stats)
+    np.testing.assert_array_equal(decoded["unnormalized_joint_deltas_absolute_closure"], expected)
+    reconstructed = expected.copy()
+    reconstructed[:, list(candidate.JOINTS)] += state()[list(candidate.JOINTS)]
+    reconstructed[:, [6, 13]] = 1 - reconstructed[:, [6, 13]]
+    np.testing.assert_array_equal(decoded["proposed_yam_absolute_commands"], reconstructed)
+    np.testing.assert_array_equal(decoded["raw_normalized_model_chunk"], raw)
+
+
 def test_encoded_state_remains14_for_native_tokenization_before_padding():
     encoded = candidate.encode_state(state(), statistics())
     assert encoded.shape == (14,)

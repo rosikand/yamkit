@@ -141,7 +141,10 @@ def _quantile_input(values, quantiles: CandidateQuantiles) -> np.ndarray:
     result = np.asarray(values)
     if result.ndim not in (1, 2) or result.shape[-1] != YAM_DIM or not result.size:
         raise ValueError("Quantile input must be a nonempty 14D vector or row matrix")
-    return _array(result, result.shape, "Quantile input").astype(np.float64)
+    # Preserve the native arithmetic staging. In Unnormalize, (x + 1) / 2
+    # runs in the model array's dtype BEFORE multiplying the float64 q span.
+    # Upcasting a float32 model result first changes those rounded intermediates.
+    return _array(result, result.shape, "Quantile input")
 
 
 def normalize_14(values, quantiles: CandidateQuantiles) -> np.ndarray:
