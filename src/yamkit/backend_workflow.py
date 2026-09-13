@@ -53,6 +53,7 @@ class BackendTarget:
     token_file: Path | None = None
     ssh: dict | None = None
     remote: dict | None = None
+    saved_observations: tuple[Path, ...] = ()
 
     @property
     def port(self):
@@ -95,7 +96,7 @@ def load_target(backend: str, policy: str, *, config: Path | None = None) -> Bac
         raise WorkflowError(f"Configure the policies and optional ssh mapping for backend {backend}")
     policies = selected.get("policies")
     entry = policies.get(policy) if isinstance(policies, dict) else None
-    if not isinstance(entry, dict) or set(entry) - {"service", "endpoint", "token_file", "remote"}:
+    if not isinstance(entry, dict) or set(entry) - {"service", "endpoint", "token_file", "remote", "saved_observations"}:
         raise WorkflowError(f"Backend {backend} has no valid {policy} policy configuration")
     service = _name(entry.get("service"), "Service")
     try:
@@ -131,7 +132,11 @@ def load_target(backend: str, policy: str, *, config: Path | None = None) -> Bac
         if type(seconds) is not int or not 300 <= seconds <= 86400 or type(gpu) is not int or not 0 <= gpu <= 15:
             raise WorkflowError("Remote session_seconds must be 300–86400; gpu must be an integer 0–15")
         remote.update(session_seconds=seconds, gpu=gpu)
-    return BackendTarget(backend, policy, service, endpoint, token_file, ssh, remote)
+    saved = entry.get("saved_observations", [])
+    if not isinstance(saved, list) or len(saved) > 50:
+        raise WorkflowError("saved_observations must list at most 50 repository-local NPZ paths")
+    return BackendTarget(backend, policy, service, endpoint, token_file, ssh, remote,
+                         tuple(_local_path(value) for value in saved))
 
 
 def assert_ui_idle(*, endpoint="http://127.0.0.1:8400", own_preparation_dir=None):
@@ -263,9 +268,11 @@ token=root/c['token_file']
 if token.resolve()!=token or not token.is_file(): raise ValueError('Existing repo-local token required')
 logfd=os.open(directory/'service.log',os.O_WRONLY|os.O_CREAT|os.O_APPEND|os.O_NOFOLLOW,0o600)
 env=dict(os.environ); env['CUDA_VISIBLE_DEVICES']=str(c['gpu'])
-command=[str(root/'.venv-inference/bin/python'),'-m','yamkit.inference.standalone_service',
- '--service-id',c['service'],'--provider','lambda','--region',c['region'],'--port',str(c['port']),
+module='yamkit.pi05.service' if c['policy']=='pi05-yam' else 'yamkit.inference.standalone_service'
+command=[str(root/'.venv-inference/bin/python'),'-m',module,
+ '--service-id',c['service'],'--region',c['region'],'--port',str(c['port']),
  '--token-file',c['token_file'],'--session-seconds',str(c['session_seconds']),'--task',c['task']]
+if c['policy']=='molmoact2': command+=['--provider','lambda']
 child=subprocess.Popen(command,cwd=root,env=env,stdin=subprocess.DEVNULL,stdout=logfd,stderr=logfd,
  start_new_session=True,pass_fds=(fd,))
 print(json.dumps({'status':'started','pid':child.pid}))
@@ -273,9 +280,9 @@ print(json.dumps({'status':'started','pid':child.pid}))
 
 
 def _start_remote(target, task):
-    if target.policy != "molmoact2":
+    if target.policy not in ("molmoact2", "pi05-yam"):
         raise WorkflowError("Automatic startup for this policy requires its separate native runtime; no MolmoAct2 substitution is allowed")
-    values = {**target.remote, "service": target.service, "port": target.port, "task": task}
+    values = {**target.remote, "service": target.service, "port": target.port, "task": task, "policy": target.policy}
     repo = values.pop("repo")
     command = ("cd " + shlex.quote(repo) + " && . data/inference/env.sh && "
                + shlex.join([".venv-inference/bin/python", "-c", _REMOTE_BOOTSTRAP,
@@ -340,6 +347,20 @@ def ensure_backend(target: BackendTarget, task: str, *, progress=lambda _value: 
         _validated_metadata(target.service, target.endpoint, _probe_service(target, token), "lambda")
         return attach_service(target.service, target.endpoint, target.token_file)
 
+    return connect_configured_runtime(target, task, probe, progress=progress, startup_timeout=startup_timeout,
+                                      own_preparation_dir=own_preparation_dir)
+
+
+def connect_configured_runtime(target, task, probe, *, progress=lambda _value: None, startup_timeout=900,
+                               own_preparation_dir=None):
+    """Shared lifecycle only; each policy supplies its own exact readiness validation."""
+    def idle():
+        if own_preparation_dir is None:
+            assert_ui_idle()
+        else:
+            assert_ui_idle(own_preparation_dir=own_preparation_dir)
+
+    idle()
     progress("Checking the configured model service")
     try:
         return probe()

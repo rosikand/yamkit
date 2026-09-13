@@ -767,14 +767,20 @@ def backend_status(backend: str = "lambda", policy: str = "molmoact2", backend_c
 
     try:
         target = load_target(backend, policy, config=backend_config)
-        receipt = owned_service(target.service) or {}
+        if target.policy == "pi05-yam":
+            from .external_ops import _read_json
+
+            path = ROOT / "data/inference/native" / target.service / "receipt.json"
+            receipt = _read_json(path) if path.exists() else {}
+        else:
+            receipt = owned_service(target.service) or {}
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from None
     metadata = receipt.get("metadata", {})
     _print_inference_result({"backend": backend, "policy": target.policy, "service": target.service,
                              "status": receipt.get("status", "not_attached"), "live_checked": False,
                              "instance_id": metadata.get("instance_id"),
-                             "expires_at": receipt.get("http_session_expires_at"),
+                             "expires_at": receipt.get("http_session_expires_at", metadata.get("http_session_expires_at")),
                              "ssh_configured": bool(target.ssh), "startup_configured": bool(target.remote)})
 
 
@@ -814,11 +820,13 @@ def rollout(
     if backend == "lambda":
         from .inference_workflow import prepare_inference
 
-        expected = {"controller_mode": "reference", "call_mode": "http", "execution_mode": "cuda_graph10"}
+        native_pi05 = policy in ("pi05", "pi05-yam")
+        expected = {"controller_mode": "pi05_reference" if native_pi05 else "reference", "call_mode": "http",
+                    "execution_mode": "eager" if native_pi05 else "cuda_graph10"}
         actual = {"controller_mode": controller_mode, "call_mode": call_mode, "execution_mode": execution_mode}
         for name, value in expected.items():
             if getattr(ctx.get_parameter_source(name), "name", None) == "COMMANDLINE" and actual[name] != value:
-                raise typer.BadParameter(f"The simple Lambda MolmoAct2 workflow requires --{name.replace('_', '-')} {value}")
+                raise typer.BadParameter(f"The simple Lambda policy workflow requires --{name.replace('_', '-')} {value}")
         if (ctx.args or rtc or center_crop or fps != 30 or image_encoding != "rgb8" or jpeg_quality != 85
                 or prediction_queue_threshold is not None or strategy != "base" or display or modal_app or external_service):
             raise typer.BadParameter("The simple Lambda workflow preserves the reviewed reference defaults; "
@@ -852,6 +860,7 @@ def rollout(
                 raise typer.Abort()
             confirm_supervised = accept_mapping = True
         from .backend_workflow import assert_ui_idle
+        from .inference.client import RemoteFault
         from .workflow_lock import workflow_lock
 
         # Keep qualification/configuration changes excluded for the entire physical
@@ -859,6 +868,12 @@ def rollout(
         try:
             with workflow_lock():
                 assert_ui_idle()
+                if prepared.policy == "pi05-yam":
+                    from .pi05_workflow import run_prepared_pi05
+
+                    result = run_prepared_pi05(prepared, confirm_supervised=confirm_supervised, accept_mapping=accept_mapping)
+                    _print_inference_result(result)
+                    return
                 return rollout(ctx, policy=prepared.policy, task=task, rig=rig, arms=arms,
                                duration=duration, fps=fps, device=device, backend="external", gpu=gpu,
                                external_service=prepared.external_service, controller_mode="reference",
@@ -866,6 +881,10 @@ def rollout(
                                confirm_supervised=confirm_supervised, accept_mapping=accept_mapping)
         except ValueError as exc:
             raise typer.BadParameter(str(exc)) from None
+        except RemoteFault:
+            err.print("Remote inference stopped after a service, deadline or connection fault. Inspect the reported run metrics; "
+                      "no automatic physical retry was started.", markup=False)
+            raise typer.Exit(1) from None
 
     options = InferenceOptions(policy=policy, task=task, backend=backend, device=device or "cpu", gpu=gpu,
                                modal_app=modal_app, external_service=external_service, center_crop=center_crop, rtc=rtc,

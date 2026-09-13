@@ -120,6 +120,51 @@ Start. A user-active UI operation, including saving, blocks CLI preparation. The
 holds the same lock for its entire physical rollout, so another UI prompt cannot rewarm its
 model mid-run. Nothing stops user applications or reduces capture memory admission thresholds.
 
-π0.5 is a separate native execution path, not a fallback to MolmoAct2 or its interpolation.
-The simple workflow reserves `pi05` for the reviewed `pi05-yam` integration; until its native
-workflow is qualified, it reports that limitation rather than running the unadapted base model.
+## Native π0.5
+
+The simple workflow maps `--policy pi05` to `pi05-yam`, the separate native checkpoint
+`Jiafei1224/molmoact2-yam-pi05@51ab2720d7e56d51410407f98ea64bbea97feb2e`.
+The legacy low-level `pi05` profile remains the unadapted base checkpoint; it is never selected
+as a fallback by this workflow. Native π0.5 executes all 30 absolute 14-D rows FIFO at 30 Hz,
+then reobserves/replans, without MolmoAct2 interpolation, prefix drops or RTC. Saved native
+normalization and 224×224 padded image preprocessing stay with the π0.5 runtime.
+
+Add a separate `pi05-yam` entry under `backends.lambda.policies`, using a different service/port:
+
+```json
+{
+  "service": "your-pi05-service",
+  "endpoint": "http://127.0.0.1:8766",
+  "token_file": "data/inference/your-pi05-service.token",
+  "saved_observations": [".context/saved-real-yam/observation-000.npz"],
+  "remote": {
+    "repo": "/absolute/path/to/gpu/yamkit",
+    "token_file": "data/inference/your-pi05-service.token",
+    "region": "your-existing-region",
+    "session_seconds": 28800,
+    "gpu": 0
+  }
+}
+```
+
+List up to 50 existing real-recording NPZ paths. Each contains exactly `state` (14 finite values),
+`top`, `left_wrist`, and `right_wrist` (RGB uint8 arrays matching the rig). Qualification cycles
+through the listed observations, with no live capture. It checks 50 direct warm samples and
+50 full fake-arm chunks, row accounting, configured bounds and Stop during RPC. Reports remain
+under `.context/pi05-qualification/<operation>/`; failed evidence never becomes current proof.
+
+The configured HF account must have accepted and received access to the gated
+`google/paligemma-3b-pt-224` tokenizer dependency. Access denial is a blocker, not permission to
+substitute another tokenizer, loosen checkpoint loading, or run an unqualified policy. No new
+VM is provisioned and the workflow never stops MolmoAct2 to free GPU memory automatically.
+
+```bash
+yamkit inference --backend lambda --policy pi05 --task 'put the red cube into the black container'
+# Only after successful native qualification and fresh on-site verification:
+yamkit rollout --backend lambda --policy pi05 --task 'put the red cube into the black container' --duration 5
+```
+
+The rollout command still asks for one explicit terminal confirmation. Native π0.5 saves JSON
+trace/report artifacts under `outputs/inference/pi05-<operation>/` after release. Native video,
+HF upload and UI policy selection are not yet integrated; use MolmoAct2's established UI for
+that workflow. Software qualification does not prove physical task success.

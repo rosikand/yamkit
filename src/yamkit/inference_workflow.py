@@ -120,8 +120,10 @@ def prepare_inference(*, backend, policy, task, rig=DEFAULT_RIG, duration=60, ar
 
 def _prepare_inference(*, backend, policy, task, rig, duration, arms, config, progress, force):
     if policy in ("pi05", "pi05-yam"):
-        raise WorkflowError("pi05 selects pi05-yam, not the unadapted base checkpoint. Its native qualification/rollout "
-                            "workflow must pass before execution; no MolmoAct2 or async fallback is permitted")
+        from .pi05_workflow import prepare_pi05
+
+        return prepare_pi05(backend=backend, task=task, rig=rig, duration=duration, arms=arms,
+                            config=config, progress=progress, force=force)
     if policy == "lerobot/MolmoAct2-BimanualYAM-LeRobot":
         policy = "molmoact2"
     # Validate form errors before connecting or starting any software service.

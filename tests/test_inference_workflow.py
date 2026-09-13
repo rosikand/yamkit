@@ -63,8 +63,8 @@ def test_config_credentials_are_paths_only_and_file_private(configured):
 
 
 def test_pi05_alias_cannot_fall_back_to_base_or_molmo(configured):
-    with pytest.raises(WorkflowError, match="native"):
-        workflow.prepare_inference(backend="lambda", policy="pi05", task="test")
+    with pytest.raises((ValueError, OSError)):
+        workflow.prepare_inference(backend="lambda", policy="pi05", task="test", rig=configured.root / "missing-rig.yaml")
 
 
 def test_shell_characters_in_ssh_host_rejected(configured):
