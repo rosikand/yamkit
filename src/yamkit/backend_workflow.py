@@ -369,6 +369,10 @@ try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
 except BlockingIOError:
  print(json.dumps({'status':'starting_or_running'})); sys.exit(0)
 sock=socket.socket()
+# Official OpenPI uses ThreadingHTTPServer's reusable bind. Match it so a
+# retired HTTP connection in TIME_WAIT is not mistaken for a live listener.
+# This does not enable SO_REUSEPORT and cannot replace a listening socket.
+if c['policy']=='pi05-base': sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
 try: sock.bind(('127.0.0.1',c['port']))
 except OSError:
  print(json.dumps({'status':'listener_present'})); sys.exit(0)

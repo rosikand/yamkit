@@ -1,9 +1,12 @@
 """Official base startup remains isolated and preserves the other runtime argv."""
 
+import errno
 import json
 import shlex
+import socket
 import sys
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -153,3 +156,53 @@ def test_missing_explicit_official_configuration_cannot_fall_back(configured, mo
     monkeypatch.setattr(external_ops, "owned_service", lambda *_a: pytest.fail("explicit missing config forbids fallback"))
     with pytest.raises(WorkflowError, match="Explicit backend configuration"):
         backend.load_target("lambda", "pi05-base", config=configured.root / "missing.json")
+
+
+@pytest.fixture
+def retired_http_port():
+    """Real local HTTP-style active close, leaving only a TCP TIME_WAIT tuple."""
+    with socket.socket() as listener:
+        # Match ThreadingHTTPServer's normal server_bind behavior.
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.settimeout(1)
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        listener.listen()
+        with socket.create_connection(("127.0.0.1", port), timeout=1) as client:
+            accepted, _ = listener.accept()
+            accepted.close()  # Server sends FIN first, so the server owns TIME_WAIT.
+            assert client.recv(1) == b""
+    address = "0100007F:" + format(port, "04X")
+    rows = [row.split() for row in Path("/proc/net/tcp").read_text().splitlines()[1:]]
+    assert any(row[1] == address and row[3] == "06" for row in rows)
+    assert not any(row[1] == address and row[3] == "0A" for row in rows)
+    with socket.socket() as plain:
+        with pytest.raises(OSError) as occupied:
+            plain.bind(("127.0.0.1", port))
+        assert occupied.value.errno == errno.EADDRINUSE
+    with socket.socket() as reusable:
+        reusable.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        reusable.bind(("127.0.0.1", port))
+    return port
+
+
+@pytest.mark.parametrize("policy,expected", [("pi05-base", "started"), ("molmoact2", "listener_present"),
+                                          ("pi05-yam", "listener_present")])
+def test_only_official_base_prebind_ignores_retired_http_time_wait(bootstrap, retired_http_port, monkeypatch, policy, expected):
+    bootstrap.values.update(policy=policy, port=retired_http_port)
+    monkeypatch.setattr(sys, "argv", ["bootstrap", json.dumps(bootstrap.values)])
+    assert bootstrap.run()["status"] == expected
+    assert len(bootstrap.calls) == (1 if policy == "pi05-base" else 0)
+
+
+@pytest.mark.parametrize("reuse_address", [False, True])
+def test_official_base_prebind_never_claims_a_real_listener_even_if_reusable(bootstrap, monkeypatch, reuse_address):
+    bootstrap.values["policy"] = "pi05-base"
+    monkeypatch.setattr(sys, "argv", ["bootstrap", json.dumps(bootstrap.values)])
+    monkeypatch.setitem(bootstrap.namespace, "memory_free_mib", lambda _: pytest.fail("live listener must block before GPU query"))
+    with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, int(reuse_address))
+        listener.bind(("127.0.0.1", bootstrap.values["port"]))
+        listener.listen()
+        assert bootstrap.run()["status"] == "listener_present"
+        assert not bootstrap.calls
