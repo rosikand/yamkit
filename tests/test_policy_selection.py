@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 
 from yamkit import cli, inference_workflow
 from yamkit.backend_workflow import WorkflowError
-from yamkit.policy_selection import canonical_policy
+from yamkit.policy_selection import OPENPI_YAM_BLOCKER, canonical_policy
 
 
 @pytest.mark.parametrize("name,expected", [
@@ -36,6 +36,11 @@ def test_exact_requested_base_cli_explains_contract_without_confirmation(monkeyp
                                          "--task", "put the red cube into the black container", "--duration", "60"])
     assert result.exit_code == 2
     assert "Official OpenPI" in result.output and "normalization" in result.output
+    # Rich wraps messages to terminal width; assert precise semantics separately.
+    assert "grippers" in result.output and "transitions" in result.output
+    assert "out-of-range grippers" in OPENPI_YAM_BLOCKER
+    assert "initial joint transitions" in OPENPI_YAM_BLOCKER
+    assert "OPENPI_YAM_EXPERIMENT_2026-09-13.md" in OPENPI_YAM_BLOCKER
     assert "I am on site" not in result.output
     assert not (tmp_path / "outputs").exists()
 

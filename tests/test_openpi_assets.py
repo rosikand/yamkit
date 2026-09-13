@@ -45,7 +45,7 @@ def test_pinned_manifest_is_official_base_not_yam_or_lerobot():
     assert contract.MODEL_CONFIG["action_horizon"] == 50
     assert contract.MODEL_CONFIG["action_dim"] == 32
     assert contract.identity()["physical_ready"] is False
-    with pytest.raises(ValueError, match="no YAM normalization"):
+    with pytest.raises(ValueError, match="experimental YAM normalization/decoder"):
         contract.require_yam_contract()
 
 

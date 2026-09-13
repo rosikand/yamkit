@@ -18,9 +18,12 @@ MODEL_CONFIG = {
 IMAGE_KEYS = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
 SAVED_IMAGE_MAP = dict(zip(("top", "left_wrist", "right_wrist"), IMAGE_KEYS, strict=True))
 YAM_BLOCKERS = (
-    "Official pi05_base contains no YAM normalization asset or documented YAM embodiment config.",
-    "YAM joint coordinates, gripper direction/range and absolute/delta action semantics are not established.",
-    "YAM execution frequency, committed horizon and replanning contract are not established.",
+    ("The documented experimental YAM normalization/decoder is offline-only: saved-real-input "
+     "outputs include out-of-range grippers and initial joint steps above the ordinary command cap."),
+    ("Its recorded-data support does not cover the tested moving-right-arm state domain; "
+     "native parity does not qualify this deployment mapping."),
+    ("YAM execution frequency, committed horizon, transition handling and complete Stop/fault "
+     "qualification remain unresolved. See docs/OPENPI_YAM_EXPERIMENT_2026-09-13.md."),
 )
 
 

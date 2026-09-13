@@ -13,10 +13,11 @@ ALIASES = {
 }
 
 OPENPI_YAM_BLOCKER = (
-    "Official OpenPI pi05_base is not physically qualified for YAM: its published assets do not "
-    "establish YAM normalization, joint/gripper coordinates or an embodiment action mapping. "
-    "No other checkpoint, borrowed normalization or first-14-output slicing is substituted. "
-    "See docs/OPENPI_REFERENCE.md for the official-runtime offline evidence and missing contract. "
+    "Official OpenPI pi05_base is not physically qualified for YAM: the offline experimental "
+    "normalization/decoder produces out-of-range grippers and unqualified initial joint transitions "
+    "on saved real inputs. A safe timebase/commitment and complete Stop/fault workflow are not qualified. "
+    "No checkpoint substitution, output clipping or physical bypass is applied. "
+    "See docs/OPENPI_YAM_EXPERIMENT_2026-09-13.md for native parity, command-bound evidence and next steps. "
     "No hardware was opened."
 )
 

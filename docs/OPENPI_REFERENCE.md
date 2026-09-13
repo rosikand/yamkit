@@ -1,5 +1,11 @@
 # Official OpenPI π0.5 base: normalized-space diagnostics, YAM motion blocked
 
+**2026-09-13 adapter follow-up:** [experimental YAM investigation](OPENPI_YAM_EXPERIMENT_2026-09-13.md)
+now documents a non-dispatching, real-state candidate with newly computed YAM statistics,
+native inference parity and actual command-envelope failures. The synthetic-state
+diagnostic below remains available unchanged; it is no longer the only offline evidence.
+Missing an upstream asset named YAM is not, by itself, the reason motion remains blocked.
+
 `pi05_base` means the genuine Physical Intelligence checkpoint—not `lerobot/pi05_base`
 and not the separately supported `Jiafei1224/molmoact2-yam-pi05` fine-tune. This path
 preserves official weights and the original JAX implementation. It cannot currently
@@ -122,10 +128,12 @@ invented for this diagnostic.
 [ALOHA runtime selection](https://github.com/Physical-Intelligence/openpi/blob/215abfb217dbac7d5f1273282331b9b1866c0479/examples/aloha_real/main.py),
 [native chunk broker](https://github.com/Physical-Intelligence/openpi/blob/215abfb217dbac7d5f1273282331b9b1866c0479/packages/openpi-client/src/openpi_client/action_chunk_broker.py).
 
-Before physical use, evidence is required for YAM normalization, training-coordinate
-joint zero/sign/order, gripper units/direction/range, absolute/delta reconstruction,
-camera roles and execution timing/commitment. Zero-shot use would remain experimental
-even after that evidence and software qualification. The physical CLI must fail through
+Before physical use, a declared experimental mapping needs evidence for its YAM
+normalization provenance/support, joint zero/sign/order, gripper units/direction/range,
+absolute/delta reconstruction, camera roles and execution timing/commitment, followed
+by actual command-bound and complete fake-workflow qualification. This need not claim
+recovery of unpublished official YAM training coordinates. Zero-shot use would remain
+experimental even after that evidence and software qualification. The physical CLI must fail through
 `yamkit.openpi.contract.require_yam_contract()` before hardware is opened; task success
 and repeatability can only be assessed in later explicitly approved physical trials.
 

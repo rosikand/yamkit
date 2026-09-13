@@ -47,7 +47,7 @@ def test_native_options_never_inherit_ma2_or_weaken_the_native_contract(change):
 
 @pytest.mark.parametrize("policy", ["pi05-base", "pi05_base"])
 def test_official_base_has_precise_no_motion_blocker(policy):
-    with pytest.raises(ValueError, match="normalization, joint/gripper coordinates"):
+    with pytest.raises(ValueError, match="normalization/decoder produces out-of-range grippers"):
         options(policy=policy).validate()
 
 
