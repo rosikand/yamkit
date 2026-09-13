@@ -65,3 +65,14 @@ def test_fake_cli_is_explicit_and_has_no_confirmation_or_physical_delegate(nativ
 def test_arbitrary_fake_factory_cannot_bypass_physical_approval(native):
     with pytest.raises(ValueError, match="only SavedRobot"):
         pi05_workflow.run_prepared_pi05(None, confirm_supervised=False, accept_mapping=False, fake_robot=object())
+
+
+def test_fake_cli_reports_nonzero_artifact_or_execution_failure(native, monkeypatch):
+    monkeypatch.setattr(backend_workflow, "assert_ui_idle", lambda **_: None)
+    monkeypatch.setattr(fake_inference, "run_fake_pi05", lambda *_a, **_kw: {
+        "status": "fault", "exit_status": 1, "released": True,
+    })
+    result = CliRunner().invoke(cli.app, ["rollout", "--backend", "lambda", "--policy", "pi05_yam",
+                                         "--task", "cube", "--rig", str(native.rig), "--fake-hardware"])
+    assert result.exit_code == 1
+    assert '"status": "fault"' in result.output and '"hardware_tested": false' in result.output

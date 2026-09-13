@@ -9,6 +9,7 @@ import os
 import shlex
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Annotated
 
@@ -813,15 +814,32 @@ def rollout(
     confirm_supervised: Annotated[bool, typer.Option("--confirm-supervised")] = False,
     accept_mapping: Annotated[bool, typer.Option("--accept-mapping")] = False,
     backend_config: Annotated[Path | None, typer.Option(help="repo-local backend JSON for the simple Lambda workflow")] = None,
+    fake_hardware: Annotated[bool, typer.Option(help="software-only saved-observation run; never constructs real arms or cameras")] = False,
+    capture_trace: Annotated[bool, typer.Option(help="save local three-camera recording, native rows and trace after release")] = False,
+    upload_repo_id: Annotated[str | None, typer.Option(help="private HF rollout dataset; keeps local originals")] = None,
 ) -> None:
     """Run a policy/VLA on the follower arm(s) (`lerobot-rollout`)."""
     from .deployment import InferenceOptions
 
+    if (fake_hardware or capture_trace or upload_repo_id is not None) and backend != "lambda":
+        raise typer.BadParameter("These recording/fake-workflow options require the configured Lambda backend")
     if backend == "lambda":
         from .inference_workflow import prepare_inference
         from .policy_selection import canonical_policy
 
         policy = canonical_policy(policy)
+        if fake_hardware and (dry_run or confirm_supervised or accept_mapping):
+            raise typer.BadParameter("--fake-hardware cannot carry motion approval or --dry-run; it executes only saved inputs and fake arms")
+        if upload_repo_id is not None:
+            from huggingface_hub.utils import validate_repo_id
+
+            try:
+                validate_repo_id(upload_repo_id)
+                if upload_repo_id.count("/") != 1:
+                    raise ValueError("Use a namespace/repository private dataset ID")
+            except ValueError as exc:
+                raise typer.BadParameter(str(exc)) from None
+            capture_trace = True
         native_pi05 = policy in ("pi05-yam", "pi05-base")
         expected = {"controller_mode": "pi05_reference" if native_pi05 else "reference", "call_mode": "http",
                     "execution_mode": "eager" if native_pi05 else "cuda_graph10"}
@@ -846,6 +864,33 @@ def rollout(
                                      "motion_approval_received": False})
             console.print("Dry run: model prepared, but no hardware was opened and no rollout was launched.")
             return
+        if fake_hardware:
+            from .backend_workflow import assert_ui_idle
+            from .workflow_lock import workflow_lock
+
+            destination = ROOT / "outputs/ui/deployments" / ("software-fake-" + uuid.uuid4().hex)
+            try:
+                with workflow_lock():
+                    assert_ui_idle()
+                    if prepared.policy == "pi05-yam":
+                        from .fake_inference import run_fake_pi05
+
+                        result = run_fake_pi05(prepared, artifact_dir=destination, capture_trace=capture_trace,
+                                               upload_repo_id=upload_repo_id)
+                    else:
+                        from .fake_ma2_workflow import run_fake_molmoact2
+
+                        result = run_fake_molmoact2(prepared, artifact_dir=destination, capture_trace=capture_trace,
+                                                   upload_repo_id=upload_repo_id, backend_config=backend_config)
+            except (ValueError, RuntimeError, OSError) as exc:
+                # No arbitrary transport/SDK messages or chained traceback can leak.
+                raise typer.BadParameter(f"Software-only fake execution failed ({type(exc).__name__}); "
+                                         f"inspect {destination}. No hardware was opened") from None
+            _print_inference_result({**result, "hardware_tested": False, "fake_hardware": True,
+                                     "motion_approval_received": False, "physical_task_success": None})
+            if result.get("exit_status", 0):
+                raise typer.Exit(code=1)
+            return
         if not (confirm_supervised and accept_mapping):
             command = ["yamkit", "rollout", "--backend", "lambda", "--policy", policy,
                        "--task", task, "--duration", str(duration), "--rig", str(rig)]
@@ -853,6 +898,10 @@ def rollout(
                 command += ["--arms", arm]
             if backend_config:
                 command += ["--backend-config", str(backend_config)]
+            if capture_trace:
+                command += ["--capture-trace"]
+            if upload_repo_id:
+                command += ["--upload-repo-id", upload_repo_id]
             console.print("Pending one supervised command: " + shlex.join(command), markup=False)
             console.print("This energizes, homes and opens both followers, executes the policy, then homes preserving "
                           "the final gripper opening and releases. Stop/fault releases without home. "
@@ -873,12 +922,26 @@ def rollout(
                 if prepared.policy == "pi05-yam":
                     from .pi05_workflow import run_prepared_pi05
 
-                    result = run_prepared_pi05(prepared, confirm_supervised=confirm_supervised, accept_mapping=accept_mapping)
+                    extra = ({"capture_trace": capture_trace, "upload_repo_id": upload_repo_id}
+                             if capture_trace or upload_repo_id is not None else {})
+                    result = run_prepared_pi05(prepared, confirm_supervised=confirm_supervised,
+                                               accept_mapping=accept_mapping, **extra)
                     _print_inference_result(result)
+                    if result.get("exit_status", 0):
+                        raise typer.Exit(code=1)
                     return
                 from .inference_workflow import require_prepared_current
 
                 require_prepared_current(prepared)
+                if capture_trace:
+                    from .fake_ma2_workflow import run_recorded_molmoact2
+
+                    result = run_recorded_molmoact2(prepared, confirm_supervised=confirm_supervised,
+                                                   accept_mapping=accept_mapping, upload_repo_id=upload_repo_id)
+                    _print_inference_result(result)
+                    if result.get("exit_status", 0):
+                        raise typer.Exit(code=1)
+                    return
                 return rollout(ctx, policy=prepared.policy, task=task, rig=rig, arms=arms,
                                duration=duration, fps=fps, device=device, backend="external", gpu=gpu,
                                external_service=prepared.external_service, controller_mode="reference",
