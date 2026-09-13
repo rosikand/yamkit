@@ -80,11 +80,38 @@ def test_current_native_proof_is_reused_without_requalification(native):
 def test_failed_native_qualification_saved_but_never_current_or_ready(native):
     native.record["qualified"] = False
     native.record["reasons"] = ["fixture failure"]
-    with pytest.raises(WorkflowError, match="did not pass"):
+    with pytest.raises(WorkflowError, match="did not pass") as caught:
         workflow.prepare_pi05(backend="lambda", task="cube", rig=native.rig)
-    assert len(list((native.root / ".context/pi05-qualification").glob("*/qualification.json"))) == 1
+    paths = list((native.root / ".context/pi05-qualification").glob("*/qualification.json"))
+    assert len(paths) == 1 and str(paths[0]) in str(caught.value)
     assert not (native.root / "data/inference/native/native-test/qualification.json").exists()
     assert native.transports[0].closed
+
+
+def test_native_failure_names_actual_gripper_without_clipping(native):
+    native.record.update(qualified=False, failure={"native_response": {"gripper_bound_violations": [{
+        "row_index": 0, "column_index": 6, "name": "untrusted text must not be displayed",
+        "value": 1.000895619392395}]}})
+    with pytest.raises(WorkflowError, match=r"left_gripper.pos=1.000895619392395 at row 0") as caught:
+        workflow.prepare_pi05(backend="lambda", task="cube", rig=native.rig)
+    assert "untrusted text" not in str(caught.value)
+    assert "outside [0,1]" in str(caught.value) and "No motion was started" in str(caught.value)
+    assert not (native.root / "data/inference/native/native-test/qualification.json").exists()
+
+
+def test_native_failure_summary_keeps_tiny_overshoot_visible():
+    record = {"failure": {"native_response": {"gripper_bound_violations": [{
+        "row_index": 0, "column_index": 6, "value": 1.0000000001}]}}}
+    message = workflow._qualification_failure_message(record, ".context/report.json")
+    assert "left_gripper.pos=1.0000000001 at row 0" in message
+
+
+@pytest.mark.parametrize("value", ["private_fixture_token", float("nan"), float("inf"), 1 << 1024, True])
+def test_native_failure_summary_never_formats_untrusted_values(value):
+    record = {"failure": {"native_response": {"gripper_bound_violations": [{
+        "row_index": 0, "column_index": 6, "name": "private_fixture_token", "value": value}]}}}
+    message = workflow._qualification_failure_message(record, ".context/report.json")
+    assert message == "Native π0.5 qualification did not pass. No motion was started. Report: .context/report.json"
 
 
 def test_native_expired_session_fails_before_collection(native, monkeypatch):

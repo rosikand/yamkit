@@ -12,7 +12,7 @@ from yamkit.inference.mapping import YAM_NAMES
 from yamkit.pi05 import admission, qualification, rollout
 from yamkit.pi05.admission import rig_observation_schema, validate_qualification
 from yamkit.pi05.contract import CONTRACT, PROFILE, build_id
-from yamkit.pi05.executor import Pi05ReferenceExecutor
+from yamkit.pi05.executor import Pi05ExecutionFault, Pi05ReferenceExecutor
 from yamkit.pi05.qualification import load_saved_observation, make_request, save_qualification
 from yamkit.pi05.transport import validate_readiness
 
@@ -177,6 +177,145 @@ def test_diagnostic_qualification_never_claims_physical_ready_without_full_host_
     assert result["all_fake_robots_released"] is True
     assert any("50-sample" in reason for reason in result["reasons"])
     assert any("host and rig" in reason for reason in result["reasons"])
+
+
+class FailingChunkTransport(Transport):
+    def __init__(self, *, rejected_sample, chunk=None, error=None):
+        super().__init__()
+        self.calls = 0
+        self.rejected_sample, self.chunk, self.error = rejected_sample, chunk, error
+
+    def predict_chunk(self, request, timeout):
+        index = self.calls - 1  # First request is the excluded cold sample.
+        self.calls += 1
+        if index == self.rejected_sample:
+            if self.error is not None:
+                raise self.error
+            # No arbitrary response keys may enter diagnostic evidence.
+            return {"chunk": self.chunk, "untrusted_private_field": "fixture-secret-do-not-retain"}
+        return {"chunk": np.full((30, 14), 0.25).tolist()}
+
+
+@pytest.mark.parametrize("column,value", [(6, 1.000123456789), (13, -0.000123456789),
+                                          (6, 1.000895619392395)])  # Captured real-GPU overshoot, unchanged.
+def test_rejected_native_gripper_preserves_exact_response_and_sample_without_clipping(column, value):
+    chunk = np.full((30, 14), 0.25).tolist()
+    chunk[17][column] = value
+    transport = FailingChunkTransport(rejected_sample=38, chunk=chunk)
+    result = qualification.collect_qualification(transport, observations=[observation()] * 50,
+                                                task="move cube", requests=50)
+    failure = result["failure"]
+    assert result["qualified"] is False
+    assert result["hardware_tested"] is False
+    assert result["completed_warm_samples"] == len(result["direct_chunks"]) == 38
+    assert transport.calls == 40  # Cold, 38 passing warm calls, one rejected response; no retry.
+    assert failure["phase"] == "direct_warm"
+    assert failure["sample_index"] == failure["observation_index"] == 38
+    assert failure["request_sequence_id"] == 39
+    assert failure["native_response_received"] is True
+    assert failure["reason"] == "π0.5 gripper output is outside [0,1]; no automatic clipping is allowed"
+    evidence = failure["native_response"]
+    assert evidence["raw_chunk"] == chunk
+    assert chunk[17][column] == value  # Reporting never mutates native output.
+    assert evidence["shape"] == [30, 14]
+    assert evidence["truncated"] is False
+    assert evidence["gripper_bound_violations"] == [{"row_index": 17, "column_index": column,
+        "name": YAM_NAMES[column], "value": value, "minimum": 0.0, "maximum": 1.0}]
+    assert evidence["column_ranges"][column]["maximum"] == max(0.25, value)
+    assert evidence["column_ranges"][column]["minimum"] == min(0.25, value)
+    assert "fixture-secret-do-not-retain" not in json.dumps(result, allow_nan=False)
+    assert "integrated" not in result
+
+
+def test_failed_rpc_does_not_misattribute_previous_response_or_expose_error_text():
+    transport = FailingChunkTransport(rejected_sample=1, error=RuntimeError("fixture-private-credential"))
+    result = qualification.collect_qualification(transport, observations=[observation()], task="move cube", requests=2)
+    assert result["completed_warm_samples"] == 1
+    assert result["failure"]["sample_index"] == 1
+    assert result["failure"]["request_sequence_id"] == 2
+    assert result["failure"]["native_response_received"] is False
+    assert result["failure"]["native_response"] is None
+    assert result["failure"]["reason"] is None
+    assert "fixture-private-credential" not in json.dumps(result, allow_nan=False)
+
+
+def test_only_exact_known_execution_fault_messages_are_retained():
+    transport = FailingChunkTransport(rejected_sample=0, error=Pi05ExecutionFault("fixture-private-credential"))
+    result = qualification.collect_qualification(transport, observations=[observation()], task="move cube", requests=1)
+    assert result["failure"]["error_type"] == "Pi05ExecutionFault"
+    assert result["failure"]["reason"] is None
+    assert "fixture-private-credential" not in json.dumps(result, allow_nan=False)
+
+
+def test_configured_bound_failure_reports_row_and_exact_native_chunk_without_error_text():
+    chunk = np.full((30, 14), 0.25).tolist()
+    chunk[7][0] = 12.3456789
+    transport = FailingChunkTransport(rejected_sample=0, chunk=chunk)
+
+    def reject_joint(target):
+        if target[YAM_NAMES[0]] > 10:
+            raise ValueError("fixture-private-credential")
+
+    result = qualification.collect_qualification(transport, observations=[observation()], task="move cube",
+                                                requests=1, validate_target=reject_joint)
+    assert result["failure"]["validation_row_index"] == 7
+    assert result["failure"]["native_response"]["raw_chunk"] == chunk
+    assert result["failure"]["native_response"]["column_ranges"][0]["maximum"] == 12.3456789
+    assert result["qualified"] is False
+    assert result["direct_chunks"] == []
+    assert "fixture-private-credential" not in json.dumps(result, allow_nan=False)
+
+
+def test_integrated_failure_retains_its_response_and_releases_fake_arms(monkeypatch):
+    class FastExecutor(Pi05ReferenceExecutor):
+        def _wait_until(self, deadline):
+            return self.check()
+
+    monkeypatch.setattr(qualification, "Pi05ReferenceExecutor", FastExecutor)
+    chunk = np.full((30, 14), 0.25).tolist()
+    chunk[0][13] = 1.001
+    transport = FailingChunkTransport(rejected_sample=3, chunk=chunk)
+    result = qualification.collect_qualification(transport, observations=[observation()], task="move cube", requests=2)
+    assert result["failure"]["phase"] == "integrated"
+    assert result["failure"]["sample_index"] == 1
+    assert result["failure"]["native_response"]["raw_chunk"] == chunk
+    assert result["integrated"]["completed_chunks"] == 1
+    assert result["integrated"]["completed_rows"] == 30
+    assert result["integrated"]["faults"] == 1
+    assert result["all_fake_robots_released"] is True
+    assert result["qualified"] is False
+
+
+@pytest.mark.parametrize("value,kind", [(float("nan"), "NaN"), (float("inf"), "Infinity"),
+                                       (float("-inf"), "-Infinity")])
+def test_nonfinite_native_failure_is_exactly_identified_and_json_safe(value, kind):
+    chunk = np.full((30, 14), 0.25).tolist()
+    chunk[4][2] = value
+    transport = FailingChunkTransport(rejected_sample=0, chunk=chunk)
+    result = qualification.collect_qualification(transport, observations=[observation()], task="move cube", requests=1)
+    evidence = result["failure"]["native_response"]
+    assert evidence["raw_chunk"][4][2] is None
+    assert evidence["nonfinite_values"] == [{"row_index": 4, "column_index": 2, "kind": kind}]
+    assert evidence["column_ranges"][2]["finite_count"] == 29
+    assert result["qualified"] is False
+    json.dumps(result, allow_nan=False)
+
+
+def test_response_diagnostics_are_bounded_and_never_serialize_unsupported_values():
+    class NeverInspect:
+        def __repr__(self):
+            pytest.fail("Untrusted values must never be stringified")
+
+    row = [0.25] * 14 + ["fixture-private-credential"]
+    evidence = qualification._failed_chunk_evidence([row] * 31)
+    assert evidence["truncated"] is True
+    assert len(evidence["raw_chunk"]) == 30
+    assert all(len(values) == 14 for values in evidence["raw_chunk"])
+    unsupported = qualification._failed_chunk_evidence(
+        [[NeverInspect(), "fixture-private-credential", 2 ** 2048, (1 << 1024) - 1]])
+    assert unsupported["raw_chunk"] == [[None, None, None, None]]
+    assert unsupported["unsupported_values_omitted"] is True
+    assert "fixture-private-credential" not in json.dumps([evidence, unsupported], allow_nan=False)
 
 
 def test_old_or_unbound_readiness_cannot_admit_robot(tmp_path):

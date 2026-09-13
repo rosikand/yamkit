@@ -1,10 +1,13 @@
 # YAM π0.5: independent native reference execution
 
-Status on 2026-09-13: source contract reviewed and fake/native-method tests pass.
-The existing GPU download obtained the 9.35 GB YAM weights, but model startup is
-blocked by publisher-gated access to the pinned PaliGemma tokenizer. No π0.5
-GPU forward pass, real-model qualification, physical trial or manipulation success
-is claimed. Do not launch the physical entrypoint until qualification passes.
+Status on 2026-09-13, after publisher authorization: the pinned tokenizer and
+9.35 GB YAM weights load successfully on the existing GPU. Real saved-observation
+qualification is **blocked by a native gripper prediction outside [0,1]**:
+`left_gripper.pos=1.000895619392395`. Two attempts stopped during direct warm
+sampling; neither reached integrated fake execution. No successful qualification,
+physical trial or manipulation success is claimed. See the
+[authorization follow-up](PI05_QUALIFICATION_2026-09-13.md) for retained evidence.
+Do not launch the physical entrypoint until qualification passes.
 The working MolmoAct2 path remains separate and unchanged.
 
 ## Immutable source contract
@@ -85,9 +88,13 @@ rows are unchanged. Eager performance is not yet measured.
 
 The PaliGemma tokenizer is pinned at
 `google/paligemma-3b-pt-224@35e4f46485b4d07967e7e9935bc3786aad50687c`.
-The user must accept the publisher terms with the runtime's Hugging Face account
-and authenticate that GPU checkout using `yamkit hub login`. Never paste tokens
-into chat, source, a rig file or a command argument. No alternate tokenizer is
+The user must accept the publisher terms with the downloading Hugging Face
+account. The current deployment used the existing authorized Lenovo login, then
+privately transferred and SHA-256-verified only the nine pinned tokenizer/config
+assets into the GPU checkout's repository-local cache. Its normal pinned snapshot
+loader succeeds from that cache; no HF token was transferred. Alternatively,
+authenticate the GPU checkout using `yamkit hub login`. Never paste tokens into
+chat, source, a rig file or a command argument. No alternate tokenizer is
 substituted and no access gate is bypassed.
 
 ## Software qualification and future physical admission
@@ -121,7 +128,14 @@ SDK call records an unknown partial dispatch, because one arm may have received
 its target even if the other arm failed. Zero completed rows is not proof of
 zero hardware commands.
 
-Fake/native tests do not validate real-model output, dynamics, calibration,
-camera placement or task success. GPU latency and real-model row accounting are
-currently unavailable because startup is gated. The user-facing workflow must
-show that blocker instead of offering an apparently ready physical PI run.
+Failed qualification retains bounded, exact numeric output plus the phase,
+zero-based sample/request indices, column ranges and gripper-bound violations.
+Diagnostic copying occurs only after failure, outside measured execution. No
+arbitrary response/error strings are copied; nonfinite values have JSON-safe
+markers rather than fabricated finite actions. The CLI identifies the offending
+gripper and saved report path. Diagnostics do not change acceptance, rows or timing.
+
+Fake/native tests do not validate dynamics, calibration, camera placement or task
+success. Current real GPU latency samples are partial, not a passing qualification.
+Integrated real-model row accounting and Stop proof have not been reached. The
+workflow must show the native-output blocker instead of offering a ready PI run.

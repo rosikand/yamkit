@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 import uuid
 from pathlib import Path
@@ -15,7 +16,7 @@ from yamkit.inference.mapping import YAM_NAMES
 from yamkit.inference.protocol import PROTOCOL_VERSION, encode_image
 
 from .contract import CONTRACT, PROFILE, build_id
-from .executor import Pi05ReferenceExecutor, finite_rows, latency_summary
+from .executor import Pi05ExecutionFault, Pi05ReferenceExecutor, finite_rows, latency_summary
 from .transport import validate_readiness
 
 
@@ -95,6 +96,67 @@ class FakeArms:
         self.released = True
 
 
+_CONTROLLED_EXECUTION_REASONS = frozenset({
+    "π0.5 requires exactly 30×14 finite native action values",
+    "π0.5 gripper output is outside [0,1]; no automatic clipping is allowed",
+    "π0.5 dispatch was stopped or its bounded session ended",
+    "π0.5 inference exceeded its request deadline",
+    "π0.5 SDK target differs from the native row; stopping",
+})
+
+
+def _failed_chunk_evidence(chunk) -> dict:
+    """Retain bounded numeric output, not arbitrary response fields or strings.
+
+    Called only after failure, outside measured inference/execution. Finite
+    values remain exact; nonfinite values use explicit JSON-safe markers, not
+    clipping or invented finite actions. Unsupported values are never repr'd.
+    """
+    if type(chunk) is np.ndarray:
+        shape = list(chunk.shape)
+        if chunk.ndim != 2 or chunk.dtype.kind not in "fiu":
+            return {"shape": shape, "raw_chunk": None, "unsupported_values_omitted": True}
+        truncated = chunk.shape[0] > 30 or chunk.shape[1] > 14
+        rows = chunk[:30, :14].tolist()
+    elif type(chunk) in (list, tuple):
+        widths = [len(row) if type(row) in (list, tuple) else None for row in chunk[:30]]
+        shape = [len(chunk), widths[0] if widths and all(width == widths[0] for width in widths) else None]
+        truncated = len(chunk) > 30 or any(width is not None and width > 14 for width in widths)
+        rows = chunk[:30]
+    else:
+        return {"shape": None, "raw_chunk": None, "unsupported_values_omitted": True}
+    raw, nonfinite, violations, columns = [], [], [], [[] for _ in YAM_NAMES]
+    omitted = False
+    for row_index, row in enumerate(rows):
+        if type(row) not in (list, tuple):
+            raw.append(None)
+            omitted = True
+            continue
+        values = []
+        for column_index, value in enumerate(row[:14]):
+            if type(value) not in (int, float) or type(value) is int and value.bit_length() > 1023:
+                values.append(None)
+                omitted = True
+                continue
+            if not math.isfinite(value):
+                values.append(None)
+                nonfinite.append({"row_index": row_index, "column_index": column_index,
+                                  "kind": "NaN" if math.isnan(value) else "Infinity" if value > 0 else "-Infinity"})
+                continue
+            values.append(value)
+            columns[column_index].append(value)
+            if column_index in (6, 13) and not 0 <= value <= 1:
+                violations.append({"row_index": row_index, "column_index": column_index,
+                                   "name": YAM_NAMES[column_index], "value": value, "minimum": 0.0, "maximum": 1.0})
+        raw.append(values)
+    return {"shape": shape, "raw_chunk": raw, "truncated": truncated,
+            "unsupported_values_omitted": omitted, "nonfinite_values": nonfinite,
+            "gripper_bound_violations": violations,
+            "column_ranges": [{"column_index": index, "name": name, "finite_count": len(values),
+                               "minimum": min(values) if values else None, "maximum": max(values) if values else None}
+                              for index, (name, values) in enumerate(zip(YAM_NAMES, columns, strict=True))]}
+
+
 def collect_qualification(transport, *, observations: list[dict], task: str, requests: int = 50,
                           validate_target=None, rig_path: Path | None = None,
                           event=lambda *_args, **_kwargs: None) -> dict:
@@ -132,26 +194,45 @@ def collect_qualification(transport, *, observations: list[dict], task: str, req
     if robot_host is not None:
         report["robot_host"] = robot_host
     validator = validate_target or (lambda _: None)
+    phase, sample_index, observation_index = "cold_warmup", None, 0
+    request_sequence, validation_row_index, last_chunk = None, None, None
+    response_received = False
 
     def predict(observation, timeout):
-        nonlocal sequence
+        nonlocal sequence, request_sequence, last_chunk, sample_index, response_received
+        # Keep a reference only; diagnostic copying/range scans occur AFTER a
+        # failure, never inside measured model or FIFO timing. Clear first so a
+        # failed RPC cannot be attributed to the preceding successful chunk.
+        last_chunk = None
+        response_received = False
+        request_sequence = sequence
+        if phase == "integrated":
+            sample_index = 0 if sample_index is None else sample_index + 1
         request = make_request(observation, task=task, session_id=session_id,
                                sequence_id=sequence, timeout_s=timeout)
         sequence += 1
-        return transport.predict_chunk(request, timeout)["chunk"]
+        last_chunk = transport.predict_chunk(request, timeout)["chunk"]
+        response_received = True
+        return last_chunk
 
     fake, engine, stop_fake, stop_engine = None, None, None, None
     try:
         # One excluded cold/native warm, then the requested direct warm samples.
         predict(observations[0], 120.0)
         for index in range(requests):
+            phase, sample_index, observation_index = "direct_warm", index, index % len(observations)
+            validation_row_index = None
             began = time.monotonic()
             chunk = finite_rows(predict(observations[index % len(observations)], 2.0))
             direct.append(time.monotonic() - began)
-            for row in chunk:
+            for validation_row_index, row in enumerate(chunk):
                 validator(dict(zip(YAM_NAMES, row.tolist(), strict=True)))
+            validation_row_index = None
             direct_chunks.append(chunk.tolist())
             event("direct_sample", completed=index + 1, total=requests)
+        phase, sample_index, observation_index = "integrated", None, 0
+        last_chunk, request_sequence = None, None
+        response_received = False
         fake = FakeArms(observations[0])
         engine = Pi05ReferenceExecutor(predict=predict, observe=fake.observe, send=fake.send,
                                       validate_target=validator, stop=Event(),
@@ -166,6 +247,9 @@ def collect_qualification(transport, *, observations: list[dict], task: str, req
                                       "unknown_partial_dispatches")):
             errors.append("Native fake execution lost or modified rows, or faulted")
         # Exercise the SAME executor with Stop while its real RPC is in flight.
+        phase, sample_index, observation_index = "stop_proof", 0, 0
+        last_chunk, request_sequence = None, None
+        response_received = False
         stop = Event()
         stop_fake = FakeArms(observations[0])
         proof = {"stop_requested_during_inflight_rpc": False}
@@ -208,11 +292,21 @@ def collect_qualification(transport, *, observations: list[dict], task: str, req
             errors.append("The robot host and rig were not bound to this qualification")
         if requests < 50:
             errors.append("Physical admission requires the complete 50-sample qualification")
+        phase, sample_index, observation_index = "final_readiness", None, None
+        last_chunk, request_sequence = None, None
+        response_received = False
         current = transport.ready(15.0)
         if current["instance_id"] != metadata["instance_id"]:
             errors.append("Model instance changed during qualification")
     except Exception as exc:  # noqa: BLE001 — sanitized failure category, never bearer or model input
-        errors.append(f"Software qualification failed: {type(exc).__name__}")
+        reason = (exc.args[0] if type(exc) is Pi05ExecutionFault and len(exc.args) == 1
+                  and type(exc.args[0]) is str and exc.args[0] in _CONTROLLED_EXECUTION_REASONS else None)
+        errors.append(f"Software qualification failed: {type(exc).__name__}" + (f": {reason}" if reason else ""))
+        report["failure"] = {"phase": phase, "sample_index": sample_index, "observation_index": observation_index,
+                             "indices_are_zero_based": True, "request_sequence_id": request_sequence,
+                             "validation_row_index": validation_row_index, "error_type": type(exc).__name__,
+                             "reason": reason, "native_response_received": response_received,
+                             "native_response": _failed_chunk_evidence(last_chunk) if response_received else None}
     finally:
         for robot in (fake, stop_fake):
             if robot is not None:

@@ -1,5 +1,9 @@
 # Software-only day mission — 2026-09-13
 
+Historical mission-close record below. A later authorization update resolved the
+tokenizer gate but exposed an out-of-range native π0.5 gripper prediction; see
+[the follow-up](PI05_QUALIFICATION_2026-09-13.md). π0.5 remains unqualified.
+
 MolmoAct2 is software-qualified and its UI/CLI handoff is verified. π0.5 is
 implemented and fake-tested, but **not GPU-qualified or ready for physical use**:
 its publisher-gated tokenizer is unavailable to the configured accounts.

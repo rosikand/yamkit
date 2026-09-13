@@ -61,6 +61,25 @@ def _transport(target, token, metadata):
                          http_session_expires_at=metadata["http_session_expires_at"])
 
 
+def _qualification_failure_message(report, report_path):
+    """Expose only validated numeric diagnostics, never arbitrary response text."""
+    from .inference.mapping import YAM_NAMES
+
+    detail = ""
+    failure = report.get("failure")
+    native = failure.get("native_response") if isinstance(failure, dict) else None
+    violations = native.get("gripper_bound_violations") if isinstance(native, dict) else None
+    if isinstance(violations, list) and violations and isinstance(violations[0], dict):
+        value = violations[0]
+        row, column, target = value.get("row_index"), value.get("column_index"), value.get("value")
+        if (type(row) is int and 0 <= row < 30 and type(column) is int and column in (6, 13)
+                and type(target) in (int, float) and (type(target) is float or target.bit_length() <= 1023)
+                and math.isfinite(target) and not 0 <= target <= 1):
+            detail = f": native {YAM_NAMES[column]}={target!r} at row {row} (zero-based) is outside [0,1]"
+    return ("Native π0.5 qualification did not pass" + detail + ". No motion was started. Report: "
+            + str(report_path))
+
+
 def prepare_pi05(*, backend, task, rig, duration=60, arms=(), config=None, progress=lambda _value: None, force=False):
     from .external_ops import _read_json, _read_private, _save
     from .pi05.admission import passive_target_validator, validate_qualification
@@ -124,7 +143,7 @@ def prepare_pi05(*, backend, task, rig, duration=60, arms=(), config=None, progr
         try:
             validate_qualification(report, metadata, task=task, rig_path=rig)
         except ValueError:
-            raise WorkflowError("Native π0.5 qualification did not pass; inspect its saved report. No motion was started") from None
+            raise WorkflowError(_qualification_failure_message(report, report_path)) from None
         _save(directory / "qualification.json", {"path": str(report_path)})
     selection = Pi05Selection(task, str(rig), duration, target.service, config, report_path)
     result = {"ready": True, "reused": reused, "hardware_tested": False, "motion_approval_received": False,
